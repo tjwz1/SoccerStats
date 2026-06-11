@@ -1,0 +1,71 @@
+
+> soccer-stats-server@1.0.0 dev
+> ts-node-dev --respawn src/index.ts
+
+[INFO] 11:20:15 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.3)
+Server running on http://localhost:3001
+[transfermarkt] Found player "David Raya" (id=262749)
+[transfermarkt] David Raya → 2 current-season rows via ceapi
+[transfermarkt] Found player "David Raya" (id=262749)
+[transfermarkt] David Raya → 2 current-season rows via ceapi
+[cupSchedule:TM] FA Cup: 4 matches for Arsenal FC
+[cupSchedule:TM] EFL Cup: 6 matches for Arsenal FC
+[transfermarkt] Found player "Erling Haaland" (id=418560)
+[transfermarkt] Erling Haaland → 4 current-season rows via ceapi
+[INFO] 11:46:40 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\footballApi.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (C:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (C:\PersonalProjects\ClaudePractice\server\src\index.ts:219:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (C:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5528412336512627.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5528412336512627.js:114:20)
+[ERROR] 11:46:42 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 11:47:00 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\matchStatsScraper.ts has been modified
+Server running on http://localhost:3001
+[INFO] 11:47:05 Restarting: C:\PersonalProjects\ClaudePractice\server\src\routes\teams.ts has been modified
+Server running on http://localhost:3001
+[INFO] 11:47:15 Restarting: C:\PersonalProjects\ClaudePractice\server\src\routes\teams.ts has been modified
+Server running on http://localhost:3001
+[transfermarkt] Found player "Joan García" (id=561613)
+[transfermarkt] Found player "Joan García" (id=561613) for honours
+[wikiStats] Joan García → 0 honours from "Joan Garcia"
+[transfermarkt] Joan García → 4 current-season rows via ceapi
+[transfermarkt] Joan García → 6 player honours (10 year-only entries filtered)
+[cupSchedule] ESPN Copa del Rey: 5 matches for FC Barcelona
+[matchStats] ESPN event 748519: Valencia vs Barcelona (date=20260523)
+[matchStats] ESPN event 748508: Barcelona vs Real Betis (date=20260517)
+[INFO] 11:55:20 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\footballApi.ts has been modified
+Server running on http://localhost:3001
+[INFO] 11:55:25 Restarting: C:\PersonalProjects\ClaudePractice\server\src\routes\teams.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (C:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (C:\PersonalProjects\ClaudePractice\server\src\index.ts:219:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (C:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5528412336512627.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5528412336512627.js:114:20)
+[ERROR] 11:55:27 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 11:55:31 Restarting: C:\PersonalProjects\ClaudePractice\server\src\routes\teams.ts has been modified
+Server running on http://localhost:3001
+[INFO] 12:04:06 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\footballApi.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (C:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (C:\PersonalProjects\ClaudePractice\server\src\index.ts:219:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (C:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5528412336512627.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5528412336512627.js:114:20)
+[ERROR] 12:04:07 Error: listen EADDRINUSE: address already in use :::3001

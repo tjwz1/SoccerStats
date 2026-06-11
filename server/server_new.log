@@ -1,0 +1,74 @@
+
+> soccer-stats-server@1.0.0 dev
+> ts-node-dev --respawn src/index.ts
+
+[INFO] 15:25:35 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.3)
+Server running on http://localhost:3001
+[INFO] 15:27:28 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\matchStatsScraper.ts has been modified
+[ERROR] 15:27:29 ⨯ Unable to compile TypeScript:
+src/services/matchStatsScraper.ts(55,3): error TS2322: Type 'string[]' is not assignable to type 'string'.
+src/services/matchStatsScraper.ts(93,37): error TS2339: Property 'some' does not exist on type 'string'.
+src/services/matchStatsScraper.ts(93,43): error TS7006: Parameter 'w' implicitly has an 'any' type.
+src/services/matchStatsScraper.ts(94,37): error TS2339: Property 'some' does not exist on type 'string'.
+src/services/matchStatsScraper.ts(94,43): error TS7006: Parameter 'w' implicitly has an 'any' type.
+
+[INFO] 15:27:48 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\matchStatsScraper.ts has been modified
+[ERROR] 15:27:51 ⨯ Unable to compile TypeScript:
+src/services/matchStatsScraper.ts(78,21): error TS2304: Cannot find name 'teamSlug'.
+src/services/matchStatsScraper.ts(79,21): error TS2304: Cannot find name 'teamSlug'.
+src/services/matchStatsScraper.ts(93,43): error TS7006: Parameter 'w' implicitly has an 'any' type.
+src/services/matchStatsScraper.ts(94,43): error TS7006: Parameter 'w' implicitly has an 'any' type.
+
+[INFO] 15:27:52 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\matchStatsScraper.ts has been modified
+[ERROR] 15:27:55 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 15:37:37 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\matchStatsScraper.ts has been modified
+[ERROR] 15:37:38 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 15:37:48 Restarting: C:\PersonalProjects\ClaudePractice\server\src\routes\teams.ts has been modified
+[ERROR] 15:37:49 Error: listen EADDRINUSE: address already in use :::3001
+es\matchStatsScraper.ts has been modified
+Compilation error in C:\PersonalProjects\ClaudePractice\server\src\services\matchStatsScraper.ts
+[ERROR] 15:27:51 ⨯ Unable to compile TypeScript:
+src/services/matchStatsScraper.ts(78,21): error TS2304: Cannot find name 'teamSlug'.
+src/services/matchStatsScraper.ts(79,21): error TS2304: Cannot find name 'teamSlug'.
+src/services/matchStatsScraper.ts(93,43): error TS7006: Parameter 'w' implicitly has an 'any' type.
+src/services/matchStatsScraper.ts(94,43): error TS7006: Parameter 'w' implicitly has an 'any' type.
+
+[INFO] 15:27:52 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\matchStatsScraper.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (C:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (C:\PersonalProjects\ClaudePractice\server\src\index.ts:219:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (C:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-9047367958041255.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-9047367958041255.js:114:20)
+[ERROR] 15:27:55 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 15:37:37 Restarting: C:\PersonalProjects\ClaudePractice\server\src\services\matchStatsScraper.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (C:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (C:\PersonalProjects\ClaudePractice\server\src\index.ts:219:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (C:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-9047367958041255.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-9047367958041255.js:114:20)
+[ERROR] 15:37:38 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 15:37:48 Restarting: C:\PersonalProjects\ClaudePractice\server\src\routes\teams.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (C:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (C:\PersonalProjects\ClaudePractice\server\src\index.ts:219:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (C:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-9047367958041255.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-9047367958041255.js:114:20)
+[ERROR] 15:37:49 Error: listen EADDRINUSE: address already in use :::3001

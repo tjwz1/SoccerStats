@@ -1,0 +1,178 @@
+
+> soccer-stats-server@1.0.0 dev
+> ts-node-dev --respawn src/index.ts
+
+[INFO] 15:55:03 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.3)
+Server running on http://localhost:3001
+[wikiStats] No Wikipedia page found for Wojciech Szczęsny
+[wikiStats] No Wikipedia page found for Thibaut Courtois
+[wikiStats] No Wikipedia page found for Andriy Lunin
+[wikiStats] Joan García → 0 rows from "Jon García (footballer)"
+[wikiStats] No Wikipedia page found for Diego Kochen
+[wikiStats] Sergio Mestre → 0 rows from "Sergio Mestre (footballer)"
+[wikiStats] No Wikipedia page found for Eder Aller
+[wikiStats] Error fetching Fran Gonzalez: invalid json response body at https://en.wikipedia.org/w/api.php?action=parse&page=Fran%20Gonz%C3%A1lez%20(footballer%2C%20born%202005)&prop=text&format=json&disablelimitreport=true&disableeditsection=true reason: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+[wikiStats] No Wikipedia page found for Álvaro Cortés
+[wikiStats] No Wikipedia page found for Javi Navarro
+[wikiStats] No Wikipedia page found for Jofre Torrents
+[wikiStats] No Wikipedia page found for Álvaro Carreras
+[wikiStats] No Wikipedia page found for Guille Fernández
+[wikiStats] Error fetching Fran García: invalid json response body at https://en.wikipedia.org/w/api.php?action=parse&page=Fran%20Garc%C3%ADa%20(footballer%2C%20born%201999)&prop=text&format=json&disablelimitreport=true&disableeditsection=true reason: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+[wikiStats] No Wikipedia page found for Xavi Espart
+[wikiStats] No Wikipedia page found for David Jiménez
+[wikiStats] No Wikipedia page found for Tomy Marqués
+[wikiStats] No Wikipedia page found for Diego Aguado
+[wikiStats] No Wikipedia page found for Roony Bardagji
+[wikiStats] No Wikipedia page found for Víctor Valdepeñas
+[wikiStats] No Wikipedia page found for Dani Rodríguez
+[wikiStats] No Wikipedia page found for Jesús Fortea
+[wikiStats] No Wikipedia page found for Toni Fernández
+[wikiStats] No Wikipedia page found for Joan Martínez
+[wikiStats] No Wikipedia page found for Juan Hernández
+[wikiStats] No Wikipedia page found for Lamini Fati
+[wikiStats] No Wikipedia page found for Álex Balde
+[wikiStats] No Wikipedia page found for Franco Mastantuono
+[wikiStats] No Wikipedia page found for Pablo Gavira
+[wikiStats] No Wikipedia page found for Thiago Pitarch
+[wikiStats] No Wikipedia page found for Pedri
+[wikiStats] Error fetching Jorge Cestero: invalid json response body at https://en.wikipedia.org/w/api.php?action=parse&page=Jorge%20Castro%20(footballer)&prop=text&format=json&disablelimitreport=true&disableeditsection=true reason: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+[wikiStats] No Wikipedia page found for Eric García
+[wikiStats] Error fetching César Palacios: invalid json response body at https://en.wikipedia.org/w/api.php?action=parse&page=C%C3%A9sar%20Palacios%20(footballer%2C%20born%202004)&prop=text&format=json&disablelimitreport=true&disableeditsection=true reason: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+[wikiStats] No Wikipedia page found for Raphinha
+[wikiStats] No Wikipedia page found for Dani Meso
+[wikiStats] No Wikipedia page found for Ferrán Torres
+[wikiStats] No Wikipedia page found for Manuel Angel
+[wikiStats] No Wikipedia page found for Ronald Araújo
+[wikiStats] No Wikipedia page found for Álvaro Leiva
+[wikiStats] No Wikipedia page found for Dani Olmo
+[wikiStats] No Wikipedia page found for Daniel Yáñez
+[wikiStats] No Wikipedia page found for Jules Koundé
+[wikiStats] No Wikipedia page found for Pol Fortuny
+[wikiStats] No Wikipedia page found for Frenkie de Jong
+[wikiStats] No Wikipedia page found for Dean Huijsen
+[wikiStats] No Wikipedia page found for Andreas Christensen
+[wikiStats] No Wikipedia page found for Arda Guler
+[wikiStats] No Wikipedia page found for Marcus Rashford
+[wikiStats] No Wikipedia page found for Jude Bellingham
+[wikiStats] No Wikipedia page found for João Cancelo
+[wikiStats] No Wikipedia page found for Eduardo Camavinga
+[wikiStats] No Wikipedia page found for Robert Lewandowski
+[wikiStats] No Wikipedia page found for Aurélien Tchouameni
+[wikiStats] No Wikipedia page found for Marc Bernal
+[wikiStats] No Wikipedia page found for Ferland Mendy
+[wikiStats] No Wikipedia page found for Gerard Martín
+[wikiStats] No Wikipedia page found for Brahim Diaz
+[wikiStats] No Wikipedia page found for Pau Cubarsí
+[wikiStats] No Wikipedia page found for Trent Alexander-Arnold
+[wikiStats] No Wikipedia page found for Fermín López
+[wikiStats] No Wikipedia page found for Kylian Mbappé
+[wikiStats] No Wikipedia page found for Lamine Yamal
+[wikiStats] No Wikipedia page found for Dani Carvajal
+[wikiStats] No Wikipedia page found for Marc Casado
+[populate-wiki] barcelona done: 33 ok, 0 failed
+[wikiStats] No Wikipedia page found for Antonio Rüdiger
+[wikiStats] No Wikipedia page found for Vinicius Junior
+[wikiStats] No Wikipedia page found for Éder Militão
+[wikiStats] No Wikipedia page found for Rodrygo
+[wikiStats] Error fetching David Alaba: invalid json response body at https://en.wikipedia.org/w/api.php?action=parse&page=David%20Ayala%20(footballer%2C%20born%202002)&prop=text&format=json&disablelimitreport=true&disableeditsection=true reason: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+[wikiStats] No Wikipedia page found for Federico Valverde
+[wikiStats] No Wikipedia page found for Dani Ceballos
+[wikiStats] No Wikipedia page found for Raúl
+[wikiStats] Error fetching Gonzalo García: invalid json response body at https://en.wikipedia.org/w/api.php?action=parse&page=Gonzalo%20Garc%C3%ADa%20(footballer%2C%20born%202004)&prop=text&format=json&disablelimitreport=true&disableeditsection=true reason: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+[populate-wiki] real_madrid done: 41 ok, 0 failed
+[INFO] 16:01:15 Restarting: c:\PersonalProjects\ClaudePractice\server\src\services\wikiStats.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (c:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (c:\PersonalProjects\ClaudePractice\server\src\index.ts:81:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (c:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:114:20)
+[ERROR] 16:01:16 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 16:03:12 Restarting: c:\PersonalProjects\ClaudePractice\server\src\services\wikiStats.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (c:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (c:\PersonalProjects\ClaudePractice\server\src\index.ts:81:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (c:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:114:20)
+[ERROR] 16:03:14 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 16:12:00 Restarting: c:\PersonalProjects\ClaudePractice\server\src\db\wikiCareerCache.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (c:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (c:\PersonalProjects\ClaudePractice\server\src\index.ts:81:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (c:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:114:20)
+[ERROR] 16:12:01 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 16:12:22 Restarting: c:\PersonalProjects\ClaudePractice\server\src\index.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (c:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (c:\PersonalProjects\ClaudePractice\server\src\index.ts:85:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (c:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:114:20)
+[ERROR] 16:12:23 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 16:17:08 Restarting: c:\PersonalProjects\ClaudePractice\server\src\services\wikiStats.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (c:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (c:\PersonalProjects\ClaudePractice\server\src\index.ts:85:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (c:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:114:20)
+[ERROR] 16:17:09 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 16:17:13 Restarting: c:\PersonalProjects\ClaudePractice\server\src\index.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (c:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (c:\PersonalProjects\ClaudePractice\server\src\index.ts:85:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (c:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:114:20)
+[ERROR] 16:17:15 Error: listen EADDRINUSE: address already in use :::3001
+[INFO] 16:36:18 Restarting: c:\PersonalProjects\ClaudePractice\server\src\services\footballApi.ts has been modified
+Compilation error in c:\PersonalProjects\ClaudePractice\server\src\services\footballApi.ts
+[ERROR] 16:36:19 ⨯ Unable to compile TypeScript:
+src/services/footballApi.ts(498,20): error TS2304: Cannot find name 'seasonStartYear'.
+
+[INFO] 16:36:24 Restarting: c:\PersonalProjects\ClaudePractice\server\src\services\footballApi.ts has been modified
+Error: listen EADDRINUSE: address already in use :::3001
+    at Server.setupListenHandle [as _listen2] (node:net:1904:16)
+    at listenInCluster (node:net:1961:12)
+    at Server.listen (node:net:2063:7)
+    at Function.listen (c:\PersonalProjects\ClaudePractice\server\node_modules\express\lib\application.js:635:24)
+    at Object.<anonymous> (c:\PersonalProjects\ClaudePractice\server\src\index.ts:85:5)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+    at Module._compile (c:\PersonalProjects\ClaudePractice\server\node_modules\source-map-support\source-map-support.js:568:25)
+    at Module.m._compile (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:69:33)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1548:10)
+    at require.extensions..jsx.require.extensions..js (C:\Users\tjzha\AppData\Local\Temp\ts-node-dev-hook-5597218869002294.js:114:20)
+[ERROR] 16:36:27 Error: listen EADDRINUSE: address already in use :::3001

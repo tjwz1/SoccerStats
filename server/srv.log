@@ -1,0 +1,17 @@
+
+> soccer-stats-server@1.0.0 dev
+> ts-node-dev --respawn src/index.ts
+
+[INFO] 18:22:11 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.3)
+Server running on http://localhost:3001
+[clubHonours] Arsenal FC → 7 trophies (HTML table) from "Arsenal F.C."
+[matchStats] Google scrape: found 0 player ratings
+[matchStats] ESPN event 740968: Crystal Palace vs Arsenal (date=20260524)
+[matchStats] ESPN event 740968: Crystal Palace vs Arsenal (date=20260524)
+[matchStats] Cached 32 player stats for match 538157 (0 Google ratings)
+[matchStats] ESPN lineup cached: Crystal Palace 3-4-3 vs Arsenal 4-5-1
+[matchStats] ESPN event 401862897: Paris Saint-Germain vs Arsenal (date=20260530)
+[matchStats] Google scrape: found 0 player ratings
+[matchStats] Cached 33 player stats for match 552096 (0 Google ratings)
+[matchStats] ESPN event 401862897: Paris Saint-Germain vs Arsenal (date=20260530)
+[matchStats] ESPN lineup cached: Paris Saint-Germain 4-3-3 vs Arsenal 4-5-1
