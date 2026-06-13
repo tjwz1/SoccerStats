@@ -58,6 +58,12 @@ export async function getAnyCached(
   }
 }
 
+// Write directly into memCache without touching Supabase — for callers that already
+// have fresh data from a batch Supabase read and just need to warm the local cache.
+export function warmMemCache(path: string, value: unknown, expiresAt: number): void {
+  memCache.set(path, { value, expiresAt });
+}
+
 export async function setCached(path: string, value: unknown, ttlMs = DEFAULT_TTL_MS): Promise<void> {
   // Always write to memory cache first — this works even when Supabase is down
   memCache.set(path, { value, expiresAt: Date.now() + ttlMs });

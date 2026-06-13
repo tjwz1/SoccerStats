@@ -46,7 +46,7 @@ function apiKey() { return process.env.FOOTBALL_API_KEY; }
 function useMock() { return !apiKey(); }
 
 const SQUAD_TTL_MS = 6 * 60 * 60 * 1000;        // 6 h — squad composition changes at most weekly
-const SCORERS_CURRENT_TTL_MS = 60 * 60 * 1000;  // 1 h — updated after each match day
+const SCORERS_CURRENT_TTL_MS = 2 * 60 * 1000;   // 2 min — fd.org updates scorers every ~2-5 min during live matches
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -451,6 +451,8 @@ export interface MatchDetailData {
   status: string;
   htHome: number | null;
   htAway: number | null;
+  ftHome: number | null;
+  ftAway: number | null;
   goals: MatchGoalEvent[];
   bookings: MatchBookingEvent[];
   substitutions: MatchSubstitutionEvent[];
@@ -471,6 +473,8 @@ export async function getMatchDetail(matchId: number, status: string): Promise<M
     status: data.status ?? status,
     htHome: data.score?.halfTime?.home ?? null,
     htAway: data.score?.halfTime?.away ?? null,
+    ftHome: data.score?.fullTime?.home ?? null,
+    ftAway: data.score?.fullTime?.away ?? null,
     goals: (data.goals ?? []).map((g: any): MatchGoalEvent => ({
       minute: g.minute ?? 0,
       extraTime: g.extraTime ?? null,
@@ -1131,9 +1135,15 @@ export async function getCompetitionSeasons(competitionCode: string): Promise<Co
 }
 
 // Compute last-5-results form per team from the competition's finished matches.
-// Called when fd.org returns null form (off-season or tier limitation).
-async function computeFormFromMatches(competitionCode: string): Promise<Map<number, string>> {
-  const data = await apiFetch(`/competitions/${competitionCode}/matches?status=FINISHED`, 60 * 60 * 1000) as any;
+// Called for any team where fd.org's standings response returned null form.
+async function computeFormFromMatches(competitionCode: string, seasonYear: number): Promise<Map<number, string>> {
+  // Same URL and TTL as getTeamCleanSheets/getFinishedMatchList so all three share the
+  // same Supabase cache entry. SCORERS_CURRENT_TTL_MS (2 min) ensures the finished-match
+  // list stays fresh during live tournaments so form updates promptly when matches end.
+  const data = await apiFetch(
+    `/competitions/${competitionCode}/matches?season=${seasonYear}&status=FINISHED`,
+    SCORERS_CURRENT_TTL_MS
+  ) as any;
   const matches: any[] = data?.matches ?? [];
 
   // Sort most-recent first so we can stop collecting per-team after 5
@@ -1168,7 +1178,12 @@ async function computeFormFromMatches(competitionCode: string): Promise<Map<numb
 
 export async function getStandings(competitionCode: string, season?: number): Promise<StandingsData> {
   const query = season ? `?season=${season}` : "";
-  const data = await apiFetch(`/competitions/${competitionCode}/standings${query}`) as any;
+  // Past seasons are immutable — cache forever. Current season uses short TTL so points/form
+  // update promptly when a match ends (works for both domestic and international comps).
+  const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
+  const currentYear = isIntl ? new Date().getFullYear() : CURRENT_SEASON;
+  const standingsTtl = (season && season < currentYear) ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
+  const data = await apiFetch(`/competitions/${competitionCode}/standings${query}`, standingsTtl) as any;
   const all: any[] = data.standings ?? [];
 
   // Entries that belong to a named group (World Cup, Euros: group="Group A" / "GROUP_A")
@@ -1190,17 +1205,22 @@ export async function getStandings(competitionCode: string, season?: number): Pr
       : { groups: [] };
   }
 
-  // If fd.org returned no form data (off-season or tier limitation), compute it
-  // from the competition's finished matches — one extra cached API call.
-  if (!season && result.groups.length > 0) {
-    const allFormNull = result.groups.every((g) => g.rows.every((r) => r.form === null));
-    if (allFormNull) {
+  // Fill in form for any team where fd.org returned null (mid-tournament teams that haven't
+  // played yet, off-season, or tier limitation). Applies globally: any competition, any team.
+  // Also runs when the caller explicitly passes the current year (e.g. season=2026 for WC).
+  const isCurrentSeason = !season || season >= currentYear;
+  if (isCurrentSeason && result.groups.length > 0) {
+    const someFormNull = result.groups.some((g) => g.rows.some((r) => r.form === null));
+    if (someFormNull) {
       try {
-        const computedForm = await computeFormFromMatches(competitionCode);
+        const seasonYear = isIntl ? new Date().getFullYear() : CURRENT_SEASON;
+        const computedForm = await computeFormFromMatches(competitionCode, seasonYear);
         for (const group of result.groups) {
           for (const row of group.rows) {
-            const f = computedForm.get(row.team.id);
-            if (f) row.form = f;
+            if (row.form === null) {                      // preserve form fd.org already provided
+              const f = computedForm.get(row.team.id);
+              if (f) row.form = f;
+            }
           }
         }
       } catch (e) {
@@ -1250,8 +1270,11 @@ function mapFdScorer(s: any, statField: "goals" | "assists"): FdStatLeader {
 export async function getTeamCleanSheets(competitionCode: string, season?: number): Promise<FdStatLeader[]> {
   if (useMock()) return [];
 
-  const seasonYear = season ?? CURRENT_SEASON;
-  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : 60 * 60 * 1000;
+  const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
+  // Same TTL as computeFormFromMatches and getFinishedMatchList so all three share the
+  // same cache entry — whichever runs first wins, and they all get consistently fresh data.
+  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
   const data = await apiFetch(
     `/competitions/${competitionCode}/matches?season=${seasonYear}&status=FINISHED`,
     ttl
@@ -1306,7 +1329,8 @@ export async function getTopScorers(
 ): Promise<{ goals: FdStatLeader[]; assists: FdStatLeader[] }> {
   if (useMock()) return { goals: [], assists: [] };
 
-  const seasonYear = season ?? CURRENT_SEASON;
+  const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
   const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
   const data = await apiFetch(
     `/competitions/${competitionCode}/scorers?season=${seasonYear}&limit=400`,
@@ -1320,6 +1344,9 @@ export async function getTopScorers(
     .slice(0, 30)
     .map((s) => mapFdScorer(s, "goals"));
 
+  // Assists: fd.org /scorers only lists goal scorers so pure playmakers are absent.
+  // For international competitions the live-scorers route rebuilds assists from ESPN.
+  // For domestic competitions this partial list is the best available from fd.org.
   const assists = raw
     .filter((s) => (s.assists ?? 0) > 0)
     .sort((a, b) => (b.assists ?? 0) - (a.assists ?? 0))
@@ -1327,6 +1354,43 @@ export async function getTopScorers(
     .map((s) => mapFdScorer(s, "assists"));
 
   return { goals, assists };
+}
+
+export function isInternationalComp(code: string): boolean {
+  return INTERNATIONAL_COMP_CODES.has(code);
+}
+
+// Returns lightweight finished-match records for building ESPN-based leaderboards.
+export interface FinishedMatchRef {
+  homeTeam: string;
+  homeTeamId: number;
+  homeTeamCrest: string;
+  awayTeam: string;
+  awayTeamId: number;
+  awayTeamCrest: string;
+  utcDate: string;
+}
+
+export async function getFinishedMatchList(
+  competitionCode: string,
+  season?: number
+): Promise<FinishedMatchRef[]> {
+  const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
+  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
+  const data = await apiFetch(
+    `/competitions/${competitionCode}/matches?season=${seasonYear}&status=FINISHED`,
+    ttl
+  ) as any;
+  return (data?.matches ?? []).map((m: any) => ({
+    homeTeam: m.homeTeam?.name ?? "",
+    homeTeamId: m.homeTeam?.id ?? 0,
+    homeTeamCrest: m.homeTeam?.crest ?? "",
+    awayTeam: m.awayTeam?.name ?? "",
+    awayTeamId: m.awayTeam?.id ?? 0,
+    awayTeamCrest: m.awayTeam?.crest ?? "",
+    utcDate: m.utcDate ?? "",
+  }));
 }
 
 export async function getTeamLineup(teamId: string, competitionCode?: string) {
@@ -1469,6 +1533,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
   })().catch(() => {});
 
   return {
+    competitionCode: compCode ?? null,
     formation: formationString(xi),
     starters: xi.map(({ player: p, role }) => ({
       id: p.id,

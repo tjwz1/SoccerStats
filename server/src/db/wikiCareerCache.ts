@@ -1,4 +1,4 @@
-import { getCached, setCached, FOREVER_TTL_MS } from "./apiCache";
+import { getCached, setCached, FOREVER_TTL_MS, warmMemCache } from "./apiCache";
 import { getClient } from "./supabase";
 
 export interface WikiCareerRow {
@@ -25,7 +25,7 @@ export async function getWikiStatsBatch(playerIds: number[]): Promise<Map<number
   const keys = playerIds.map(key);
   const { data, error } = await getClient()
     .from("api_cache")
-    .select("path, data")
+    .select("path, data, expires_at")
     .in("path", keys)
     .gt("expires_at", new Date().toISOString());
 
@@ -34,7 +34,12 @@ export async function getWikiStatsBatch(playerIds: number[]): Promise<Map<number
   for (const row of data) {
     const id = parseInt((row.path as string).replace("wiki_career:", ""), 10);
     const rows = (row.data as any)?.rows as WikiCareerRow[] | undefined;
-    if (rows && rows.length > 0) map.set(id, rows);
+    if (rows && rows.length > 0) {
+      map.set(id, rows);
+      // Backfill memCache so individual getCached() calls for these players skip Supabase
+      const expiresAt = new Date(row.expires_at as string).getTime();
+      warmMemCache(row.path as string, row.data, expiresAt);
+    }
   }
   return map;
 }

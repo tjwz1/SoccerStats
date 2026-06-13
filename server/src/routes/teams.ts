@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getCompetitions, getTeams, getTeamLineup, getTeamSchedule, getMatchDetail, getMatchLineups, getStandings, getCompetitionSeasons, getTopScorers, getTeamCleanSheets, getBracketMatches, getLiveMatches, getPositionHistory, getUpcomingFixtures, getH2HMatches, type StandingsData, type MatchGoalEvent } from "../services/footballApi";
+import { getCompetitions, getTeams, getTeamLineup, getTeamSchedule, getMatchDetail, getMatchLineups, getStandings, getCompetitionSeasons, getTopScorers, getTeamCleanSheets, getBracketMatches, getLiveMatches, getPositionHistory, getUpcomingFixtures, getH2HMatches, isInternationalComp, getFinishedMatchList, type FinishedMatchRef, type StandingsData, type MatchGoalEvent } from "../services/footballApi";
 import { fetchClubHonours, type ClubTrophy } from "../services/wikiStats";
 import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transfermarktScraper";
 import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoalEvents, getMatchBookingsAndSubs, teamsMatch, type EspnLineupPlayer } from "../services/matchStatsScraper";
@@ -109,11 +109,23 @@ router.get("/competitions/:code/bracket", async (req, res) => {
   }
 });
 
+router.get("/competitions/:code/live-matches", async (req, res) => {
+  try {
+    const all = await getLiveMatches();
+    res.json(all.filter((m) => m.competitionCode === req.params.code));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get("/competitions/:code/standings", async (req, res) => {
   try {
     const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
-    const cacheKey = `/standings/v4/${req.params.code}${season ? `/${season}` : ""}`;
-    await serveWithSWR(res, cacheKey, 60 * 60 * 1000,
+    const cacheKey = `/standings/v5/${req.params.code}${season ? `/${season}` : ""}`;
+    // Past-season standings are immutable — cache forever. Current season needs a short
+    // TTL so form and points update promptly after a match ends (client polls every 60s).
+    const standingsTtl = season ? (365 * 24 * 60 * 60 * 1000) : (2 * 60 * 1000);
+    await serveWithSWR(res, cacheKey, standingsTtl,
       () => getStandings(req.params.code, season),
       (d) => d.groups.length > 0
     );
@@ -125,8 +137,8 @@ router.get("/competitions/:code/standings", async (req, res) => {
 router.get("/competitions/:code/scorers", async (req, res) => {
   try {
     const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
-    const cacheKey = `/scorers/v3/${req.params.code}${season ? `/${season}` : ""}`;
-    await serveWithSWR(res, cacheKey, 60 * 60 * 1000,
+    const cacheKey = `/scorers/v5/${req.params.code}${season ? `/${season}` : ""}`;
+    await serveWithSWR(res, cacheKey, 15 * 60 * 1000,
       async () => {
         const [fdData, csData] = await Promise.all([
           getTopScorers(req.params.code, season).catch(() => ({ goals: [], assists: [] })),
@@ -136,6 +148,158 @@ router.get("/competitions/:code/scorers", async (req, res) => {
       },
       (d) => d.goals.length > 0 || d.assists.length > 0
     );
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get("/competitions/:code/live-scorers", async (req, res) => {
+  try {
+    const code = req.params.code;
+    const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+    const intl = isInternationalComp(code);
+
+    const [fdData, csData, allLive, finishedList] = await Promise.all([
+      getTopScorers(code, season).catch(() => ({ goals: [], assists: [] })),
+      getTeamCleanSheets(code, season).catch(() => []),
+      getLiveMatches().catch(() => []),
+      // For international comps fd.org /matches/:id has no goal events on the free tier,
+      // so we fetch all finished matches and rebuild assists via ESPN (same as live overlay).
+      intl
+        ? getFinishedMatchList(code, season).catch(() => [] as FinishedMatchRef[])
+        : Promise.resolve([] as FinishedMatchRef[]),
+    ]);
+
+    const liveMatches = allLive.filter((m) => m.competitionCode === code);
+
+    // Helpers must be available for both the finished-assist pass and the live-match pass.
+    function normName(s: string): string {
+      return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z ]/g, " ").trim().replace(/\s+/g, " ");
+    }
+    function lastToken(s: string): string {
+      const parts = normName(s).split(" ");
+      return parts[parts.length - 1];
+    }
+    function namesMatch(a: string, b: string): boolean {
+      const na = normName(a), nb = normName(b);
+      if (na === nb) return true;
+      const la = lastToken(a), lb = lastToken(b);
+      if (la === lb && la.length >= 4) return true;
+      for (const tok of na.split(" ")) {
+        if (tok.length >= 5 && nb.includes(tok)) return true;
+      }
+      return false;
+    }
+
+    // For international competitions, build a complete assists leaderboard from ESPN
+    // goal events across all finished matches — identical approach to the live overlay.
+    type AssistEntry = { count: number; teamId: number; teamName: string; teamCrest: string; displayName: string };
+    const finishedAssistMap = new Map<string, AssistEntry>();
+
+    if (intl && finishedList.length > 0) {
+      await Promise.all(
+        finishedList.map(async (m) => {
+          try {
+            const events = await getMatchGoalEvents(m.homeTeam, m.awayTeam, m.utcDate, code);
+            for (const e of events) {
+              if (e.ownGoal || !e.assist) continue;
+              const isHome = namesMatch(m.homeTeam, e.teamDisplayName);
+              const tId   = isHome ? m.homeTeamId   : m.awayTeamId;
+              const tName = isHome ? m.homeTeam      : m.awayTeam;
+              const tCrest = isHome ? m.homeTeamCrest : m.awayTeamCrest;
+              const key = normName(e.assist);
+              const ex = finishedAssistMap.get(key) ?? { count: 0, teamId: tId, teamName: tName, teamCrest: tCrest, displayName: e.assist };
+              finishedAssistMap.set(key, { ...ex, count: ex.count + 1 });
+            }
+          } catch { /* silently skip */ }
+        })
+      );
+    }
+
+    // Use ESPN-built assists for international comps; fd.org scorers-based for domestic.
+    const baseAssists: any[] = (intl && finishedAssistMap.size > 0)
+      ? Array.from(finishedAssistMap.values())
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 30)
+          .map(({ count, teamId, teamName, teamCrest, displayName }) => ({
+            value: count,
+            liveAdd: 0,
+            playedMatches: 0,
+            player: { id: 0, name: displayName, nationality: "", dateOfBirth: "", position: "" },
+            team: { id: teamId, name: teamName, shortName: teamName, crest: teamCrest, tla: teamName.slice(0, 3).toUpperCase() },
+          }))
+      : fdData.assists;
+
+    if (!liveMatches.length) {
+      return res.json({ goals: fdData.goals, assists: baseAssists, cleanSheets: csData, hasLive: false });
+    }
+
+    // Aggregate live goals/assists — key is normalized name, value stores original for display
+    type LiveEntry = { goals: number; assists: number; teamId: number; teamName: string; teamCrest: string; displayName: string };
+    const liveMap = new Map<string, LiveEntry>();
+
+    function upsert(key: string, displayName: string, teamId: number, teamName: string, teamCrest: string, field: "goals" | "assists") {
+      const existing = liveMap.get(key) ?? { goals: 0, assists: 0, teamId, teamName, teamCrest, displayName };
+      liveMap.set(key, { ...existing, [field]: existing[field] + 1 });
+    }
+
+    await Promise.all(liveMatches.map(async (match) => {
+      try {
+        const events = await getMatchGoalEvents(match.homeTeam, match.awayTeam, match.utcDate, match.competitionCode);
+        for (const e of events) {
+          if (e.ownGoal) continue;
+          const isHome = namesMatch(match.homeTeam, e.teamDisplayName);
+          const tId = isHome ? match.homeTeamId : match.awayTeamId;
+          const tName = isHome ? match.homeTeam : match.awayTeam;
+          const tCrest = isHome ? match.homeTeamCrest : match.awayTeamCrest;
+
+          upsert(normName(e.scorer), e.scorer, tId, tName, tCrest, "goals");
+          if (e.assist) upsert(normName(e.assist), e.assist, tId, tName, tCrest, "assists");
+        }
+      } catch { /* silently skip failed match */ }
+    }));
+
+    // Merge live-match additions onto a base leader list.
+    // Goals: fd.org scorers updates live, so base already has them — liveAdd is UI indicator only.
+    // Assists: for intl comps base is ESPN finished-match data; live assists add on top.
+    //          For domestic comps base is fd.org scorers; live assists add on top.
+    function mergeLive(base: any[], field: "goals" | "assists"): any[] {
+      const usedKeys = new Set<string>();
+      const merged = base.map((r) => {
+        let liveAdd = 0;
+        for (const [k, lv] of liveMap) {
+          if (namesMatch(r.player.name, k)) {
+            liveAdd = field === "goals" ? lv.goals : lv.assists;
+            usedKeys.add(k);
+            break;
+          }
+        }
+        const valueAdd = field === "assists" ? liveAdd : 0;
+        return { ...r, value: r.value + valueAdd, liveAdd };
+      });
+      for (const [k, lv] of liveMap) {
+        if (usedKeys.has(k)) continue;
+        const add = field === "goals" ? lv.goals : lv.assists;
+        if (add <= 0) continue;
+        merged.push({
+          value: add,
+          liveAdd: add,
+          playedMatches: 0,
+          player: { id: 0, name: lv.displayName, nationality: "", dateOfBirth: "", position: "" },
+          team: { id: lv.teamId, name: lv.teamName, shortName: lv.teamName, crest: lv.teamCrest, tla: lv.teamName.slice(0, 3).toUpperCase() },
+        } as any);
+        usedKeys.add(k);
+      }
+      merged.sort((a, b) => b.value - a.value);
+      return merged;
+    }
+
+    res.json({
+      goals: mergeLive(fdData.goals, "goals"),
+      assists: mergeLive(baseAssists, "assists"),
+      cleanSheets: csData,
+      hasLive: true,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -239,6 +403,7 @@ router.get("/matches/:id", async (req, res) => {
     const utcDate = safeStr(req.query.utcDate as string | undefined, 30);
     const competition = safeStr(req.query.competition as string | undefined, 10);
 
+    const isLive = ["IN_PLAY", "PAUSED"].includes(status);
     const detail = await getMatchDetail(matchId, status);
     let goals = detail.goals;
     let bookings = detail.bookings;
@@ -265,7 +430,7 @@ router.get("/matches/:id", async (req, res) => {
       // Always supplement bookings/subs from ESPN (fd.org free tier never includes these)
       if (bookings.length === 0) {
         try {
-          const espnEvents = await getMatchBookingsAndSubs(matchId, homeTeam, awayTeam, utcDate, competition);
+          const espnEvents = await getMatchBookingsAndSubs(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
           bookings = espnEvents.bookings.map((b) => ({
             minute: b.minute,
             extraTime: b.extraTime,
@@ -317,10 +482,12 @@ router.get("/matches/:id/player-stats", async (req, res) => {
     const awayTeam = safeStr(req.query.awayTeam as string | undefined);
     const utcDate = safeStr(req.query.utcDate as string | undefined, 30);
     const competition = safeStr(req.query.competition as string | undefined, 10) || "PL";
+    const status = safeStr(req.query.status as string | undefined, 20) || "FINISHED";
+    const isLive = ["IN_PLAY", "PAUSED"].includes(status);
     if (!homeTeam || !awayTeam || !utcDate) {
       return res.status(400).json({ error: "homeTeam, awayTeam, utcDate required" });
     }
-    const stats = await getMatchPlayerStats(matchId, homeTeam, awayTeam, utcDate, competition);
+    const stats = await getMatchPlayerStats(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
     res.json(stats);
   } catch (e: any) {
     res.status(500).json({ error: e.message });

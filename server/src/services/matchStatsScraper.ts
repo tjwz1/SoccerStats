@@ -29,14 +29,14 @@ const COMP_MAP: Record<string, string> = {
 
 const ESPN_HEADERS = {
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
   Accept: "application/json, */*",
 };
 
 // Headers that mimic a real browser — required for Google and news sites
 const BROWSER_HEADERS = {
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
   Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
   "Accept-Language": "en-GB,en;q=0.9",
   "Accept-Encoding": "gzip, deflate, br",
@@ -54,6 +54,7 @@ export interface PlayerGameStats {
   rating: number | null;
   starter: boolean;
   subbedIn: boolean;
+  subbedOut: boolean;
 }
 
 // Keyed by lowercase last name for fuzzy matching
@@ -73,7 +74,9 @@ const eventIdInflight = new Map<string, Promise<string | null>>();
 
 // Shared cache for ESPN summary responses — both lineup and stats parse the same
 // summary endpoint; this prevents a second HTTP call when both routes fire together.
-const summaryCache = new Map<string, any>();
+// 1-minute TTL so live match data (goals, subs, cards) refreshes on each polling cycle.
+const summaryCache = new Map<string, { data: any; fetchedAt: number }>();
+const SUMMARY_TTL_MS = 60_000;
 const SUMMARY_CACHE_MAX = 300;
 
 function cappedSet<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number) {
@@ -100,14 +103,31 @@ async function espnFetch(url: string): Promise<any | null> {
   }
 }
 
+// Aliases for international team names that differ between fd.org and ESPN.
+// Applied after basic normalisation so both sides resolve to the same token.
+const INT_ALIASES: [RegExp, string][] = [
+  [/\bunited states\b/g, "usa"],
+  [/\bkorea republic\b/g, "korea"],
+  [/\brepublic of korea\b/g, "korea"],
+  [/\bsouth korea\b/g, "korea"],
+  [/\bdpr korea\b/g, "northkorea"],
+  [/\bnorth korea\b/g, "northkorea"],
+  [/\bcote d ivoire\b/g, "ivoire"],
+  [/\bivory coast\b/g, "ivoire"],
+  [/\bdr congo\b/g, "congo"],
+  [/\bdemocratic republic of congo\b/g, "congo"],
+];
+
 // Normalize team name for fuzzy comparison
 function normTeam(name: string): string {
-  return name
+  let n = name
     .toLowerCase()
     .replace(/\b(fc|f\.c\.|afc|sc|sfc|cf|rcd|cd|ud|sd)\b/g, "")
     .replace(/[^a-z0-9 ]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  for (const [pattern, alias] of INT_ALIASES) n = n.replace(pattern, alias);
+  return n;
 }
 
 export function teamsMatch(fdTeam: string, espnTeam: string): boolean {
@@ -116,11 +136,13 @@ export function teamsMatch(fdTeam: string, espnTeam: string): boolean {
   return fdWords.length > 0 && fdWords.some((w) => espnNorm.includes(w));
 }
 
-function addDay(yyyymmdd: string): string {
+function shiftDay(yyyymmdd: string, delta: number): string {
   const d = new Date(`${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`);
-  d.setDate(d.getDate() + 1);
+  d.setDate(d.getDate() + delta);
   return d.toISOString().slice(0, 10).replace(/-/g, "");
 }
+
+function addDay(yyyymmdd: string): string { return shiftDay(yyyymmdd, 1); }
 
 function lastName(name: string): string {
   return name.toLowerCase().replace(/\./g, "").trim().split(" ").pop() ?? "";
@@ -148,8 +170,10 @@ async function findEspnEventId(
     const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
     const base = utcDate.slice(0, 10).replace(/-/g, ""); // YYYYMMDD
 
-    // Try UTC date and UTC+1 day to handle timezone offsets
-    for (const date of [base, addDay(base)]) {
+    // Search UTC-1, UTC, and UTC+1 to handle ESPN's local-time date keys.
+    // US evening games (21:00 ET = 01:00 UTC next day) appear on ESPN under
+    // the prior calendar day; Asian games are the opposite.
+    for (const date of [shiftDay(base, -1), base, addDay(base)]) {
       const url = `${ESPN_BASE}/${espnLeague}/scoreboard?dates=${date}`;
       const data = await espnFetch(url);
       if (!data?.events) continue;
@@ -187,12 +211,25 @@ async function fetchEspnStats(
 ): Promise<MatchPlayerStatsMap> {
   const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
   const summaryKey = `${espnLeague}:${eventId}`;
-  let data = summaryCache.get(summaryKey);
+  const _sc0 = summaryCache.get(summaryKey);
+  let data: any = _sc0 && Date.now() - _sc0.fetchedAt < SUMMARY_TTL_MS ? _sc0.data : null;
   if (!data) {
     data = await espnFetch(`${ESPN_BASE}/${espnLeague}/summary?event=${eventId}`);
-    if (data) cappedSet(summaryCache, summaryKey, data, SUMMARY_CACHE_MAX);
+    if (data) cappedSet(summaryCache, summaryKey, { data, fetchedAt: Date.now() }, SUMMARY_CACHE_MAX);
   }
   if (!data?.rosters) return {};
+
+  // Build a set of last names for players who were substituted off, derived from
+  // substitution key events: "Substitution, Team. PlayerIn replaces PlayerOut..."
+  const subbedOutLastNames = new Set<string>();
+  for (const ev of data.keyEvents ?? []) {
+    const typeStr: string = (ev.type?.type ?? "").toLowerCase();
+    if (typeStr === "substitution") {
+      const text: string = ev.text ?? "";
+      const m = text.match(/replaces\s+(.+?)(?:\s+because[^.]*)?\.?\s*$/i);
+      if (m) subbedOutLastNames.add(lastName(m[1].trim()));
+    }
+  }
 
   const result: MatchPlayerStatsMap = {};
 
@@ -218,6 +255,7 @@ async function fetchEspnStats(
         rating: null,
         starter: entry.starter === true,
         subbedIn: entry.subbedIn === true,
+        subbedOut: subbedOutLastNames.has(last),
       };
     }
   }
@@ -263,10 +301,11 @@ async function fetchEspnTeamStats(
 ): Promise<EspnMatchTeamStats | null> {
   const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
   const summaryKey = `${espnLeague}:${eventId}`;
-  let data = summaryCache.get(summaryKey);
+  const _sc1 = summaryCache.get(summaryKey);
+  let data: any = _sc1 && Date.now() - _sc1.fetchedAt < SUMMARY_TTL_MS ? _sc1.data : null;
   if (!data) {
     data = await espnFetch(`${ESPN_BASE}/${espnLeague}/summary?event=${eventId}`);
-    if (data) cappedSet(summaryCache, summaryKey, data, SUMMARY_CACHE_MAX);
+    if (data) cappedSet(summaryCache, summaryKey, { data, fetchedAt: Date.now() }, SUMMARY_CACHE_MAX);
   }
 
   const teams: any[] = data?.boxscore?.teams ?? [];
@@ -475,10 +514,11 @@ export async function getEspnMatchLineup(
 
   const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
   const summaryKey = `${espnLeague}:${eventId}`;
-  let data = summaryCache.get(summaryKey);
+  const _sc4 = summaryCache.get(summaryKey);
+  let data: any = _sc4 && Date.now() - _sc4.fetchedAt < SUMMARY_TTL_MS ? _sc4.data : null;
   if (!data) {
     data = await espnFetch(`${ESPN_BASE}/${espnLeague}/summary?event=${eventId}`);
-    if (data) cappedSet(summaryCache, summaryKey, data, SUMMARY_CACHE_MAX);
+    if (data) cappedSet(summaryCache, summaryKey, { data, fetchedAt: Date.now() }, SUMMARY_CACHE_MAX);
   }
   if (!data?.rosters) return null;
 
@@ -549,19 +589,22 @@ export async function getMatchPlayerStats(
   homeTeam: string,
   awayTeam: string,
   utcDate: string,
-  competitionCode: string
+  competitionCode: string,
+  isLive = false
 ): Promise<MatchPlayerStatsMap> {
-  // L1: in-memory
-  const memCached = statsCache.get(matchId);
-  if (memCached && Date.now() - memCached.fetchedAt < CACHE_TTL_MS) return memCached.data;
+  if (!isLive) {
+    // L1: in-memory
+    const memCached = statsCache.get(matchId);
+    if (memCached && Date.now() - memCached.fetchedAt < CACHE_TTL_MS) return memCached.data;
 
-  // L2: Supabase — survives server restarts (only for FD.org-sourced matches with positive IDs)
-  if (matchId > 0) {
-    const dbCached = await getCached(`/espn-stats/${matchId}`);
-    if (dbCached) {
-      const data = dbCached as MatchPlayerStatsMap;
-      cappedSet(statsCache, matchId, { data, fetchedAt: Date.now() }, STATS_CACHE_MAX);
-      return data;
+    // L2: Supabase — survives server restarts (only for FD.org-sourced matches with positive IDs)
+    if (matchId > 0) {
+      const dbCached = await getCached(`/espn-stats/${matchId}`);
+      if (dbCached) {
+        const data = dbCached as MatchPlayerStatsMap;
+        cappedSet(statsCache, matchId, { data, fetchedAt: Date.now() }, STATS_CACHE_MAX);
+        return data;
+      }
     }
   }
 
@@ -577,8 +620,9 @@ export async function getMatchPlayerStats(
 
   const count = Object.keys(stats).length;
   if (count > 0) {
-    statsCache.set(matchId, { data: stats, fetchedAt: Date.now() });
-    if (matchId > 0) setCached(`/espn-stats/${matchId}`, stats, FOREVER_TTL_MS);
+    cappedSet(statsCache, matchId, { data: stats, fetchedAt: Date.now() }, STATS_CACHE_MAX);
+    // Don't persist to Supabase with FOREVER_TTL while the match is still in progress
+    if (!isLive && matchId > 0) setCached(`/espn-stats/${matchId}`, stats, FOREVER_TTL_MS);
     console.log(`[matchStats] Cached ${count} player stats for match ${matchId}`);
   }
 
@@ -592,8 +636,7 @@ export async function getMatchPlayerStats(
       if (stats[last]) stats[last].rating = rating;
     }
     console.log(`[matchStats] Google ratings enriched ${ratingCount} players for match ${matchId}`);
-    // Re-persist to Supabase with ratings included
-    if (matchId > 0 && count > 0) setCached(`/espn-stats/${matchId}`, stats, FOREVER_TTL_MS);
+    if (!isLive && matchId > 0 && count > 0) setCached(`/espn-stats/${matchId}`, stats, FOREVER_TTL_MS);
   });
 
   return stats;
@@ -633,21 +676,24 @@ export async function getMatchBookingsAndSubs(
   homeTeam: string,
   awayTeam: string,
   utcDate: string,
-  competitionCode: string
+  competitionCode: string,
+  isLive = false
 ): Promise<{ bookings: EspnBookingEvent[]; substitutions: EspnSubstitutionEvent[] }> {
   const empty = { bookings: [], substitutions: [] };
 
-  // L1: in-memory
-  const mem = eventsCache.get(matchId);
-  if (mem && Date.now() - mem.fetchedAt < CACHE_TTL_MS) return mem.data;
+  if (!isLive) {
+    // L1: in-memory
+    const mem = eventsCache.get(matchId);
+    if (mem && Date.now() - mem.fetchedAt < CACHE_TTL_MS) return mem.data;
 
-  // L2: Supabase
-  if (matchId > 0) {
-    const db = await getCached(`/espn-events/${matchId}`);
-    if (db) {
-      const data = db as typeof empty;
-      cappedSet(eventsCache, matchId, { data, fetchedAt: Date.now() }, EVENTS_CACHE_MAX);
-      return data;
+    // L2: Supabase
+    if (matchId > 0) {
+      const db = await getCached(`/espn-events/${matchId}`);
+      if (db) {
+        const data = db as typeof empty;
+        cappedSet(eventsCache, matchId, { data, fetchedAt: Date.now() }, EVENTS_CACHE_MAX);
+        return data;
+      }
     }
   }
 
@@ -656,10 +702,11 @@ export async function getMatchBookingsAndSubs(
 
   const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
   const summaryKey = `${espnLeague}:${eventId}`;
-  let data = summaryCache.get(summaryKey);
+  const _sc2 = summaryCache.get(summaryKey);
+  let data: any = _sc2 && Date.now() - _sc2.fetchedAt < SUMMARY_TTL_MS ? _sc2.data : null;
   if (!data) {
     data = await espnFetch(`${ESPN_BASE}/${espnLeague}/summary?event=${eventId}`);
-    if (data) cappedSet(summaryCache, summaryKey, data, SUMMARY_CACHE_MAX);
+    if (data) cappedSet(summaryCache, summaryKey, { data, fetchedAt: Date.now() }, SUMMARY_CACHE_MAX);
   }
   if (!data) return empty;
 
@@ -694,7 +741,7 @@ export async function getMatchBookingsAndSubs(
   const result = { bookings, substitutions };
   if (bookings.length > 0 || substitutions.length > 0) {
     cappedSet(eventsCache, matchId, { data: result, fetchedAt: Date.now() }, EVENTS_CACHE_MAX);
-    if (matchId > 0) setCached(`/espn-events/${matchId}`, result, FOREVER_TTL_MS);
+    if (!isLive && matchId > 0) setCached(`/espn-events/${matchId}`, result, FOREVER_TTL_MS);
   }
   return result;
 }
@@ -722,10 +769,11 @@ export async function getMatchGoalEvents(
 
   const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
   const summaryKey = `${espnLeague}:${eventId}`;
-  let data = summaryCache.get(summaryKey);
+  const _sc3 = summaryCache.get(summaryKey);
+  let data: any = _sc3 && Date.now() - _sc3.fetchedAt < SUMMARY_TTL_MS ? _sc3.data : null;
   if (!data) {
     data = await espnFetch(`${ESPN_BASE}/${espnLeague}/summary?event=${eventId}`);
-    if (data) cappedSet(summaryCache, summaryKey, data, SUMMARY_CACHE_MAX);
+    if (data) cappedSet(summaryCache, summaryKey, { data, fetchedAt: Date.now() }, SUMMARY_CACHE_MAX);
   }
   if (!data) return [];
 

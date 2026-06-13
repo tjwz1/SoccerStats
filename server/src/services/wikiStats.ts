@@ -16,17 +16,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Fetch a Wikipedia API URL and retry up to 3× with exponential back-off if
 // the response is not JSON (Wikipedia sends HTML when rate-limited).
-async function wikiFetch(url: string, timeoutMs = 15000): Promise<string | null> {
+async function wikiFetch(url: string, timeoutMs = 8000): Promise<string | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: WIKI_HEADERS });
       const text = await res.text();
       if (text.trimStart().startsWith("{") || text.trimStart().startsWith("[")) return text;
-      const waitMs = 15000 * (attempt + 1);
+      const waitMs = 5000 * (attempt + 1);
       console.warn(`[wikiStats] Rate limited (attempt ${attempt + 1}), waiting ${waitMs / 1000}s…`);
       if (attempt < 2) await sleep(waitMs);
     } catch {
-      if (attempt < 2) await sleep(5000);
+      if (attempt < 2) await sleep(3000);
     }
   }
   return null;
@@ -161,7 +161,7 @@ async function fetchPageHtml(title: string, section?: string): Promise<string | 
     `&page=${encodeURIComponent(title)}` +
     `&prop=text&format=json&disablelimitreport=true&disableeditsection=true` +
     (section ? `&section=${section}` : "");
-  const text = await wikiFetch(url, 15000);
+  const text = await wikiFetch(url, 8000);
   if (!text) return null;
   try { return (JSON.parse(text) as any)?.parse?.text?.["*"] ?? null; }
   catch { return null; }
@@ -175,7 +175,7 @@ async function fetchPageWikitext(title: string, section: string): Promise<string
     `&page=${encodeURIComponent(title)}` +
     `&prop=wikitext&format=json` +
     `&section=${section}`;
-  const text = await wikiFetch(url, 15000);
+  const text = await wikiFetch(url, 8000);
   if (!text) return null;
   try { return (JSON.parse(text) as any)?.parse?.wikitext?.["*"] ?? null; }
   catch { return null; }

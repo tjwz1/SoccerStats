@@ -10,7 +10,7 @@ const SOFA_PHOTOS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Browser-like headers to avoid being blocked by SofaScore
 const HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
   "Accept": "application/json, text/plain, */*",
   "Referer": "https://www.sofascore.com/",
   "Origin": "https://www.sofascore.com",
