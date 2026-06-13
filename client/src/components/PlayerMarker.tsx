@@ -6,6 +6,7 @@ interface Props {
   x: number;
   y: number;
   size?: "normal" | "small";
+  subbedOut?: boolean;
   onHover?: (player: Player | null, clientX: number, clientY: number) => void;
   onClick: (player: Player) => void;
 }
@@ -24,7 +25,7 @@ const POSITION_BG: Record<string, string> = {
   Attacker: "bg-red-400",
 };
 
-export default function PlayerMarker({ player, x, y, size = "normal", onHover, onClick }: Props) {
+export default function PlayerMarker({ player, x, y, size = "normal", subbedOut = false, onHover, onClick }: Props) {
   const [imgError, setImgError] = useState(false);
   const color = POSITION_COLORS[player.position] ?? "#94a3b8";
   const bg = POSITION_BG[player.position] ?? "bg-slate-400";
@@ -42,19 +43,26 @@ export default function PlayerMarker({ player, x, y, size = "normal", onHover, o
       onMouseLeave={onHover ? () => onHover(null, 0, 0) : undefined}
       onClick={() => onClick(player)}
     >
-      <div
-        className={`${avatarSize} rounded-full overflow-hidden flex items-center justify-center font-bold text-slate-900 shadow-lg ring-2 ring-white/30 group-hover:ring-white group-hover:scale-110 transition-all duration-150 shrink-0`}
-        style={showPhoto ? {} : { backgroundColor: color }}
-      >
-        {showPhoto ? (
-          <img
-            src={player.photo!}
-            alt={player.name}
-            className="w-full h-full object-cover object-top"
-            onError={() => setImgError(true)}
-          />
-        ) : (
-          <span>{initials}</span>
+      <div className="relative">
+        <div
+          className={`${avatarSize} rounded-full overflow-hidden flex items-center justify-center font-bold text-slate-900 shadow-lg ring-2 ring-white/30 group-hover:ring-white group-hover:scale-110 transition-all duration-150 shrink-0`}
+          style={showPhoto ? {} : { backgroundColor: color }}
+        >
+          {showPhoto ? (
+            <img
+              src={player.photo!}
+              alt={player.name}
+              className="w-full h-full object-cover object-top"
+              onError={() => setImgError(true)}
+            />
+          ) : (
+            <span>{initials}</span>
+          )}
+        </div>
+        {subbedOut && (
+          <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 rounded-full flex items-center justify-center text-[7px] text-white font-bold leading-none pointer-events-none">
+            ↓
+          </span>
         )}
       </div>
 

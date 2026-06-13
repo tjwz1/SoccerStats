@@ -1,6 +1,7 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useApi } from "../hooks/useApi";
-import type { ScheduleMatch, Competition, Team } from "../types";
+import { useLiveMatches } from "../contexts/LiveMatchesContext";
+import type { ScheduleMatch, Competition, Team, MatchDetailData, MatchTeamStats } from "../types";
 
 interface Props {
   onNavigateToTeam: (team: Team, comp: Competition) => void;
@@ -60,6 +61,177 @@ const LIVE_STATUSES = new Set(["IN_PLAY", "PAUSED", "HALF_TIME"]);
 
 const COMP_ORDER = ["PL", "BL1", "PD", "SA", "FL1", "DED", "PPL", "CL", "EL", "EC", "WC"];
 
+// ── Inline match detail (shown when score is clicked) ─────────────────────────
+
+function StatMiniBar({ home, away, label }: { home: number | null; away: number | null; label: string }) {
+  if (home === null && away === null) return null;
+  const h = home ?? 0, a = away ?? 0;
+  const total = h + a;
+  const homePct = total > 0 ? (h / total) * 100 : 50;
+  return (
+    <div className="space-y-0.5">
+      <div className="flex justify-between text-[10px] tabular-nums">
+        <span className="text-slate-300 font-semibold">{typeof home === "number" && home % 1 !== 0 ? `${home.toFixed(1)}%` : (home ?? 0)}</span>
+        <span className="text-slate-600 text-[9px] uppercase tracking-wider">{label}</span>
+        <span className="text-slate-300 font-semibold">{typeof away === "number" && away % 1 !== 0 ? `${away.toFixed(1)}%` : (away ?? 0)}</span>
+      </div>
+      <div className="flex h-1 rounded-full overflow-hidden gap-px">
+        <div className="bg-green-500/60 rounded-l-full" style={{ width: `${homePct}%` }} />
+        <div className="bg-slate-500/40 rounded-r-full" style={{ width: `${100 - homePct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function CalendarMatchDetail({ match, onScoreChange }: { match: ScheduleMatch; onScoreChange?: (home: number, away: number) => void }) {
+  const isLive = LIVE_STATUSES.has(match.status);
+  const hasStats = match.status === "FINISHED" || isLive;
+
+  const enc = `homeTeam=${encodeURIComponent(match.homeTeam)}&awayTeam=${encodeURIComponent(match.awayTeam)}&utcDate=${encodeURIComponent(match.utcDate)}&competition=${encodeURIComponent(match.competitionCode)}`;
+
+  const { data: detail, loading: detailLoading, retry: retryDetail } = useApi<MatchDetailData>(
+    hasStats ? `/api/matches/${match.id}?status=${encodeURIComponent(match.status)}&${enc}` : null
+  );
+  const { data: teamStats, loading: statsLoading, retry: retryStats } = useApi<MatchTeamStats>(
+    hasStats ? `/api/matches/${match.id}/team-stats?${enc}` : null
+  );
+
+  const retryDetailRef = useRef(retryDetail);
+  const retryStatsRef  = useRef(retryStats);
+  useEffect(() => { retryDetailRef.current = retryDetail; }, [retryDetail]);
+  useEffect(() => { retryStatsRef.current  = retryStats;  }, [retryStats]);
+  useEffect(() => {
+    if (!isLive) return;
+    const id = setInterval(() => { retryDetailRef.current(); retryStatsRef.current(); }, 30_000);
+    return () => clearInterval(id);
+  }, [isLive]);
+
+  // Bubble the authoritative FT score up to the calendar row whenever detail arrives
+  useEffect(() => {
+    if (detail?.ftHome !== null && detail?.ftHome !== undefined &&
+        detail?.ftAway !== null && detail?.ftAway !== undefined) {
+      onScoreChange?.(detail.ftHome, detail.ftAway);
+    }
+  }, [detail?.ftHome, detail?.ftAway]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!hasStats) {
+    return (
+      <div className="px-4 py-2.5 text-[11px] text-slate-500 text-center border-t border-slate-800/60 bg-slate-900/40">
+        Timeline available after kickoff.
+      </div>
+    );
+  }
+
+  const isLoading = detailLoading || statsLoading;
+  if (isLoading && !detail && !teamStats) {
+    return (
+      <div className="flex justify-center py-4 border-t border-slate-800/60 bg-slate-900/40">
+        <div className="w-4 h-4 border-2 border-slate-700 border-t-slate-400 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  const goals = detail?.goals ?? [];
+  type EventItem =
+    | { kind: "goal"; team: "home" | "away"; min: number; label: string; sub: string | null; icon: string }
+    | { kind: "card"; team: "home" | "away"; min: number; label: string; sub: null; icon: string }
+    | { kind: "sub";  team: "home" | "away"; min: number; label: string; sub: string; icon: string };
+
+  const events: EventItem[] = [
+    ...goals.map((g) => ({
+      kind: "goal" as const, team: g.team, min: g.minute + (g.extraTime ?? 0),
+      label: g.scorer.split(" ").pop() ?? g.scorer,
+      sub: g.assist ? g.assist.split(" ").pop() ?? null : null,
+      icon: g.type === "OWN_GOAL" ? "🔴" : g.type === "PENALTY" ? "⚽p" : "⚽",
+    })),
+    ...(detail?.bookings ?? []).map((b) => ({
+      kind: "card" as const, team: b.team, min: b.minute + (b.extraTime ?? 0),
+      label: b.player.split(" ").pop() ?? b.player, sub: null,
+      icon: b.card === "RED" ? "🟥" : b.card === "YELLOW_RED" ? "🟨🟥" : "🟨",
+    })),
+    ...(detail?.substitutions ?? []).map((s) => ({
+      kind: "sub" as const, team: s.team, min: s.minute + (s.extraTime ?? 0),
+      label: s.playerIn.split(" ").pop() ?? s.playerIn,
+      sub: s.playerOut.split(" ").pop() ?? s.playerOut,
+      icon: "🔄",
+    })),
+  ].sort((a, b) => a.min - b.min);
+
+  const hasEvents  = events.length > 0;
+  const hasTeamSt  = teamStats && (teamStats.home.possession !== null || teamStats.home.shots !== null);
+
+  if (!hasEvents && !hasTeamSt) {
+    return (
+      <div className="px-4 py-2.5 text-[11px] text-slate-500 text-center border-t border-slate-800/60 bg-slate-900/40">
+        No events recorded yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-t border-slate-800/60 bg-slate-900/50 px-4 py-3 space-y-3">
+      {/* HT score */}
+      {detail?.htHome !== null && detail?.htAway !== null && (
+        <p className="text-center text-[10px] text-slate-500">
+          HT <span className="text-slate-300 font-semibold">{detail.htHome}–{detail.htAway}</span>
+        </p>
+      )}
+
+      {/* Column headers */}
+      {hasEvents && (
+        <div className="flex text-[9px] text-slate-600 uppercase tracking-wider font-semibold px-1">
+          <span className="flex-1 text-green-600/60">{match.homeTeam.split(" ").slice(-1)[0]}</span>
+          <span className="w-10 text-center shrink-0" />
+          <span className="flex-1 text-right text-blue-400/60">{match.awayTeam.split(" ").slice(-1)[0]}</span>
+        </div>
+      )}
+
+      {/* Events */}
+      {hasEvents && (
+        <div className="space-y-1">
+          {events.map((e, i) => {
+            const minStr = `${Math.floor(e.min)}'`;
+            const isHome = e.team === "home";
+            return (
+              <div key={i} className="flex items-start gap-1 text-[11px]">
+                <div className={`flex-1 min-w-0 ${isHome ? "" : "opacity-0 pointer-events-none"}`}>
+                  {isHome && (
+                    <div className="text-right">
+                      <span className="text-slate-200">{e.label} {e.icon}</span>
+                      {e.sub && e.kind !== "sub" && <div className="text-[9px] text-slate-500">{e.sub}</div>}
+                      {e.kind === "sub" && <div className="text-[9px] text-slate-500">↓ {e.sub}</div>}
+                    </div>
+                  )}
+                </div>
+                <div className="w-10 shrink-0 text-center text-[10px] font-mono text-slate-600">{minStr}</div>
+                <div className={`flex-1 min-w-0 ${!isHome ? "" : "opacity-0 pointer-events-none"}`}>
+                  {!isHome && (
+                    <div>
+                      <span className="text-slate-200">{e.icon} {e.label}</span>
+                      {e.sub && e.kind !== "sub" && <div className="text-[9px] text-slate-500">{e.sub}</div>}
+                      {e.kind === "sub" && <div className="text-[9px] text-slate-500">↓ {e.sub}</div>}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Team stats */}
+      {hasTeamSt && teamStats && (
+        <div className="border-t border-slate-800/40 pt-2 space-y-1.5">
+          <StatMiniBar label="Possession" home={teamStats.home.possession} away={teamStats.away.possession} />
+          <StatMiniBar label="Shots" home={teamStats.home.shots} away={teamStats.away.shots} />
+          <StatMiniBar label="On Target" home={teamStats.home.shotsOnTarget} away={teamStats.away.shotsOnTarget} />
+          <StatMiniBar label="Corners" home={teamStats.home.corners} away={teamStats.away.corners} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: Props) {
@@ -67,6 +239,9 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
   const [viewMonth, setViewMonth] = useState(TODAY_MONTH);
   const [selected, setSelected]   = useState(TODAY);
   const [myTeamsOnly, setMyTeamsOnly] = useState(false);
+  const [expandedMatchId, setExpandedMatchId] = useState<number | null>(null);
+  // Authoritative FT scores reported back by the expanded detail panel (live polls /matches/:id)
+  const [liveScoreOverrides, setLiveScoreOverrides] = useState<Map<number, { home: number; away: number }>>(new Map());
 
   const hasFavourites = (favouriteTeamIds?.length ?? 0) > 0;
 
@@ -75,6 +250,9 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
   const { data: monthFixtures, loading } = useApi<ScheduleMatch[]>(
     `/api/fixtures?dateFrom=${dateFrom}&dateTo=${dateTo}`
   );
+
+  // Live overlay — comes from the app-level LiveMatchesContext (one poll for the whole app)
+  const { liveById } = useLiveMatches();
 
   // Optionally filter to only matches involving favourited teams
   const filteredFixtures = useMemo(() => {
@@ -85,16 +263,21 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
     );
   }, [monthFixtures, myTeamsOnly, favouriteTeamIds]);
 
-  // Date → matches map (keyed by UTC date string from the API)
+  // Date → matches map — live overlay applied so scores/status are always fresh
   const byDate = useMemo(() => {
     const map = new Map<string, ScheduleMatch[]>();
-    for (const m of filteredFixtures) {
-      const key = m.utcDate.slice(0, 10);
+    for (const raw of filteredFixtures) {
+      const live = liveById.get(raw.id);
+      const m = live
+        ? { ...raw, status: live.status, scoreHome: live.scoreHome, scoreAway: live.scoreAway }
+        : raw;
+      const d = new Date(m.utcDate);
+      const key = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(m);
     }
     return map;
-  }, [filteredFixtures]);
+  }, [filteredFixtures, liveById]);
 
   const datesWithFixtures = useMemo(() => new Set(byDate.keys()), [byDate]);
 
@@ -285,104 +468,129 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
                 {/* Match rows */}
                 <div className="bg-slate-900 rounded-lg overflow-hidden divide-y divide-slate-800/80">
                   {matches.map((m) => {
-                    const isLive  = LIVE_STATUSES.has(m.status);
-                    const isFin   = m.status === "FINISHED";
-                    const hasScore = m.scoreHome !== null && m.scoreAway !== null;
-                    const homeWon = m.winner === "HOME_TEAM";
-                    const awayWon = m.winner === "AWAY_TEAM";
+                    const isLive    = LIVE_STATUSES.has(m.status);
+                    const isFin     = m.status === "FINISHED";
+                    const override  = isLive ? liveScoreOverrides.get(m.id) : undefined;
+                    const scoreHome = override !== undefined ? override.home : m.scoreHome;
+                    const scoreAway = override !== undefined ? override.away : m.scoreAway;
+                    const hasScore  = scoreHome !== null && scoreAway !== null;
+                    const homeWon   = m.winner === "HOME_TEAM";
+                    const awayWon   = m.winner === "AWAY_TEAM";
+                    const canExpand = hasScore || isLive;
+                    const isExpanded = expandedMatchId === m.id;
 
                     return (
-                      <div
-                        key={m.id}
-                        className="flex items-center px-3 py-2.5 hover:bg-slate-800/50 transition-colors"
-                      >
-                        {/* Status */}
-                        <div className="w-14 shrink-0 text-center">
-                          {isLive ? (
-                            <span className="flex items-center justify-center gap-1 text-[11px] font-bold text-green-400">
-                              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                              LIVE
-                            </span>
-                          ) : isFin ? (
-                            <span className="text-[11px] text-slate-500">FT</span>
+                      <div key={m.id}>
+                        <div className="flex items-center px-3 py-2.5 hover:bg-slate-800/50 transition-colors">
+                          {/* Status */}
+                          <div className="w-14 shrink-0 text-center">
+                            {isLive ? (
+                              <span className="flex items-center justify-center gap-1 text-[11px] font-bold text-green-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                                LIVE
+                              </span>
+                            ) : isFin ? (
+                              <span className="text-[11px] text-slate-500">FT</span>
+                            ) : (
+                              <span className="text-[11px] text-slate-400">{fmtKickOff(m.utcDate)}</span>
+                            )}
+                          </div>
+
+                          {/* Home */}
+                          {m.homeTeam ? (
+                            <button
+                              onClick={() => handleTeam(m, "home")}
+                              title={`View ${m.homeTeam}`}
+                              className="flex items-center gap-2 flex-1 justify-end min-w-0 group"
+                            >
+                              <span
+                                className={`text-sm truncate transition-colors ${
+                                  homeWon ? "text-white font-semibold" : "text-slate-300 group-hover:text-green-400"
+                                }`}
+                              >
+                                {m.homeTeam}
+                              </span>
+                              {m.homeTeamCrest ? (
+                                <img
+                                  src={m.homeTeamCrest}
+                                  alt=""
+                                  className="w-5 h-5 object-contain shrink-0"
+                                  onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
+                                />
+                              ) : (
+                                <span className="w-5 h-5 shrink-0 rounded-full bg-slate-700 text-[8px] flex items-center justify-center text-slate-500">?</span>
+                              )}
+                            </button>
                           ) : (
-                            <span className="text-[11px] text-slate-400">{fmtKickOff(m.utcDate)}</span>
+                            <div className="flex items-center gap-2 flex-1 justify-end min-w-0">
+                              <span className="text-sm text-slate-600 italic">TBD</span>
+                              <span className="w-5 h-5 shrink-0" />
+                            </div>
+                          )}
+
+                          {/* Score — clicking expands match detail */}
+                          <div className="w-14 shrink-0 text-center mx-1">
+                            {hasScore ? (
+                              <button
+                                onClick={() => setExpandedMatchId(isExpanded ? null : m.id)}
+                                className="w-full rounded px-1 py-0.5 hover:bg-slate-700/50 transition-colors group/score"
+                                title={isExpanded ? "Hide details" : "View goals & stats"}
+                              >
+                                <span className={`text-sm font-bold tabular-nums transition-colors ${isExpanded ? "text-green-400" : "text-white group-hover/score:text-green-300"}`}>
+                                  {scoreHome} – {scoreAway}
+                                </span>
+                                <div className={`text-[8px] text-slate-600 leading-none transition-transform ${isExpanded ? "rotate-180" : ""}`}>▾</div>
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-600">vs</span>
+                            )}
+                          </div>
+
+                          {/* Away */}
+                          {m.awayTeam ? (
+                            <button
+                              onClick={() => handleTeam(m, "away")}
+                              title={`View ${m.awayTeam}`}
+                              className="flex items-center gap-2 flex-1 min-w-0 group"
+                            >
+                              {m.awayTeamCrest ? (
+                                <img
+                                  src={m.awayTeamCrest}
+                                  alt=""
+                                  className="w-5 h-5 object-contain shrink-0"
+                                  onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
+                                />
+                              ) : (
+                                <span className="w-5 h-5 shrink-0 rounded-full bg-slate-700 text-[8px] flex items-center justify-center text-slate-500">?</span>
+                              )}
+                              <span
+                                className={`text-sm truncate transition-colors ${
+                                  awayWon ? "text-white font-semibold" : "text-slate-300 group-hover:text-green-400"
+                                }`}
+                              >
+                                {m.awayTeam}
+                              </span>
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <span className="w-5 h-5 shrink-0" />
+                              <span className="text-sm text-slate-600 italic">TBD</span>
+                            </div>
                           )}
                         </div>
 
-                        {/* Home */}
-                        {m.homeTeam ? (
-                          <button
-                            onClick={() => handleTeam(m, "home")}
-                            title={`View ${m.homeTeam}`}
-                            className="flex items-center gap-2 flex-1 justify-end min-w-0 group"
-                          >
-                            <span
-                              className={`text-sm truncate transition-colors ${
-                                homeWon ? "text-white font-semibold" : "text-slate-300 group-hover:text-green-400"
-                              }`}
-                            >
-                              {m.homeTeam}
-                            </span>
-                            {m.homeTeamCrest ? (
-                              <img
-                                src={m.homeTeamCrest}
-                                alt=""
-                                className="w-5 h-5 object-contain shrink-0"
-                                onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
-                              />
-                            ) : (
-                              <span className="w-5 h-5 shrink-0 rounded-full bg-slate-700 text-[8px] flex items-center justify-center text-slate-500">?</span>
-                            )}
-                          </button>
-                        ) : (
-                          <div className="flex items-center gap-2 flex-1 justify-end min-w-0">
-                            <span className="text-sm text-slate-600 italic">TBD</span>
-                            <span className="w-5 h-5 shrink-0" />
-                          </div>
-                        )}
-
-                        {/* Score */}
-                        <div className="w-14 shrink-0 text-center mx-1">
-                          {hasScore ? (
-                            <span className="text-sm font-bold text-white">
-                              {m.scoreHome} – {m.scoreAway}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-slate-600">vs</span>
-                          )}
-                        </div>
-
-                        {/* Away */}
-                        {m.awayTeam ? (
-                          <button
-                            onClick={() => handleTeam(m, "away")}
-                            title={`View ${m.awayTeam}`}
-                            className="flex items-center gap-2 flex-1 min-w-0 group"
-                          >
-                            {m.awayTeamCrest ? (
-                              <img
-                                src={m.awayTeamCrest}
-                                alt=""
-                                className="w-5 h-5 object-contain shrink-0"
-                                onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
-                              />
-                            ) : (
-                              <span className="w-5 h-5 shrink-0 rounded-full bg-slate-700 text-[8px] flex items-center justify-center text-slate-500">?</span>
-                            )}
-                            <span
-                              className={`text-sm truncate transition-colors ${
-                                awayWon ? "text-white font-semibold" : "text-slate-300 group-hover:text-green-400"
-                              }`}
-                            >
-                              {m.awayTeam}
-                            </span>
-                          </button>
-                        ) : (
-                          <div className="flex items-center gap-2 flex-1 min-w-0">
-                            <span className="w-5 h-5 shrink-0" />
-                            <span className="text-sm text-slate-600 italic">TBD</span>
-                          </div>
+                        {/* Inline match detail — shown when score is clicked */}
+                        {isExpanded && canExpand && (
+                          <CalendarMatchDetail
+                            match={m}
+                            onScoreChange={(home, away) =>
+                              setLiveScoreOverrides((prev) => {
+                                const next = new Map(prev);
+                                next.set(m.id, { home, away });
+                                return next;
+                              })
+                            }
+                          />
                         )}
                       </div>
                     );

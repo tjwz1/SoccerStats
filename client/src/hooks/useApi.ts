@@ -20,6 +20,10 @@ const SESSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const SESSION_CACHE_MAX = 150; // evict oldest when over this limit
 const SESSION_CACHE = new Map<string, { data: unknown; at: number }>();
 
+// In-flight deduplication: if two useApi calls request the same URL concurrently,
+// the second attaches to the first's promise rather than making a duplicate HTTP request.
+const INFLIGHT = new Map<string, Promise<unknown>>();
+
 function sessionGet(url: string): unknown | undefined {
   const entry = SESSION_CACHE.get(url);
   if (!entry) return undefined;
@@ -53,23 +57,42 @@ export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
       setError(null);
       return () => {};
     }
+
+    // If a request for this URL is already in-flight, attach to it instead of making a new one
+    if (!skipCache && INFLIGHT.has(targetUrl)) {
+      let cancelled = false;
+      setLoading(true);
+      setError(null);
+      INFLIGHT.get(targetUrl)!.then((d) => {
+        if (!cancelled) { setData(d as T); setLoading(false); }
+      }).catch((e) => {
+        if (!cancelled) { setError((e as Error).message); setLoading(false); }
+      });
+      return () => { cancelled = true; };
+    }
+
     let cancelled = false;
     setLoading(true);
     setError(null);
     setData(null);
-    fetchWithRetry(targetUrl)
+
+    const promise = fetchWithRetry(targetUrl)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then((d) => {
-        if (!cancelled) {
-          if (!skipCache) sessionSet(targetUrl, d);
-          setData(d);
-          setLoading(false);
-        }
+        if (!skipCache) sessionSet(targetUrl, d);
+        return d;
       })
-      .catch((e) => { if (!cancelled) { setError(e.message); setLoading(false); } });
+      .finally(() => INFLIGHT.delete(targetUrl));
+
+    INFLIGHT.set(targetUrl, promise);
+
+    promise
+      .then((d) => { if (!cancelled) { setData(d as T); setLoading(false); } })
+      .catch((e) => { if (!cancelled) { setError((e as Error).message); setLoading(false); } });
+
     return () => { cancelled = true; };
   }, []);
 

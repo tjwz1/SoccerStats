@@ -60,6 +60,7 @@ export interface Player {
 }
 
 export interface LineupData {
+  competitionCode?: string | null;
   formation: string;
   starters: Player[];
   bench: Player[];
@@ -164,6 +165,8 @@ export interface MatchDetailData {
   status: string;
   htHome: number | null;
   htAway: number | null;
+  ftHome: number | null;
+  ftAway: number | null;
   goals: MatchGoalEvent[];
   bookings: MatchBookingEvent[];
   substitutions: MatchSubstitutionEvent[];
@@ -200,6 +203,7 @@ export interface MatchLineups {
 export interface StatLeader {
   value: number;
   playedMatches: number;
+  liveAdd?: number;    // goals/assists scored in currently live matches (not yet in fd.org)
   player: {
     id: number;       // fd.org ID for goals/assists; 0 for ESPN-only entries (clean sheets)
     name: string;
@@ -214,6 +218,7 @@ export interface CompetitionStats {
   goals: StatLeader[];
   assists: StatLeader[];
   cleanSheets: StatLeader[];
+  hasLive?: boolean;   // true when at least one match in this competition is currently live
 }
 
 export interface TeamStatLine {
@@ -278,4 +283,5 @@ export interface PlayerGameStats {
   rating: number | null;
   starter: boolean;
   subbedIn: boolean;
+  subbedOut: boolean;
 }

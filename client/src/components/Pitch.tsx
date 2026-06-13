@@ -6,12 +6,30 @@ interface Props {
   starters: Player[];
   formation: string;
   opponent?: { starters: Player[]; formation: string };
+  subbedOutNames?: Set<string>;
   onHover: (player: Player | null, x: number, y: number) => void;
   onClick: (player: Player) => void;
   compact?: boolean;
 }
 
-export default function Pitch({ starters, formation, opponent, onHover, onClick, compact = false }: Props) {
+// Mirror of subNameTokens in TeamSchedule — diacritics stripped, hyphens as spaces,
+// all meaningful tokens (>2 chars) returned so any shared token counts as a match.
+function nameTokens(name: string): string[] {
+  return name
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/-/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length > 2);
+}
+
+function isSubbedOut(name: string, subbedOutNames: Set<string>): boolean {
+  return nameTokens(name).some((t) => subbedOutNames.has(t));
+}
+
+export default function Pitch({ starters, formation, opponent, subbedOutNames, onHover, onClick, compact = false }: Props) {
   const positions = layoutFromLineup(starters, formation, !!opponent);
   const opponentPositions = opponent
     ? layoutFromLineupFlipped(opponent.starters, opponent.formation)
@@ -51,6 +69,7 @@ export default function Pitch({ starters, formation, opponent, onHover, onClick,
           x={pos.x}
           y={pos.y}
           size={compact ? "small" : "normal"}
+          subbedOut={subbedOutNames ? isSubbedOut(player.name, subbedOutNames) : false}
           onHover={onHover}
           onClick={onClick}
         />
@@ -64,6 +83,7 @@ export default function Pitch({ starters, formation, opponent, onHover, onClick,
           x={pos.x}
           y={pos.y}
           size={compact ? "small" : "normal"}
+          subbedOut={subbedOutNames ? isSubbedOut(player.name, subbedOutNames) : false}
           onHover={onHover}
           onClick={onClick}
         />

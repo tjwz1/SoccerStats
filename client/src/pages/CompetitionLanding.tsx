@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import type { Competition, StandingsData, CompetitionSeason, Team } from "../types";
+import { useState, useEffect, useRef, useMemo } from "react";
+import type { Competition, StandingsData, CompetitionSeason, Team, ScheduleMatch, StandingRow } from "../types";
 import { useApi } from "../hooks/useApi";
 import BracketView from "../components/BracketView";
 
@@ -69,8 +69,24 @@ interface Props {
   selectedSeason: number | null;
   onSeasonChange: (year: number | null) => void;
   isFavourite: (id: number) => boolean;
-  toggleFavourite: (team: Team) => void;
+  toggleFavourite: (team: Team, competitionCode?: string) => void;
 }
+
+// Compute projected points and goal-difference adjustment from a live match score
+function calcLiveAdj(teamId: number, m: ScheduleMatch): { pts: number; gd: number } {
+  const isHome = m.homeTeamId === teamId;
+  const gf = isHome ? (m.scoreHome ?? 0) : (m.scoreAway ?? 0);
+  const ga = isHome ? (m.scoreAway ?? 0) : (m.scoreHome ?? 0);
+  return { pts: gf > ga ? 3 : gf === ga ? 1 : 0, gd: gf - ga };
+}
+
+type LiveRow = StandingRow & {
+  originalPosition: number;
+  projectedPosition: number;
+  projectedPts: number;
+  projectedGD: number;
+  liveMatch: ScheduleMatch | null;
+};
 
 function FormPips({ form }: { form: string | null }) {
   if (!form) return null;
@@ -101,7 +117,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
   const [compView, setCompView] = useState<CompView>("standings");
 
   const [selectedGroupType, setSelectedGroupType] = useState<string | null>(null);
-  const [isMultiGroup, setIsMultiGroup] = useState(false);
 
   const { data: seasons } = useApi<CompetitionSeason[]>(
     `/api/competitions/${comp.code}/seasons`
@@ -110,17 +125,23 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
   const standingsUrl = `/api/competitions/${comp.code}/standings${
     selectedSeason ? `?season=${selectedSeason}` : ""
   }`;
-  const { data: standings, loading } = useApi<StandingsData>(standingsUrl);
+  const { data: standings, loading, retry: retryStandings } = useApi<StandingsData>(standingsUrl);
+
+  // Poll standings every 60s so form and points update automatically after a match ends.
+  // The server's 15-min SWR handles the expensive re-computation; this just ensures the
+  // client triggers it rather than showing stale data until the next page navigation.
+  const retryStandingsRef = useRef(retryStandings);
+  useEffect(() => { retryStandingsRef.current = retryStandings; }, [retryStandings]);
+  useEffect(() => {
+    const id = setInterval(() => retryStandingsRef.current(), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const groups = standings?.groups ?? [];
-
-  useEffect(() => {
-    if (groups.length > 1) setIsMultiGroup(true);
-  }, [groups.length]);
+  const isMultiGroup = groups.length > 1;
 
   useEffect(() => {
     setSelectedGroupType(null);
-    setIsMultiGroup(false);
     setCompView("standings");
   }, [comp.code]);
 
@@ -138,6 +159,63 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
     (selectedGroupType ? groups.find((g) => g.type === selectedGroupType) : null) ??
     groups[0];
   const rows = activeGroup?.rows ?? [];
+
+  // Live matches for this competition — polled every 60s
+  const { data: liveMatches, retry: retryLive } = useApi<ScheduleMatch[]>(
+    `/api/competitions/${comp.code}/live-matches`
+  );
+  const retryLiveRef = useRef(retryLive);
+  useEffect(() => { retryLiveRef.current = retryLive; }, [retryLive]);
+  useEffect(() => {
+    const id = setInterval(() => retryLiveRef.current(), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // team ID → live match lookup (covers all groups in tournament)
+  const liveByTeam = useMemo(() => {
+    const map = new Map<number, ScheduleMatch>();
+    for (const m of liveMatches ?? []) {
+      map.set(m.homeTeamId, m);
+      map.set(m.awayTeamId, m);
+    }
+    return map;
+  }, [liveMatches]);
+
+  const hasLiveInGroup = (liveMatches?.length ?? 0) > 0 &&
+    rows.some((r) => liveByTeam.has(r.team.id));
+
+  // Projected standings: apply current live score outcomes then re-sort
+  const projectedRows = useMemo((): LiveRow[] => {
+    if (!liveMatches?.length) {
+      return rows.map((r) => ({
+        ...r,
+        originalPosition: r.position,
+        projectedPosition: r.position,
+        projectedPts: r.points,
+        projectedGD: r.goalDifference,
+        liveMatch: null,
+      }));
+    }
+    const augmented = rows.map((r) => {
+      const m = liveByTeam.get(r.team.id) ?? null;
+      const adj = m ? calcLiveAdj(r.team.id, m) : { pts: 0, gd: 0 };
+      return {
+        ...r,
+        originalPosition: r.position,
+        projectedPts: r.points + adj.pts,
+        projectedGD: r.goalDifference + adj.gd,
+        liveMatch: m,
+        projectedPosition: 0,
+      };
+    });
+    augmented.sort((a, b) =>
+      b.projectedPts !== a.projectedPts
+        ? b.projectedPts - a.projectedPts
+        : b.projectedGD - a.projectedGD
+    );
+    augmented.forEach((r, i) => { r.projectedPosition = i + 1; });
+    return augmented;
+  }, [rows, liveMatches, liveByTeam]);
 
   return (
     <div className="w-full">
@@ -221,13 +299,23 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
           style={{ gridTemplateColumns: "2rem 1fr 2.5rem 2.5rem 2.5rem 2.5rem 3rem 3rem 5.5rem 1.25rem" }}
         >
           <span className="text-right">#</span>
-          <span className="pl-2">Club</span>
+          <span className="pl-2 flex items-center gap-2">
+            Club
+            {hasLiveInGroup && (
+              <span className="flex items-center gap-1 text-green-400 normal-case tracking-normal font-semibold">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                Live
+              </span>
+            )}
+          </span>
           <span className="text-center">P</span>
           <span className="text-center">W</span>
           <span className="text-center">D</span>
           <span className="text-center">L</span>
           <span className="text-center">GD</span>
-          <span className="text-center font-bold text-slate-400">Pts</span>
+          <span className="text-center font-bold text-slate-400">
+            {hasLiveInGroup ? "Proj" : "Pts"}
+          </span>
           <span className="text-center">Form</span>
           <span />
         </div>
@@ -251,29 +339,54 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         )}
 
         {/* Rows */}
-        {rows.map((row, i) => {
-          const zone = getZone(comp.code, row.position, rows.length);
+        {projectedRows.map((row, i) => {
+          const zone = getZone(comp.code, row.projectedPosition, rows.length);
+          const posChange = row.projectedPosition - row.originalPosition;
+          const isLive = row.liveMatch !== null;
+          const oppName = isLive
+            ? (row.liveMatch!.homeTeamId === row.team.id
+                ? row.liveMatch!.awayTeam
+                : row.liveMatch!.homeTeam)
+            : "";
+          const teamScore = isLive
+            ? (row.liveMatch!.homeTeamId === row.team.id
+                ? row.liveMatch!.scoreHome
+                : row.liveMatch!.scoreAway)
+            : null;
+          const oppScore = isLive
+            ? (row.liveMatch!.homeTeamId === row.team.id
+                ? row.liveMatch!.scoreAway
+                : row.liveMatch!.scoreHome)
+            : null;
+
           return (
           <div
             key={row.team.id}
             className={`relative w-full grid items-center gap-x-4 px-5 py-3 transition-colors border-b border-slate-800/40 last:border-0 hover:bg-green-900/10 group ${
-              i % 2 === 1 ? "bg-slate-900/30" : ""
+              isLive ? "bg-green-950/20" : i % 2 === 1 ? "bg-slate-900/30" : ""
             }`}
             style={{ gridTemplateColumns: "2rem 1fr 2.5rem 2.5rem 2.5rem 2.5rem 3rem 3rem 5.5rem 1.25rem" }}
           >
-            {/* Zone indicator bar — absolutely positioned to avoid border-color conflicts */}
+            {/* Zone indicator bar */}
             {zone && (
               <span className={`absolute left-0 top-0 bottom-0 w-1 ${ZONE_DOT[zone]}`} />
             )}
-            {/* Position */}
-            <span className="text-right text-sm text-slate-500 tabular-nums font-medium">
-              {row.position}
+
+            {/* Position + movement arrow */}
+            <span className="flex items-center justify-end gap-0.5 text-sm text-slate-500 tabular-nums font-medium">
+              {posChange < 0 && (
+                <span className="text-[9px] text-green-400 leading-none">▲</span>
+              )}
+              {posChange > 0 && (
+                <span className="text-[9px] text-red-400 leading-none">▼</span>
+              )}
+              {row.projectedPosition}
             </span>
 
-            {/* Club name + crest — clickable */}
+            {/* Club name + crest + optional live score chip */}
             <button
               onClick={() => onSelectTeam(row.team)}
-              className="flex items-center gap-2.5 pl-2 min-w-0 text-left"
+              className="flex items-center gap-2 pl-2 min-w-0 text-left"
             >
               {row.team.crest ? (
                 <img src={row.team.crest} alt="" className="w-5 h-5 object-contain shrink-0" />
@@ -285,9 +398,18 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
               <span className="text-sm font-medium text-white truncate group-hover:text-green-400 transition-colors">
                 {row.team.shortName || row.team.name}
               </span>
+              {isLive && (
+                <span className="flex items-center gap-1 shrink-0 ml-1 text-[10px] font-bold text-green-400 whitespace-nowrap">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                  {teamScore ?? 0}–{oppScore ?? 0}
+                  <span className="text-[9px] text-green-600 font-medium">
+                    vs {oppName.slice(0, 3).toUpperCase()}
+                  </span>
+                </span>
+              )}
             </button>
 
-            {/* Stats — clicking anywhere in the row (outside the two buttons) also selects */}
+            {/* Stats */}
             <span onClick={() => onSelectTeam(row.team)} className="text-center text-sm text-slate-400 tabular-nums cursor-pointer">
               {row.playedGames}
             </span>
@@ -303,17 +425,20 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
             <span
               onClick={() => onSelectTeam(row.team)}
               className={`text-center text-sm tabular-nums font-medium cursor-pointer ${
-                row.goalDifference > 0
+                row.projectedGD > 0
                   ? "text-green-400/80"
-                  : row.goalDifference < 0
+                  : row.projectedGD < 0
                   ? "text-red-400/80"
                   : "text-slate-400"
               }`}
             >
-              {row.goalDifference > 0 ? `+${row.goalDifference}` : row.goalDifference}
+              {row.projectedGD > 0 ? `+${row.projectedGD}` : row.projectedGD}
             </span>
-            <span onClick={() => onSelectTeam(row.team)} className="text-center text-sm font-bold text-white tabular-nums cursor-pointer">
-              {row.points}
+            <span
+              onClick={() => onSelectTeam(row.team)}
+              className={`text-center text-sm font-bold tabular-nums cursor-pointer ${isLive ? "text-green-300" : "text-white"}`}
+            >
+              {row.projectedPts}
             </span>
 
             {/* Form pips */}
@@ -323,7 +448,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
             {/* Favourite star */}
             <button
-              onClick={() => toggleFavourite(row.team)}
+              onClick={() => toggleFavourite(row.team, comp.code)}
               title={isFavourite(row.team.id) ? "Remove from favourites" : "Add to favourites"}
               className={`text-sm text-center transition-colors ${
                 isFavourite(row.team.id)

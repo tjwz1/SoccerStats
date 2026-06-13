@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import type { ScheduleMatch } from "../../types";
 import { useApi } from "../../hooks/useApi";
+import { useLiveMatches } from "../../contexts/LiveMatchesContext";
 import TeamSchedule from "../../components/TeamSchedule";
 import PositionChart from "../../components/PositionChart";
 
@@ -11,13 +12,10 @@ interface Props {
   season?: number;
 }
 
-const LIVE_POLL_MS = 30_000; // refresh every 30 s while a match is in play
-
 export default function ScheduleView({ teamId, teamName, competitionCode, season }: Props) {
   const baseQuery = `competition=${competitionCode}&name=${encodeURIComponent(teamName)}${season ? `&season=${season}` : ""}`;
 
   // Phase 1: finished matches only from permanent Supabase cache (~50ms).
-  // Skip when a specific season is requested — the cache key doesn't include season.
   const { data: pastData } = useApi<ScheduleMatch[]>(
     season ? null : `/api/teams/${teamId}/schedule?${baseQuery}&past=true`
   );
@@ -32,14 +30,23 @@ export default function ScheduleView({ teamId, teamName, competitionCode, season
   const loading = !fullData && !hasPastData;
   const upcomingLoading = !fullData;
 
-  // Auto-refresh while a match is live — clears session cache and re-fetches.
-  // Server-side schedule cache TTL is 2 min, so fd.org is polled at most every 2 min.
-  const hasLive = (fullData ?? []).some(
-    (m) => m.status === "IN_PLAY" || m.status === "PAUSED"
-  );
+  // Live overlay — from the app-level context; one poll for the whole app
+  const { liveById } = useLiveMatches();
+
+  const overlaidMatches = useMemo(() => {
+    return matches.map((m) => {
+      const live = liveById.get(m.id);
+      return live
+        ? { ...m, status: live.status, scoreHome: live.scoreHome, scoreAway: live.scoreAway }
+        : m;
+    });
+  }, [matches, liveById]);
+
+  // Refresh the full schedule while a match is live so event data stays current
+  const hasLive = overlaidMatches.some((m) => m.status === "IN_PLAY" || m.status === "PAUSED");
   useEffect(() => {
     if (!hasLive) return;
-    const id = setInterval(retry, LIVE_POLL_MS);
+    const id = setInterval(retry, 2 * 60_000);
     return () => clearInterval(id);
   }, [hasLive, retry]);
 
@@ -49,7 +56,7 @@ export default function ScheduleView({ teamId, teamName, competitionCode, season
         <PositionChart competitionCode={competitionCode} teamId={teamId} />
       )}
       <TeamSchedule
-        matches={matches}
+        matches={overlaidMatches}
         loading={loading}
         error={error}
         teamId={teamId}

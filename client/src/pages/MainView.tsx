@@ -6,7 +6,6 @@ import { useFavourites } from "../hooks/useFavourites";
 import { useTheme } from "../contexts/ThemeContext";
 import TeamSearch from "../components/TeamSearch";
 import PlayerTooltip from "../components/PlayerTooltip";
-import LiveTicker from "../components/LiveTicker";
 import FixtureCalendar from "../components/FixtureCalendar";
 import SquadView from "./team-views/SquadView";
 import HonoursView from "./team-views/HonoursView";
@@ -67,11 +66,23 @@ export default function MainView() {
     navigate("/", { replace: true, state: null });
   }, [location.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const { data: competitions } = useApi<Competition[]>("/api/competitions");
+
   const { data: lineup, loading: lineupLoading } = useApi<LineupData>(
     selectedTeam
       ? `/api/teams/${selectedTeam.id}/lineup${selectedComp ? `?competition=${selectedComp.code}` : ""}`
       : null
   );
+
+  // When the lineup resolves its competition (server checks runningCompetitions), auto-correct
+  // selectedComp if it's missing or points at the wrong league. This fixes favourites that have
+  // no stored competitionCode and any other case where the wrong league is active.
+  useEffect(() => {
+    const code = lineup?.competitionCode;
+    if (!code || code === selectedComp?.code) return;
+    const matched = competitions?.find((c) => c.code === code);
+    if (matched) setSelectedComp(matched);
+  }, [lineup?.competitionCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Preload honours immediately on team selection so switching to Honours is instant.
   const { loading: honoursPreloading } = useApi<ClubTrophy[]>(
@@ -173,9 +184,6 @@ export default function MainView() {
           {theme === "dark" ? "☀️" : "🌙"}
         </button>
       </header>
-
-      {/* Live score ticker */}
-      <LiveTicker />
 
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}

@@ -1,9 +1,25 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import type { ScheduleMatch, LineupData, Player, MatchDetailData, MatchGoalEvent, MatchBookingEvent, MatchSubstitutionEvent, PlayerGameStats, MatchLineups, MatchLineupPlayer, MatchTeamStats } from "../types";
 import { useApi } from "../hooks/useApi";
 import Pitch from "./Pitch";
 import Bench from "./Bench";
+
+// ── Name normalisation helpers ────────────────────────────────────────────────
+
+// Strip diacritics, dots, hyphens (treated as spaces), then return all
+// meaningful tokens (>2 chars). Used so "Alexander-Arnold" / "Alexander Arnold",
+// "Félix" / "Felix", "Vini Jr" / "Vinicius Junior" all share at least one token.
+function subNameTokens(name: string): string[] {
+  return name
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/-/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length > 2);
+}
 
 // ── 2-legged tie detection ────────────────────────────────────────────────────
 
@@ -288,12 +304,16 @@ function MatchTimelinePanel({
     : null;
   const { data: detail, loading, retry } = useApi<MatchDetailData>(detailUrl);
 
+  // Keep a stable ref to retry so the interval effect doesn't restart on every render
+  const retryRef = useRef(retry);
+  useEffect(() => { retryRef.current = retry; }, [retry]);
+
   // Poll every 30 s while live so cards/subs/goals update without page reload
   useEffect(() => {
     if (!isLive) return;
-    const id = setInterval(retry, 30_000);
+    const id = setInterval(() => retryRef.current(), 30_000);
     return () => clearInterval(id);
-  }, [isLive, retry]);
+  }, [isLive]);
 
   if (!hasStats) {
     return <p className="text-xs text-slate-500 text-center py-6">Timeline available after kickoff.</p>;
@@ -715,14 +735,38 @@ function MatchLineupPanel({ match, teamId, teamName }: { match: ScheduleMatch; t
     : null;
   const { data: actualLineup, loading: actualLoading } = useApi<MatchLineups>(actualLineupUrl);
 
-  const { data: detail, loading: detailLoading } = useApi<MatchDetailData>(
+  const { data: detail, loading: detailLoading, retry: retryDetail } = useApi<MatchDetailData>(
     hasStats ? `/api/matches/${match.id}?status=${encodeURIComponent(match.status)}&homeTeam=${encodeURIComponent(match.homeTeam)}&awayTeam=${encodeURIComponent(match.awayTeam)}&utcDate=${encodeURIComponent(match.utcDate)}&competition=${encodeURIComponent(match.competitionCode)}` : null
   );
 
   const playerStatsUrl = hasStats
-    ? `/api/matches/${match.id}/player-stats?homeTeam=${encodeURIComponent(match.homeTeam)}&awayTeam=${encodeURIComponent(match.awayTeam)}&utcDate=${encodeURIComponent(match.utcDate)}&competition=${encodeURIComponent(match.competitionCode)}`
+    ? `/api/matches/${match.id}/player-stats?homeTeam=${encodeURIComponent(match.homeTeam)}&awayTeam=${encodeURIComponent(match.awayTeam)}&utcDate=${encodeURIComponent(match.utcDate)}&competition=${encodeURIComponent(match.competitionCode)}&status=${encodeURIComponent(match.status)}`
     : null;
-  const { data: playerStats, loading: statsLoading } = useApi<Record<string, PlayerGameStats>>(playerStatsUrl);
+  const { data: playerStats, loading: statsLoading, retry: retryStats } = useApi<Record<string, PlayerGameStats>>(playerStatsUrl);
+
+  // Poll stats and detail every 30 s while the match is live
+  const retryStatsRef = useRef(retryStats);
+  useEffect(() => { retryStatsRef.current = retryStats; }, [retryStats]);
+  const retryDetailRef2 = useRef(retryDetail);
+  useEffect(() => { retryDetailRef2.current = retryDetail; }, [retryDetail]);
+  useEffect(() => {
+    if (!isActive) return;
+    const id = setInterval(() => { retryStatsRef.current(); retryDetailRef2.current(); }, 30_000);
+    return () => clearInterval(id);
+  }, [isActive]);
+
+  // Build from detail.substitutions so the ↓ badges work even when playerStats
+  // cache predates the subbedOut field.
+  // Uses the same normalisation as Pitch.normLast — diacritics stripped, hyphens
+  // treated as spaces — so "Alexander-Arnold" and "Alexander Arnold" both resolve
+  // to the same key, as do accented variants like "Félix" / "Felix".
+  const subbedOutNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const sub of detail?.substitutions ?? []) {
+      for (const tok of subNameTokens(sub.playerOut)) s.add(tok);
+    }
+    return s;
+  }, [detail?.substitutions]);
 
   function handlePlayerClick(player: Player) {
     let id = player.id;
@@ -860,6 +904,7 @@ function MatchLineupPanel({ match, teamId, teamName }: { match: ScheduleMatch; t
           <Pitch
             starters={displayStarters}
             formation={displayFormation}
+            subbedOutNames={subbedOutNames}
             onHover={handleHover}
             onClick={handlePlayerClick}
             compact
@@ -869,7 +914,7 @@ function MatchLineupPanel({ match, teamId, teamName }: { match: ScheduleMatch; t
 
       {displayBench.length > 0 && (
         <div className="px-4 pb-3">
-          <Bench bench={displayBench} onClick={handlePlayerClick} onHover={handleHover} />
+          <Bench bench={displayBench} onClick={handlePlayerClick} onHover={handleHover} playerStats={playerStats ?? null} />
         </div>
       )}
 
@@ -1013,11 +1058,27 @@ function MatchCard({ match, teamId, teamName, tieInfo }: { match: ScheduleMatch;
   const isUpcoming = match.status === "SCHEDULED" || match.status === "TIMED";
   const isFinished = match.status === "FINISHED";
   const isPostponed = match.status === "POSTPONED";
-  const hasScore = match.scoreHome !== null && match.scoreAway !== null;
   const result = isFinished ? getResult(match, teamId) : null;
   // Negative IDs = ESPN/TM-sourced cup matches; football-data.org lineup lookup won't work for them.
   // Upcoming games can expand — FD.org publishes official lineups ~1 h before kickoff (status stays TIMED).
   const canExpand = !isPostponed && !!match.competitionCode && match.id > 0;
+
+  // Pre-fetch all three panel data sources as soon as the card expands so that
+  // switching tabs is instant. useApi deduplication ensures no double HTTP requests
+  // even though the individual panels also call useApi for the same URLs.
+  const cardHasStats = isFinished || isLive;
+  const encParams = `homeTeam=${encodeURIComponent(match.homeTeam)}&awayTeam=${encodeURIComponent(match.awayTeam)}&utcDate=${encodeURIComponent(match.utcDate)}&competition=${encodeURIComponent(match.competitionCode)}`;
+  const { data: cardDetail } = useApi<MatchDetailData>(expanded && cardHasStats ? `/api/matches/${match.id}?status=${encodeURIComponent(match.status)}&${encParams}` : null);
+  useApi<Record<string, PlayerGameStats>>(expanded && cardHasStats ? `/api/matches/${match.id}/player-stats?${encParams}&status=${encodeURIComponent(match.status)}` : null);
+  useApi<MatchTeamStats>(expanded && cardHasStats ? `/api/matches/${match.id}/team-stats?${encParams}` : null);
+
+  // When the card is expanded and live, use the authoritative FT score from the detail
+  // response instead of the liveById overlay (which has SWR lag up to ~60s).
+  const displayedMatch = (isLive && cardDetail?.ftHome !== null && cardDetail?.ftHome !== undefined &&
+                          cardDetail?.ftAway !== null && cardDetail?.ftAway !== undefined)
+    ? { ...match, scoreHome: cardDetail.ftHome, scoreAway: cardDetail.ftAway }
+    : match;
+  const hasScore = displayedMatch.scoreHome !== null && displayedMatch.scoreAway !== null;
 
   return (
     <div className={`bg-slate-800/60 border rounded-xl overflow-hidden ${isLive ? "border-red-500/40" : "border-slate-700/60"}`}>
@@ -1059,7 +1120,7 @@ function MatchCard({ match, teamId, teamName, tieInfo }: { match: ScheduleMatch;
           </div>
           <div className="shrink-0 px-2 text-center min-w-[56px]">
             {hasScore ? (
-              <ScoreDisplay match={match} isLive={isLive} />
+              <ScoreDisplay match={displayedMatch} isLive={isLive} />
             ) : (
               <span className="text-xs font-medium text-slate-500">vs</span>
             )}

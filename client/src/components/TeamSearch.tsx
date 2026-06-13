@@ -1,9 +1,20 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Competition, Team, CompetitionStats, StatLeader } from "../types";
+import type { FavTeam } from "../hooks/useFavourites";
 import { useApi } from "../hooks/useApi";
 
 type StatFilter = "goals" | "assists" | "cleanSheets";
+
+// Standard competition ranking (1–1–3–4–4–6…).
+// Tied players share the same rank; the next rank skips the occupied positions.
+function withRanks(leaders: StatLeader[]): Array<StatLeader & { rank: number }> {
+  let rank = 1;
+  return leaders.map((s, i, arr) => {
+    if (i > 0 && s.value < arr[i - 1].value) rank = i + 1;
+    return { ...s, rank };
+  });
+}
 
 interface Props {
   onSelectTeam: (team: Team) => void;
@@ -12,9 +23,9 @@ interface Props {
   onSelectComp: (comp: Competition) => void;
   selectedSeason: number | null;
   onSelectSeason: (year: number | null) => void;
-  favourites: Team[];
+  favourites: FavTeam[];
   isFavourite: (id: number) => boolean;
-  toggleFavourite: (team: Team) => void;
+  toggleFavourite: (team: Team, competitionCode?: string) => void;
 }
 
 // ── Stat leaders panel (shown when no team selected) ─────────────────────────
@@ -31,8 +42,18 @@ function StatLeaders({
   const navigate = useNavigate();
   const [filter, setFilter] = useState<StatFilter>("goals");
 
-  const scorersUrl = `/api/competitions/${compCode}/scorers${season ? `?season=${season}` : ""}`;
-  const { data: stats, loading } = useApi<CompetitionStats>(scorersUrl);
+  const qs = season ? `?season=${season}` : "";
+  const { data: stats, loading, retry } = useApi<CompetitionStats>(
+    `/api/competitions/${compCode}/live-scorers${qs}`
+  );
+
+  // Poll every 30s — scorers TTL on server is 2min, so this picks up updates promptly
+  const retryRef = useRef(retry);
+  useEffect(() => { retryRef.current = retry; }, [retry]);
+  useEffect(() => {
+    const id = setInterval(() => retryRef.current(), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   const FILTERS: { key: StatFilter; label: string; col: string }[] = [
     { key: "goals",       label: "Goals",  col: "G" },
@@ -40,10 +61,16 @@ function StatLeaders({
     { key: "cleanSheets", label: "Clean Sheets", col: "CS" },
   ];
 
-  const leaders: StatLeader[] =
+  const allLeaders: StatLeader[] =
     filter === "goals"       ? (stats?.goals       ?? []) :
     filter === "assists"     ? (stats?.assists      ?? []) :
                                (stats?.cleanSheets  ?? []);
+
+  // Rank with ties, then show top 10 ranks (all players tied at the boundary are included)
+  const ranked = withRanks(allLeaders);
+  const leaders = ranked.filter((s) => s.rank <= 10);
+
+  const hasLive = !!stats?.hasLive && filter !== "cleanSheets";
 
   function handlePlayerClick(s: StatLeader) {
     // Clean-sheet entries use ESPN player IDs (id=0) — navigate to team instead
@@ -90,7 +117,15 @@ function StatLeaders({
       {/* Column header */}
       <div className="flex items-center gap-2 px-1 text-[10px] text-slate-600 uppercase tracking-wider shrink-0">
         <span className="w-4 text-right shrink-0">#</span>
-        <span className="flex-1 pl-1">Player</span>
+        <span className="flex-1 pl-1 flex items-center gap-1.5">
+          Player
+          {hasLive && (
+            <span className="flex items-center gap-1 text-green-400 normal-case tracking-normal font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              Live
+            </span>
+          )}
+        </span>
         <span className="w-6 text-center shrink-0 font-bold">{activeCol}</span>
       </div>
 
@@ -112,47 +147,54 @@ function StatLeaders({
           </p>
         )}
 
-        {leaders.map((s, i) => (
-          <div
-            key={`${s.player.id || s.player.name}-${i}`}
-            className="flex items-center gap-2 px-1 py-1.5 rounded-md hover:bg-slate-800/60 group"
-          >
-            <span className="w-4 text-right text-[10px] text-slate-600 shrink-0 tabular-nums">
-              {i + 1}
-            </span>
-
-            {/* Team crest */}
-            <button
-              onClick={() => onSelectTeam(s.team)}
-              title={s.team.shortName || s.team.name}
-              className="shrink-0"
+        {leaders.map((s, i) => {
+          const isLiveEntry = hasLive && (s.liveAdd ?? 0) > 0;
+          const showRank = i === 0 || s.rank !== leaders[i - 1].rank;
+          return (
+            <div
+              key={`${s.player.id || s.player.name}-${i}`}
+              className={`flex items-center gap-2 px-1 py-1.5 rounded-md hover:bg-slate-800/60 group ${isLiveEntry ? "bg-green-950/30" : ""}`}
             >
-              {s.team.crest ? (
-                <img src={s.team.crest} alt="" className="w-4 h-4 object-contain" />
-              ) : (
-                <div className="w-4 h-4 rounded-full bg-slate-700 flex items-center justify-center text-[7px] font-bold">
-                  {s.team.tla.slice(0, 2)}
-                </div>
-              )}
-            </button>
+              <span className="w-4 text-right text-[10px] text-slate-600 shrink-0 tabular-nums">
+                {showRank ? s.rank : ""}
+              </span>
 
-            {/* Player / team name */}
-            <button onClick={() => handlePlayerClick(s)} className="flex-1 min-w-0 text-left">
-              <p className="text-xs text-slate-300 group-hover:text-white transition-colors font-medium truncate">
-                {s.player.name}
-              </p>
-              {s.player.id !== 0 && (
-                <p className="text-[10px] text-slate-600 truncate">
-                  {s.team.shortName || s.team.name}
+              {/* Team crest */}
+              <button
+                onClick={() => onSelectTeam(s.team)}
+                title={s.team.shortName || s.team.name}
+                className="shrink-0"
+              >
+                {s.team.crest ? (
+                  <img src={s.team.crest} alt="" className="w-4 h-4 object-contain" />
+                ) : (
+                  <div className="w-4 h-4 rounded-full bg-slate-700 flex items-center justify-center text-[7px] font-bold">
+                    {s.team.tla.slice(0, 2)}
+                  </div>
+                )}
+              </button>
+
+              {/* Player / team name */}
+              <button onClick={() => handlePlayerClick(s)} className="flex-1 min-w-0 text-left">
+                <p className="text-xs text-slate-300 group-hover:text-white transition-colors font-medium truncate flex items-center gap-1">
+                  {s.player.name}
+                  {isLiveEntry && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
+                  )}
                 </p>
-              )}
-            </button>
+                {(s.player.id !== 0 || filter !== "cleanSheets") && (
+                  <p className="text-[10px] text-slate-600 truncate">
+                    {s.team.shortName || s.team.name}
+                  </p>
+                )}
+              </button>
 
-            <span className="w-6 text-center text-sm font-bold text-white tabular-nums shrink-0">
-              {s.value}
-            </span>
-          </div>
-        ))}
+              <span className={`w-6 text-center text-sm font-bold tabular-nums shrink-0 ${isLiveEntry ? "text-green-300" : "text-white"}`}>
+                {s.value}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -286,7 +328,15 @@ export default function TeamSearch({
                 className="flex items-center gap-0.5 bg-slate-800 hover:bg-slate-700 rounded-md pl-1.5 pr-0.5 py-0.5 transition-colors group/chip"
               >
                 <button
-                  onClick={() => onSelectTeam(team)}
+                  onClick={() => {
+                    // If this favourite has a stored competition and it differs from the
+                    // current selection, switch to it so the schedule/lineup load correctly.
+                    if (team.competitionCode && team.competitionCode !== selectedComp?.code) {
+                      const comp = competitions?.find((c) => c.code === team.competitionCode);
+                      if (comp) onSelectComp(comp);
+                    }
+                    onSelectTeam(team);
+                  }}
                   className="flex items-center gap-1 text-xs text-slate-300 group-hover/chip:text-white transition-colors"
                 >
                   {team.crest && (
