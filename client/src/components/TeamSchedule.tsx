@@ -456,12 +456,6 @@ function MatchTimelinePanel({
 
 // ── Match stats section ───────────────────────────────────────────────────────
 
-const GOAL_ICON: Record<string, string> = {
-  REGULAR: "⚽",
-  OWN_GOAL: "⚽", // rendered differently below
-  PENALTY: "⚽",
-};
-
 function MatchStatsSection({
   detail,
   match,

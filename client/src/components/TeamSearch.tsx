@@ -207,9 +207,9 @@ export default function TeamSearch({
   selectedComp,
   onSelectComp,
   selectedSeason,
-  onSelectSeason,
+  onSelectSeason: _onSelectSeason,
   favourites,
-  isFavourite,
+  isFavourite: _isFavourite,
   toggleFavourite,
 }: Props) {
   const { data: competitions, loading: compsLoading } = useApi<Competition[]>("/api/competitions");

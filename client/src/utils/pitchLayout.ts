@@ -33,7 +33,7 @@ function linesToY(lines: number[], bottomHalfOnly: boolean): number[] {
   );
 }
 
-function xForIndex(idx: number, total: number, bias: number): number {
+function xForIndex(idx: number, total: number, _bias: number): number {
   if (total === 1) return 50;
   const margin = Math.max(8, 38 - total * 5);
   const span = 100 - 2 * margin;
