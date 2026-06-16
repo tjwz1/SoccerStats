@@ -66,11 +66,19 @@ const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const STATS_CACHE_MAX = 500;
 
 // Cache ESPN event ID lookups — stable once a match is played
-const eventIdCache = new Map<string, string | null>();
+const eventIdCache = new Map<string, string>();  // only caches successful lookups (non-null)
 const EVENT_ID_CACHE_MAX = 1000;
+// Short-term null cache: records when a lookup returned no result so we don't hammer
+// ESPN on every request when the event doesn't exist (yet). Retried after 10 minutes.
+const eventIdNullCache = new Map<string, number>(); // cacheKey → timestamp
+const NULL_RETRY_MS = 10 * 60 * 1000;
 // Deduplicates concurrent lookups for the same event so parallel route handlers
 // (actual-lineup + player-stats) share one scoreboard request instead of two.
 const eventIdInflight = new Map<string, Promise<string | null>>();
+
+// In-memory cache for ESPN goal events (keyed by football-data.org match ID)
+const goalsCache = new Map<number, { data: EspnGoalEvent[]; fetchedAt: number }>();
+const GOALS_CACHE_MAX = 500;
 
 // Shared cache for ESPN summary responses — both lineup and stats parse the same
 // summary endpoint; this prevents a second HTTP call when both routes fire together.
@@ -116,11 +124,20 @@ const INT_ALIASES: [RegExp, string][] = [
   [/\bivory coast\b/g, "ivoire"],
   [/\bdr congo\b/g, "congo"],
   [/\bdemocratic republic of congo\b/g, "congo"],
+  // fd.org uses "Türkiye" (official since 2022); ESPN English uses "Turkey"
+  [/\bturkiye\b/g, "turkey"],
+  // Czech Republic / Czechia — fd.org and ESPN may differ on which form to use
+  [/\bczechia\b/g, "czech"],
+  [/\bczech republic\b/g, "czech"],
 ];
 
-// Normalize team name for fuzzy comparison
+// Normalize team name for fuzzy comparison.
+// NFD decomposition strips diacritics (ü→u, é→e, á→a) before the ASCII filter so that
+// names like "Türkiye", "México", "Panamá", "Perú", "Curaçao" survive normalisation
+// with recognisable tokens rather than being mangled into non-matching fragments.
 function normTeam(name: string): string {
   let n = name
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")  // strip combining diacritics
     .toLowerCase()
     .replace(/\b(fc|f\.c\.|afc|sc|sfc|cf|rcd|cd|ud|sd)\b/g, "")
     .replace(/[^a-z0-9 ]/g, " ")
@@ -162,6 +179,10 @@ async function findEspnEventId(
   const cacheKey = `${competitionCode}:${utcDate.slice(0, 10)}:${normTeam(homeTeam)}:${normTeam(awayTeam)}`;
   if (eventIdCache.has(cacheKey)) return eventIdCache.get(cacheKey)!;
 
+  // Short-circuit if a recent lookup already failed (avoids repeated scoreboard fetches)
+  const nullAt = eventIdNullCache.get(cacheKey);
+  if (nullAt && Date.now() - nullAt < NULL_RETRY_MS) return null;
+
   // Deduplicate concurrent lookups — parallel route handlers (actual-lineup + player-stats)
   // share one scoreboard fetch instead of both slipping through before the cache is warm.
   if (eventIdInflight.has(cacheKey)) return eventIdInflight.get(cacheKey)!;
@@ -170,12 +191,17 @@ async function findEspnEventId(
     const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
     const base = utcDate.slice(0, 10).replace(/-/g, ""); // YYYYMMDD
 
-    // Search UTC-1, UTC, and UTC+1 to handle ESPN's local-time date keys.
-    // US evening games (21:00 ET = 01:00 UTC next day) appear on ESPN under
-    // the prior calendar day; Asian games are the opposite.
-    for (const date of [shiftDay(base, -1), base, addDay(base)]) {
-      const url = `${ESPN_BASE}/${espnLeague}/scoreboard?dates=${date}`;
-      const data = await espnFetch(url);
+    // Fetch UTC-1, UTC, and UTC+1 in parallel — ESPN uses local-time date keys so the
+    // correct scoreboard date depends on kick-off timezone (US evening = UTC next day, etc.).
+    // Parallel fetch cuts worst-case latency from 3× to 1× ESPN round-trip.
+    const [dateMinus, dateBase, datePlus] = await Promise.all([
+      espnFetch(`${ESPN_BASE}/${espnLeague}/scoreboard?dates=${shiftDay(base, -1)}`),
+      espnFetch(`${ESPN_BASE}/${espnLeague}/scoreboard?dates=${base}`),
+      espnFetch(`${ESPN_BASE}/${espnLeague}/scoreboard?dates=${addDay(base)}`),
+    ]);
+
+    // Scan in priority order: exact UTC date first, then ±1 day fallbacks.
+    for (const data of [dateBase, dateMinus, datePlus]) {
       if (!data?.events) continue;
 
       for (const event of data.events) {
@@ -188,15 +214,17 @@ async function findEspnEventId(
           (teamsMatch(homeTeam, espnHome) && teamsMatch(awayTeam, espnAway)) ||
           (teamsMatch(homeTeam, espnAway) && teamsMatch(awayTeam, espnHome))
         ) {
-          console.log(`[matchStats] ESPN event ${event.id}: ${espnHome} vs ${espnAway} (date=${date})`);
+          console.log(`[matchStats] ESPN event ${event.id}: ${espnHome} vs ${espnAway}`);
           cappedSet(eventIdCache, cacheKey, event.id as string, EVENT_ID_CACHE_MAX);
           return event.id as string;
         }
       }
     }
 
+    // Don't permanently cache null — ESPN may be temporarily down or the event not yet listed.
+    // The null-TTL cache prevents hammering within the retry window.
     console.log(`[matchStats] No ESPN event found for ${homeTeam} vs ${awayTeam} (${utcDate.slice(0, 10)}, comp=${competitionCode})`);
-    cappedSet(eventIdCache, cacheKey, null, EVENT_ID_CACHE_MAX);
+    eventIdNullCache.set(cacheKey, Date.now());
     return null;
   })().finally(() => eventIdInflight.delete(cacheKey));
 
@@ -739,9 +767,13 @@ export async function getMatchBookingsAndSubs(
   }
 
   const result = { bookings, substitutions };
-  if (bookings.length > 0 || substitutions.length > 0) {
-    cappedSet(eventsCache, matchId, { data: result, fetchedAt: Date.now() }, EVENTS_CACHE_MAX);
-    if (!isLive && matchId > 0) setCached(`/espn-events/${matchId}`, result, FOREVER_TTL_MS);
+  // Always write to in-memory cache (even empty) so repeated requests within the server's
+  // lifetime don't re-hit ESPN for matches with no cards/subs.
+  cappedSet(eventsCache, matchId, { data: result, fetchedAt: Date.now() }, EVENTS_CACHE_MAX);
+  // Persist to Supabase only when we have data — if ESPN doesn't have events yet we'll
+  // retry on the next cold start rather than caching "no data" permanently.
+  if (!isLive && matchId > 0 && (bookings.length > 0 || substitutions.length > 0)) {
+    setCached(`/espn-events/${matchId}`, result, FOREVER_TTL_MS);
   }
   return result;
 }
@@ -759,11 +791,29 @@ export interface EspnGoalEvent {
 }
 
 export async function getMatchGoalEvents(
+  matchId: number,
   homeTeam: string,
   awayTeam: string,
   utcDate: string,
-  competitionCode: string
+  competitionCode: string,
+  isLive = false
 ): Promise<EspnGoalEvent[]> {
+  if (!isLive) {
+    // L1: in-memory (7-day TTL, same as stats/events caches)
+    const mem = goalsCache.get(matchId);
+    if (mem && Date.now() - mem.fetchedAt < CACHE_TTL_MS) return mem.data;
+
+    // L2: Supabase — survives server restarts for finished matches
+    if (matchId > 0) {
+      const db = await getCached(`/espn-goals/${matchId}`);
+      if (db) {
+        const data = db as EspnGoalEvent[];
+        cappedSet(goalsCache, matchId, { data, fetchedAt: Date.now() }, GOALS_CACHE_MAX);
+        return data;
+      }
+    }
+  }
+
   const eventId = await findEspnEventId(homeTeam, awayTeam, utcDate, competitionCode);
   if (!eventId) return [];
 
@@ -781,7 +831,7 @@ export async function getMatchGoalEvents(
   const details: any[] = data?.header?.competitions?.[0]?.details ?? [];
   const scoringPlays = details.filter((d: any) => d.scoringPlay === true);
 
-  return scoringPlays.map((d: any): EspnGoalEvent => {
+  const goals = scoringPlays.map((d: any): EspnGoalEvent => {
     const clockStr: string = d.clock?.displayValue ?? "";
     let minute = 0;
     let extraTime: number | null = null;
@@ -813,4 +863,11 @@ export async function getMatchGoalEvents(
       penalty: d.penaltyKick === true,
     };
   });
+
+  // Cache in memory regardless of count; persist to Supabase for finished matches with goals.
+  cappedSet(goalsCache, matchId, { data: goals, fetchedAt: Date.now() }, GOALS_CACHE_MAX);
+  if (!isLive && matchId > 0 && goals.length > 0) {
+    setCached(`/espn-goals/${matchId}`, goals, FOREVER_TTL_MS);
+  }
+  return goals;
 }

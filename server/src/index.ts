@@ -51,8 +51,9 @@ app.use(express.json({ limit: "100kb" }));
 app.use("/api", teamsRouter);
 app.use("/api/players", playersRouter);
 
+const SERVER_STARTED_AT = Date.now();
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", mock: !process.env.FOOTBALL_API_KEY, key: process.env.FOOTBALL_API_KEY ? "set" : "missing" });
+  res.json({ status: "ok", startedAt: SERVER_STARTED_AT, mock: !process.env.FOOTBALL_API_KEY, key: process.env.FOOTBALL_API_KEY ? "set" : "missing" });
 });
 
 // Team IDs (La Liga + UCL)

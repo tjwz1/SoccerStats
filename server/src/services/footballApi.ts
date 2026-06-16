@@ -7,8 +7,8 @@ import { fetchSofaScorePhotos } from "./sofaScorePhotos";
 import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
 import { getWikiStats, getWikiStatsBatch, setWikiStats } from "../db/wikiCareerCache";
 import { getWikiTrophies, setWikiTrophies } from "../db/wikiTrophyCache";
-import { fetchPlayerWikiData } from "./wikiStats";
-import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, type TmCareerRow } from "./transfermarktScraper";
+import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, type IntlSquadPlayer } from "./wikiStats";
+import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
 import type { ClubTrophy as TmClubTrophy } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
 
@@ -1205,19 +1205,22 @@ export async function getStandings(competitionCode: string, season?: number): Pr
       : { groups: [] };
   }
 
-  // Fill in form for any team where fd.org returned null (mid-tournament teams that haven't
-  // played yet, off-season, or tier limitation). Applies globally: any competition, any team.
-  // Also runs when the caller explicitly passes the current year (e.g. season=2026 for WC).
+  // Compute form from FINISHED matches for the current season.
+  // For international comps (WC/EC), fd.org's `form` field updates slowly after tournament
+  // matches — always recompute and override it regardless of whether fd.org returned a value.
+  // For domestic leagues, fd.org form is reliable; only fill in nulls.
   const isCurrentSeason = !season || season >= currentYear;
   if (isCurrentSeason && result.groups.length > 0) {
-    const someFormNull = result.groups.some((g) => g.rows.some((r) => r.form === null));
-    if (someFormNull) {
+    const needsForm = isIntl
+      ? true
+      : result.groups.some((g) => g.rows.some((r) => r.form === null));
+    if (needsForm) {
       try {
         const seasonYear = isIntl ? new Date().getFullYear() : CURRENT_SEASON;
         const computedForm = await computeFormFromMatches(competitionCode, seasonYear);
         for (const group of result.groups) {
           for (const row of group.rows) {
-            if (row.form === null) {                      // preserve form fd.org already provided
+            if (isIntl || row.form === null) {
               const f = computedForm.get(row.team.id);
               if (f) row.form = f;
             }
@@ -1362,6 +1365,7 @@ export function isInternationalComp(code: string): boolean {
 
 // Returns lightweight finished-match records for building ESPN-based leaderboards.
 export interface FinishedMatchRef {
+  id: number;
   homeTeam: string;
   homeTeamId: number;
   homeTeamCrest: string;
@@ -1383,6 +1387,7 @@ export async function getFinishedMatchList(
     ttl
   ) as any;
   return (data?.matches ?? []).map((m: any) => ({
+    id: m.id ?? 0,
     homeTeam: m.homeTeam?.name ?? "",
     homeTeamId: m.homeTeam?.id ?? 0,
     homeTeamCrest: m.homeTeam?.crest ?? "",
@@ -1493,9 +1498,10 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
   const xi = selectXI(squad, allSquadPhotos, appearances, careerApps);
   const starterIds = new Set(xi.map((x) => x.player.id));
 
-  // Bench: non-starters sorted by the same signals as the XI
+  // Bench: all non-starters (no cap — squad view shows all).
+  // Players with null position get a CM fallback via mapBenchPlayer below.
   const bench = squad
-    .filter((p) => !starterIds.has(p.id) && getRole(p.position) !== null)
+    .filter((p) => !starterIds.has(p.id))
     .sort((a, b) => {
       const ag = GENERIC_POS.has(a.position) ? 1 : 0;
       const bg = GENERIC_POS.has(b.position) ? 1 : 0;
@@ -1509,8 +1515,77 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
       const aCareer = careerApps.get(a.id) ?? 0;
       const bCareer = careerApps.get(b.id) ?? 0;
       return bCareer - aCareer;
-    })
-    .slice(0, 9);
+    });
+
+  // Squad supplement: add players missing from fd.org via web scrapers.
+  // International comps → Wikipedia tournament squads (complete 26-man rosters).
+  // Club comps → Transfermarkt /kader/ page (comprehensive for all leagues).
+  // Supplemented players get id=0 — visible in squad view but non-interactive.
+  type SupplementPlayer = { id: 0; name: string; position: string; dateOfBirth: string };
+  const supplementPlayers: SupplementPlayer[] = [];
+
+  // Shared name deduplication helpers
+  function normPlayerName(n: string): string {
+    return n.toLowerCase()
+      .normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z\s]/g, "").trim().replace(/\s+/g, " ");
+  }
+  function playerNamesMatch(a: string, b: string): boolean {
+    if (a === b) return true;
+    const aT = a.split(" "), bT = b.split(" ");
+    const aLast = aT[aT.length - 1], bLast = bT[bT.length - 1];
+    if (aLast.length >= 4 && aLast === bLast) return true;
+    for (const tok of aT) if (tok.length >= 5 && bT.includes(tok)) return true;
+    return false;
+  }
+
+  function buildExistingNorms(): Set<string> {
+    return new Set([
+      ...xi.map(({ player: p }) => normPlayerName(p.name)),
+      ...bench.map((p: any) => normPlayerName(p.name)),
+    ]);
+  }
+
+  function addMissing(
+    candidates: Array<{ name: string; position: string; dateOfBirth?: string }>,
+    existingNorms: Set<string>,
+    source: string
+  ) {
+    let added = 0;
+    for (const wp of candidates) {
+      const wpNorm = normPlayerName(wp.name);
+      const alreadyPresent = Array.from(existingNorms).some((en) => playerNamesMatch(en, wpNorm));
+      if (alreadyPresent) continue;
+      supplementPlayers.push({ id: 0, name: wp.name, position: wp.position, dateOfBirth: wp.dateOfBirth ?? "" });
+      existingNorms.add(wpNorm);
+      added++;
+    }
+    if (added > 0) console.log(`[lineup] ${source} supplement: +${added} players for ${data.name}`);
+  }
+
+  if (compCode === "WC") {
+    try {
+      const wikiSquad = await getWcSquadFromWiki(data.name);
+      addMissing(wikiSquad, buildExistingNorms(), "WC Wikipedia");
+    } catch (e) {
+      console.warn(`[lineup] WC Wikipedia supplement failed:`, (e as Error).message);
+    }
+  } else if (compCode === "EC") {
+    try {
+      const wikiSquad = await getEcSquadFromWiki(data.name);
+      addMissing(wikiSquad, buildExistingNorms(), "EC Wikipedia");
+    } catch (e) {
+      console.warn(`[lineup] EC Wikipedia supplement failed:`, (e as Error).message);
+    }
+  } else if (compCode) {
+    // Club competitions: use Transfermarkt /kader/ page
+    try {
+      const tmSquad = await getTmClubSquad(data.name, CURRENT_SEASON);
+      addMissing(tmSquad, buildExistingNorms(), `TM (${compCode})`);
+    } catch (e) {
+      console.warn(`[lineup] TM squad supplement failed for ${data.name}:`, (e as Error).message);
+    }
+  }
 
   const photos = allSquadPhotos;
 
@@ -1532,6 +1607,23 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     }
   })().catch(() => {});
 
+  function mapBenchPlayer(p: any) {
+    const role = getRole(p.position) ?? "CM";
+    return {
+      id: p.id,
+      name: p.name,
+      position: broadPosition(role),
+      role,
+      nationality: p.nationality ?? "",
+      dateOfBirth: p.dateOfBirth ?? "",
+      shirtNumber: p.shirtNumber ?? null,
+      photo: photos[p.id] ?? null,
+      appearances: appearances.get(p.id) ?? 0,
+      goals: goalStats.get(p.id)?.goals ?? 0,
+      assists: goalStats.get(p.id)?.assists ?? 0,
+    };
+  }
+
   return {
     competitionCode: compCode ?? null,
     formation: formationString(xi),
@@ -1548,22 +1640,26 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
       goals: goalStats.get(p.id)?.goals ?? 0,
       assists: goalStats.get(p.id)?.assists ?? 0,
     })),
-    bench: bench.map((p) => {
-      const role = getRole(p.position) ?? "CM";
-      return {
-        id: p.id,
-        name: p.name,
-        position: broadPosition(role),
-        role,
-        nationality: p.nationality ?? "",
-        dateOfBirth: p.dateOfBirth ?? "",
-        shirtNumber: p.shirtNumber ?? null,
-        photo: photos[p.id] ?? null,
-        appearances: appearances.get(p.id) ?? 0,
-        goals: goalStats.get(p.id)?.goals ?? 0,
-        assists: goalStats.get(p.id)?.assists ?? 0,
-      };
-    }),
+    bench: [
+      ...bench.map(mapBenchPlayer),
+      // Supplemented players (id=0): from Wikipedia or TM, appear in squad view only
+      ...supplementPlayers.map((p) => {
+        const role = getRole(p.position) ?? "CM";
+        return {
+          id: 0,
+          name: p.name,
+          position: broadPosition(role),
+          role,
+          nationality: "",
+          dateOfBirth: p.dateOfBirth,
+          shirtNumber: null,
+          photo: null,
+          appearances: 0,
+          goals: 0,
+          assists: 0,
+        };
+      }),
+    ],
   };
 }
 
@@ -1731,13 +1827,17 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
 
   // Phase 2: scorer API + wiki + Transfermarkt all run in parallel.
   // Wiki/TM are only invoked on a cache miss or when cups are missing from cache.
+  // International tournaments (WC/EC) run in the calendar year of the tournament,
+  // not the club-season year (e.g. WC 2026 uses season=2026, not CURRENT_SEASON=2025).
+  const INTL_SEASON = now.getFullYear();
   const [currentSeasonHits, freshWiki, tmCareer, tmHonours] = await Promise.all([
     Promise.all(
       probeComps.map(async (code) => {
-        const entry = await fetchScorerStats(id, code, CURRENT_SEASON);
-        return entry ? { code, entry } : null;
+        const seasonYear = INTERNATIONAL_COMP_CODES.has(code) ? INTL_SEASON : CURRENT_SEASON;
+        const entry = await fetchScorerStats(id, code, seasonYear);
+        return entry ? { code, entry, seasonYear } : null;
       })
-    ).then((r) => r.filter(Boolean) as Array<{ code: string; entry: ScorerEntry }>),
+    ).then((r) => r.filter(Boolean) as Array<{ code: string; entry: ScorerEntry; seasonYear: number }>),
     (needsCareer || needsTrophies)
       ? fetchPlayerWikiData(personData.name, needsCareer, needsTrophies)
       : Promise.resolve(null),
@@ -1809,8 +1909,10 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   const fallbackTeam = personData.currentTeam?.name ?? "";
 
   const apiCareer: CareerRow[] = [
-    ...currentSeasonHits.map(({ code, entry }) => ({
-      season: `${CURRENT_SEASON}/${String(CURRENT_SEASON + 1).slice(2)}`,
+    ...currentSeasonHits.map(({ code, entry, seasonYear }) => ({
+      season: INTERNATIONAL_COMP_CODES.has(code)
+        ? `${seasonYear}`
+        : `${CURRENT_SEASON}/${String(CURRENT_SEASON + 1).slice(2)}`,
       team: entry.team ?? fallbackTeam,
       competition: COMP_DISPLAY[code] ?? code,
       appearances: entry.appearances,

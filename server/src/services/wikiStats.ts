@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
 import type { WikiCareerRow } from "../db/wikiCareerCache";
 import type { Trophy } from "../db/wikiTrophyCache";
+import { getCached, setCached } from "../db/apiCache";
 
 const WIKI_HEADERS = {
   "User-Agent": "SoccerStatsApp/1.0 (educational project; contact: thomasjzhao@gmail.com)",
@@ -16,17 +17,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Fetch a Wikipedia API URL and retry up to 3× with exponential back-off if
 // the response is not JSON (Wikipedia sends HTML when rate-limited).
-async function wikiFetch(url: string, timeoutMs = 8000): Promise<string | null> {
-  for (let attempt = 0; attempt < 3; attempt++) {
+async function wikiFetch(url: string, timeoutMs = 6000): Promise<string | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: WIKI_HEADERS });
       const text = await res.text();
       if (text.trimStart().startsWith("{") || text.trimStart().startsWith("[")) return text;
-      const waitMs = 5000 * (attempt + 1);
-      console.warn(`[wikiStats] Rate limited (attempt ${attempt + 1}), waiting ${waitMs / 1000}s…`);
-      if (attempt < 2) await sleep(waitMs);
+      console.warn(`[wikiStats] Rate limited (attempt ${attempt + 1})`);
+      if (attempt < 1) await sleep(2000);
     } catch {
-      if (attempt < 2) await sleep(3000);
+      if (attempt < 1) await sleep(1000);
     }
   }
   return null;
@@ -293,6 +293,9 @@ function parseCareerTable(html: string): WikiCareerRow[] {
       const normSeason = season
         .replace(/[–—]/g, "/").replace("-", "/")
         .replace(/(\d{4})\/(\d{4})/, (_, y1, y2) => `${y1}/${y2.slice(2)}`);
+
+      // Skip international-career rows that sometimes appear in the club career table
+      if (isNationalTeam(club)) continue;
 
       rows.push({ season: normSeason, team: club, league, appearances: apps, goals, assists });
       lastClub = club;
@@ -754,4 +757,176 @@ export async function fetchClubHonours(teamName: string): Promise<ClubTrophy[]> 
   if (isNatl) trophies = recategorizeNationalTrophies(trophies);
   console.log(`[clubHonours] ${teamName} → ${trophies.length} trophies (wikitext${isNatl ? ", national team" : ""}) from "${resolvedTitle}"`);
   return attachTrophyImages(trophies);
+}
+
+// ── International squad scrapers (WC / EC) ───────────────────────────────────
+// Wikipedia hosts complete squad lists for every major international tournament.
+// These functions fetch the relevant article once (cached 6 h) and parse the
+// wikitable for a named national team.  Used to supplement football-data.org squad
+// data which is often incomplete for national teams.
+
+export interface IntlSquadPlayer {
+  name: string;
+  position: string; // fd.org-style generic: "Goalkeeper" | "Defence" | "Midfield" | "Offence"
+  dateOfBirth: string; // "YYYY-MM-DD"
+}
+
+// Per-article in-memory HTML cache (keyed by the Supabase cache key / db-key)
+const squadPageHtmlInMem = new Map<string, { html: string; at: number }>();
+const SQUAD_PAGE_HTML_TTL = 6 * 60 * 60 * 1000; // 6 h
+
+function mapWikiPosAbbr(abbr: string): string {
+  switch (abbr.trim().toUpperCase()) {
+    case "GK": return "Goalkeeper";
+    case "DF": return "Defence";
+    case "MF": return "Midfield";
+    case "FW": return "Offence";
+    default:   return "Midfield";
+  }
+}
+
+async function getSquadPageHtml(wikiPageTitle: string, dbKey: string): Promise<string | null> {
+  // L1: in-memory
+  const mem = squadPageHtmlInMem.get(dbKey);
+  if (mem && Date.now() - mem.at < SQUAD_PAGE_HTML_TTL) return mem.html;
+
+  // L2: Supabase
+  const dbHit = await getCached(dbKey);
+  if (dbHit && typeof (dbHit as any).html === "string") {
+    const { html } = dbHit as { html: string };
+    squadPageHtmlInMem.set(dbKey, { html, at: Date.now() });
+    return html;
+  }
+
+  const apiUrl =
+    `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(wikiPageTitle)}` +
+    `&prop=text&format=json&disablelimitreport=1`;
+
+  console.log(`[intlSquad] Fetching Wikipedia page "${wikiPageTitle}"…`);
+  const text = await wikiFetch(apiUrl, 20000);
+  if (!text) return null;
+
+  let html: string;
+  try {
+    const parsed = JSON.parse(text);
+    html = parsed.parse?.text?.["*"] ?? "";
+  } catch { return null; }
+
+  if (!html) return null;
+
+  squadPageHtmlInMem.set(dbKey, { html, at: Date.now() });
+  setCached(dbKey, { html }, SQUAD_PAGE_HTML_TTL).catch(() => {});
+  return html;
+}
+
+function normTeamForWiki(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\s+national\s+(football|soccer)\s+team\b/i, "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z\s]/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+// fd.org national team names that differ from Wikipedia article headings
+const TEAM_WIKI_ALIASES: Record<string, string[]> = {
+  "usa":               ["united states"],
+  "united states":     ["usa"],
+  "south korea":       ["korea republic", "republic of korea"],
+  "republic of korea": ["south korea"],
+  "iran":              ["ir iran"],
+  "ivory coast":       ["cote d ivoire"],
+  "czech republic":    ["czechia"],
+  "türkiye":           ["turkey"],
+  "turkey":            ["türkiye"],
+};
+
+function teamHeadingMatches(heading: string, targetNorm: string): boolean {
+  if (heading === targetNorm) return true;
+  const aliases = TEAM_WIKI_ALIASES[targetNorm] ?? [];
+  if (aliases.some((a) => heading === a || heading.includes(a) || a.includes(heading))) return true;
+  const tToks = targetNorm.split(" ").filter((t) => t.length >= 3);
+  const hToks = heading.split(" ").filter((t) => t.length >= 3);
+  return (tToks.length > 0 && tToks.every((t) => heading.includes(t))) ||
+         (hToks.length > 0 && hToks.every((h) => targetNorm.includes(h)));
+}
+
+function parseSquadTable($: ReturnType<typeof cheerio.load>, html: string, teamName: string, logTag: string): IntlSquadPlayer[] {
+  const targetNorm = normTeamForWiki(teamName);
+  let targetTable: cheerio.Cheerio<AnyNode> | null = null;
+
+  // Wikipedia tournament squad pages: <h2>Group X</h2> <h3>Country</h3> <table class="wikitable">
+  $("h2, h3").each((_, el) => {
+    if (targetTable) return;
+    const headingText = normTeamForWiki($(el).text());
+    if (!teamHeadingMatches(headingText, targetNorm)) return;
+
+    let sibling = $(el).next();
+    while (sibling.length) {
+      if (sibling.is("h2, h3")) break;
+      if (sibling.is("table.wikitable")) { targetTable = sibling; return; }
+      const inner = sibling.find("table.wikitable").first();
+      if (inner.length) { targetTable = inner; return; }
+      sibling = sibling.next();
+    }
+  });
+
+  if (!targetTable) {
+    console.log(`[${logTag}] No squad table found for "${teamName}" (norm: "${targetNorm}")`);
+    return [];
+  }
+
+  const players: IntlSquadPlayer[] = [];
+
+  (targetTable as cheerio.Cheerio<AnyNode>).find("tr").each((_, tr) => {
+    const cells = $(tr).find("td");
+    if (cells.length < 4) return; // header row uses <th>
+
+    const posAbbr = $(cells.eq(1)).text().trim();
+    let playerName = $(cells.eq(2)).find("a").last().text().trim();
+    if (!playerName) playerName = $(cells.eq(2)).text().trim();
+    playerName = playerName.replace(/\s*\[[^\]]*\]/g, "").replace(/\*+$/, "").trim();
+    if (!playerName || playerName.length < 2) return;
+
+    const bday = $(cells.eq(3)).find(".bday").text().trim();
+    const dobMatch = bday || ($(cells.eq(3)).text().match(/(\d{4}-\d{2}-\d{2})/)?.[1] ?? "");
+
+    players.push({ name: playerName, position: mapWikiPosAbbr(posAbbr), dateOfBirth: dobMatch });
+  });
+
+  console.log(`[${logTag}] ${teamName} → ${players.length} players from Wikipedia`);
+  return players;
+}
+
+async function getIntlSquadFromWiki(
+  wikiPageTitle: string,
+  dbKey: string,
+  teamName: string,
+  logTag: string
+): Promise<IntlSquadPlayer[]> {
+  const html = await getSquadPageHtml(wikiPageTitle, dbKey);
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  return parseSquadTable($, html, teamName, logTag);
+}
+
+// WC 2026 squad supplement
+export async function getWcSquadFromWiki(teamName: string): Promise<IntlSquadPlayer[]> {
+  return getIntlSquadFromWiki(
+    "2026_FIFA_World_Cup_squads",
+    "/wiki-squad-html/wc-2026",
+    teamName,
+    "wcSquad"
+  );
+}
+
+// Euro 2024 squad supplement (most recent UEFA European Championship)
+export async function getEcSquadFromWiki(teamName: string): Promise<IntlSquadPlayer[]> {
+  return getIntlSquadFromWiki(
+    "UEFA_Euro_2024_squads",
+    "/wiki-squad-html/ec-2024",
+    teamName,
+    "ecSquad"
+  );
 }

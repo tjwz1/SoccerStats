@@ -19,7 +19,23 @@ router.get("/:id", async (req, res) => {
       return res.json(cached);
     }
 
-    const data = await getPlayer(req.params.id, competition);
+    // 20-second hard cap — Wikipedia/TM scrapes can hang on first load for
+    // unknown players; this ensures the client gets a fast error + retry
+    // rather than an indefinite spinner.
+    // The background lookup continues after the timeout and caches its result
+    // so the client's retry returns instantly.
+    const LOOKUP_TIMEOUT_MS = 20_000;
+    const lookupPromise = getPlayer(req.params.id, competition);
+    lookupPromise.then((d) => {
+      if ((d as any)?.career?.length > 0) setCached(cacheKey, d, PLAYER_RESPONSE_TTL_MS);
+    }).catch(() => {});
+
+    const data = await Promise.race([
+      lookupPromise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Player lookup timed out")), LOOKUP_TIMEOUT_MS)
+      ),
+    ]);
     // Only cache when we have career data — avoids persisting empty results from
     // a first-run wiki/TM scrape failure and blocking retries for 10 minutes.
     if ((data as any)?.career?.length > 0) {

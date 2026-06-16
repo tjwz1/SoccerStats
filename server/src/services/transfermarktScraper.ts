@@ -34,7 +34,7 @@ async function tmFetch(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
       headers: HEADERS,
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(8_000),
       redirect: "follow",
     });
     if (res.status === 403 || res.status === 429) {
@@ -248,7 +248,7 @@ async function fetchTmPerformanceJson(
       Accept: "application/json, text/plain, */*",
       Referer: `${BASE}/`,
     },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(6_000),
     redirect: "follow",
   }).then((r) => (r.ok ? r.text() : null)).catch(() => null);
 
@@ -348,4 +348,112 @@ export async function scrapeTransfermarktPlayerHonours(playerName: string): Prom
   const trophies = raw.filter(t => /[a-zA-Z]/.test(t.name));
   console.log(`[transfermarkt] ${playerName} → ${trophies.length} player honours (${raw.length - trophies.length} year-only entries filtered)`);
   return trophies;
+}
+
+// ── Club squad scraper ────────────────────────────────────────────────────────
+// Fetches TM's /kader/ (squad) page for a club and returns every registered player.
+// Used to supplement fd.org squad data which can be incomplete for some leagues.
+
+export interface TmSquadPlayer {
+  name: string;
+  position: string; // fd.org-style position string or generic fallback
+}
+
+// Map TM full-text position labels (as they appear on the /kader/ page) to the
+// same strings that fd.org uses so getRole() can process them directly.
+const TM_POS_MAP: Record<string, string> = {
+  "goalkeeper":          "Goalkeeper",
+  "centre-back":         "Centre-Back",
+  "center-back":         "Centre-Back",
+  "central defence":     "Centre-Back",
+  "sweeper":             "Sweeper",
+  "left-back":           "Left-Back",
+  "right-back":          "Right-Back",
+  "wing-back left":      "Wing-Back (Left)",
+  "wing-back right":     "Wing-Back (Right)",
+  "left wing-back":      "Wing-Back (Left)",
+  "right wing-back":     "Wing-Back (Right)",
+  "defensive midfield":  "Defensive Midfield",
+  "central midfield":    "Central Midfield",
+  "attacking midfield":  "Attacking Midfield",
+  "left midfield":       "Left Midfield",
+  "right midfield":      "Right Midfield",
+  "left winger":         "Left Winger",
+  "right winger":        "Right Winger",
+  "second striker":      "Second Striker",
+  "centre-forward":      "Centre-Forward",
+  "center-forward":      "Centre-Forward",
+  "striker":             "Centre-Forward",
+};
+
+function mapTmPosition(raw: string): string {
+  const lower = raw.toLowerCase().trim();
+  if (TM_POS_MAP[lower]) return TM_POS_MAP[lower];
+  // Partial-match fallback
+  if (lower.includes("goalkeeper") || lower === "gk") return "Goalkeeper";
+  if (lower.includes("back") || lower.includes("defence") || lower.includes("defense") || lower === "cb" || lower === "lb" || lower === "rb") return "Defence";
+  if (lower.includes("midfield") || lower === "dm" || lower === "cm" || lower === "am") return "Midfield";
+  if (lower.includes("forward") || lower.includes("winger") || lower.includes("striker") || lower === "fw") return "Offence";
+  return "Midfield";
+}
+
+// TM /kader/ squad page rows: player links matching PLAYER_HREF plus the position
+// text that appears in a sibling cell within the same <tr>.
+function parseTmSquadHtml(html: string): TmSquadPlayer[] {
+  const $ = cheerio.load(html);
+  const players: TmSquadPlayer[] = [];
+  const seen = new Set<string>();
+
+  // Walk every row in the items table; each player row has a .hauptlink anchor
+  // linking to their profile and a position label in an adjacent cell.
+  $("table.items tbody tr").each((_, tr) => {
+    // Player name from the hauptlink anchor — skip rows with no player link
+    const anchor = $(tr).find("td.hauptlink a[href]").first();
+    if (!anchor.length) return;
+
+    const href = anchor.attr("href") ?? "";
+    if (!PLAYER_HREF.test(href)) return;
+
+    const name = anchor.text().trim();
+    if (!name || name.length < 2 || seen.has(name)) return;
+    seen.add(name);
+
+    // Position from the "posrela" cell (abbreviated text in a nested <td>)
+    // or from cells that contain only a position string.
+    const posCell = $(tr).find("td.posrela");
+    const posText = posCell.find("td").last().text().trim() || posCell.text().trim();
+
+    players.push({ name, position: mapTmPosition(posText) || "Midfield" });
+  });
+
+  return players;
+}
+
+const TM_SQUAD_TTL_MS = 24 * 60 * 60 * 1000; // 24 h — squads change at most at transfer deadline
+
+export async function getTmClubSquad(clubName: string, season: number): Promise<TmSquadPlayer[]> {
+  const club = await tmSearch(clubName, CLUB_HREF);
+  if (!club) {
+    console.log(`[transfermarkt] Club not found for squad "${clubName}"`);
+    return [];
+  }
+
+  const dbKey = `/tm-squad/${club.id}/${season}`;
+  const cached = await getCached(dbKey);
+  if (cached) return cached as TmSquadPlayer[];
+
+  await sleep(200);
+
+  const url = `${BASE}/${club.slug}/kader/verein/${club.id}/saison_id/${season}`;
+  const html = await tmFetch(url);
+  if (!html) {
+    console.log(`[transfermarkt] Squad page unavailable for "${clubName}" (${url})`);
+    return [];
+  }
+
+  const players = parseTmSquadHtml(html);
+  console.log(`[transfermarkt] ${clubName} → ${players.length} players from squad page (season ${season})`);
+
+  if (players.length > 0) setCached(dbKey, players, TM_SQUAD_TTL_MS);
+  return players;
 }

@@ -208,12 +208,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         projectedPosition: 0,
       };
     });
-    augmented.sort((a, b) =>
-      b.projectedPts !== a.projectedPts
-        ? b.projectedPts - a.projectedPts
-        : b.projectedGD - a.projectedGD
-    );
-    augmented.forEach((r, i) => { r.projectedPosition = i + 1; });
     return augmented;
   }, [rows, liveMatches, liveByTeam]);
 
@@ -313,9 +307,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
           <span className="text-center">D</span>
           <span className="text-center">L</span>
           <span className="text-center">GD</span>
-          <span className="text-center font-bold text-slate-400">
-            {hasLiveInGroup ? "Proj" : "Pts"}
-          </span>
+          <span className="text-center font-bold text-slate-400">Pts</span>
           <span className="text-center">Form</span>
           <span />
         </div>
@@ -340,8 +332,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
         {/* Rows */}
         {projectedRows.map((row, i) => {
-          const zone = getZone(comp.code, row.projectedPosition, rows.length);
-          const posChange = row.projectedPosition - row.originalPosition;
+          const zone = getZone(comp.code, row.position, rows.length);
           const isLive = row.liveMatch !== null;
           const oppName = isLive
             ? (row.liveMatch!.homeTeamId === row.team.id
@@ -372,15 +363,9 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
               <span className={`absolute left-0 top-0 bottom-0 w-1 ${ZONE_DOT[zone]}`} />
             )}
 
-            {/* Position + movement arrow */}
-            <span className="flex items-center justify-end gap-0.5 text-sm text-slate-500 tabular-nums font-medium">
-              {posChange < 0 && (
-                <span className="text-[9px] text-green-400 leading-none">▲</span>
-              )}
-              {posChange > 0 && (
-                <span className="text-[9px] text-red-400 leading-none">▼</span>
-              )}
-              {row.projectedPosition}
+            {/* Position */}
+            <span className="flex items-center justify-end text-sm text-slate-500 tabular-nums font-medium">
+              {row.position}
             </span>
 
             {/* Club name + crest + optional live score chip */}
@@ -425,20 +410,20 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
             <span
               onClick={() => onSelectTeam(row.team)}
               className={`text-center text-sm tabular-nums font-medium cursor-pointer ${
-                row.projectedGD > 0
+                row.goalDifference > 0
                   ? "text-green-400/80"
-                  : row.projectedGD < 0
+                  : row.goalDifference < 0
                   ? "text-red-400/80"
                   : "text-slate-400"
               }`}
             >
-              {row.projectedGD > 0 ? `+${row.projectedGD}` : row.projectedGD}
+              {row.goalDifference > 0 ? `+${row.goalDifference}` : row.goalDifference}
             </span>
             <span
               onClick={() => onSelectTeam(row.team)}
-              className={`text-center text-sm font-bold tabular-nums cursor-pointer ${isLive ? "text-green-300" : "text-white"}`}
+              className="text-center text-sm font-bold tabular-nums cursor-pointer text-white"
             >
-              {row.projectedPts}
+              {row.points}
             </span>
 
             {/* Form pips */}

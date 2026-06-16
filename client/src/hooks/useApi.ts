@@ -24,20 +24,23 @@ const SESSION_CACHE = new Map<string, { data: unknown; at: number }>();
 // the second attaches to the first's promise rather than making a duplicate HTTP request.
 const INFLIGHT = new Map<string, Promise<unknown>>();
 
-function sessionGet(url: string): unknown | undefined {
+export function sessionGet(url: string): unknown | undefined {
   const entry = SESSION_CACHE.get(url);
   if (!entry) return undefined;
   if (Date.now() - entry.at > SESSION_CACHE_TTL_MS) { SESSION_CACHE.delete(url); return undefined; }
   return entry.data;
 }
 
-function sessionSet(url: string, data: unknown) {
+export function sessionSet(url: string, data: unknown) {
   if (SESSION_CACHE.size >= SESSION_CACHE_MAX) {
-    // Evict oldest entry (Map preserves insertion order)
     const firstKey = SESSION_CACHE.keys().next().value;
     if (firstKey !== undefined) SESSION_CACHE.delete(firstKey);
   }
   SESSION_CACHE.set(url, { data, at: Date.now() });
+}
+
+export function clearSessionCache() {
+  SESSION_CACHE.clear();
 }
 
 export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
@@ -105,6 +108,14 @@ export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
     }
     return load(url, noCache);
   }, [url, load, noCache]);
+
+  // Re-fetch when the server restarts (SESSION_CACHE was cleared before this fires).
+  useEffect(() => {
+    if (!url) return;
+    const onRestart = () => load(url, false);
+    window.addEventListener("server-restart", onRestart);
+    return () => window.removeEventListener("server-restart", onRestart);
+  }, [url, load]);
 
   const retry = useCallback(() => {
     if (!url) return;

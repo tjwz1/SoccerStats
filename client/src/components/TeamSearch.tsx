@@ -66,9 +66,8 @@ function StatLeaders({
     filter === "assists"     ? (stats?.assists      ?? []) :
                                (stats?.cleanSheets  ?? []);
 
-  // Rank with ties, then show top 10 ranks (all players tied at the boundary are included)
   const ranked = withRanks(allLeaders);
-  const leaders = ranked.filter((s) => s.rank <= 10);
+  const leaders = ranked.slice(0, 10);
 
   const hasLive = !!stats?.hasLive && filter !== "cleanSheets";
 

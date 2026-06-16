@@ -24,7 +24,12 @@ export function LiveMatchesProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     fetchLive();
     const id = setInterval(fetchLive, 30_000);
-    return () => clearInterval(id);
+    // Re-fetch immediately when the server restarts
+    window.addEventListener("server-restart", fetchLive);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("server-restart", fetchLive);
+    };
   }, []);
 
   const liveById = useMemo(() => {

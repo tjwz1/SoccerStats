@@ -121,14 +121,19 @@ router.get("/competitions/:code/live-matches", async (req, res) => {
 router.get("/competitions/:code/standings", async (req, res) => {
   try {
     const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
-    const cacheKey = `/standings/v5/${req.params.code}${season ? `/${season}` : ""}`;
-    // Past-season standings are immutable — cache forever. Current season needs a short
-    // TTL so form and points update promptly after a match ends (client polls every 60s).
-    const standingsTtl = season ? (365 * 24 * 60 * 60 * 1000) : (2 * 60 * 1000);
-    await serveWithSWR(res, cacheKey, standingsTtl,
-      () => getStandings(req.params.code, season),
-      (d) => d.groups.length > 0
-    );
+    if (season) {
+      // Past seasons are immutable — SWR with permanent cache is safe.
+      const cacheKey = `/standings/v5/${req.params.code}/${season}`;
+      await serveWithSWR(res, cacheKey, 365 * 24 * 60 * 60 * 1000,
+        () => getStandings(req.params.code, season),
+        (d) => d.groups.length > 0
+      );
+    } else {
+      // Current season: skip route-level cache so there is only ONE SWR layer
+      // (inside apiFetch). Avoids stale assembled standings being served while
+      // fresh raw fd.org data has already landed in the background.
+      res.json(await getStandings(req.params.code, season));
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -200,7 +205,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
       await Promise.all(
         finishedList.map(async (m) => {
           try {
-            const events = await getMatchGoalEvents(m.homeTeam, m.awayTeam, m.utcDate, code);
+            const events = await getMatchGoalEvents(m.id, m.homeTeam, m.awayTeam, m.utcDate, code);
             for (const e of events) {
               if (e.ownGoal || !e.assist) continue;
               const isHome = namesMatch(m.homeTeam, e.teamDisplayName);
@@ -245,7 +250,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
 
     await Promise.all(liveMatches.map(async (match) => {
       try {
-        const events = await getMatchGoalEvents(match.homeTeam, match.awayTeam, match.utcDate, match.competitionCode);
+        const events = await getMatchGoalEvents(match.id, match.homeTeam, match.awayTeam, match.utcDate, match.competitionCode, true);
         for (const e of events) {
           if (e.ownGoal) continue;
           const isHome = namesMatch(match.homeTeam, e.teamDisplayName);
@@ -413,7 +418,7 @@ router.get("/matches/:id", async (req, res) => {
       // Supplement goals from ESPN when fd.org returns none (free-tier gap)
       if (goals.length === 0) {
         try {
-          const espnGoals = await getMatchGoalEvents(homeTeam, awayTeam, utcDate, competition);
+          const espnGoals = await getMatchGoalEvents(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
           if (espnGoals.length > 0) {
             goals = espnGoals.map((g) => ({
               minute: g.minute,
@@ -576,6 +581,13 @@ router.get("/teams/:id/schedule", async (req, res) => {
       return res.json(cached ?? []);
     }
 
+    // Short-TTL cache for the assembled schedule (memCache-only, 60s).
+    // Avoids re-running 4 parallel fd.org fetches + cup scraping on every page visit.
+    const assembledKey = `/team-schedule-full/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
+    const ASSEMBLED_TTL = 60 * 1000; // 60s — short enough for live-score freshness
+    const assembledCached = await getCached(assembledKey);
+    if (assembledCached) return res.json(assembledCached);
+
     // Fetch football-data.org schedule + cup matches in parallel
     const [fdMatches, cupMatches] = await Promise.all([
       getTeamSchedule(req.params.id, domestic, season),
@@ -610,6 +622,9 @@ router.get("/teams/:id/schedule", async (req, res) => {
     // Persist finished matches permanently — they are immutable and serve the ?past=true fast path.
     const finished = merged.filter((m) => m.status === "FINISHED");
     if (finished.length > 0) setCached(pastKey, finished, FOREVER_TTL_MS);
+
+    // Cache assembled result in memCache for 60s so repeated visits are instant.
+    setCached(assembledKey, merged, ASSEMBLED_TTL);
 
     res.json(merged);
   } catch (e: any) {

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type { Player, Team, LineupData, Competition, ClubTrophy } from "../types";
-import { useApi } from "../hooks/useApi";
+import { useApi, sessionGet, sessionSet } from "../hooks/useApi";
 import { useFavourites } from "../hooks/useFavourites";
 import { useTheme } from "../contexts/ThemeContext";
 import TeamSearch from "../components/TeamSearch";
@@ -90,6 +90,17 @@ export default function MainView() {
       ? `/api/teams/${selectedTeam.id}/honours?name=${encodeURIComponent(selectedTeam.name)}`
       : null
   );
+
+  // Preload schedule in the background when a team is selected so the Schedule tab opens instantly.
+  useEffect(() => {
+    if (!selectedTeam || !selectedComp) return;
+    const url = `/api/teams/${selectedTeam.id}/schedule?competition=${selectedComp.code}&name=${encodeURIComponent(selectedTeam.name)}`;
+    if (sessionGet(url)) return; // already cached
+    fetch(url)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data) sessionSet(url, data); })
+      .catch(() => {});
+  }, [selectedTeam?.id, selectedComp?.code]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeViewDef = VIEW_REGISTRY.find((v) => v.id === view) ?? VIEW_REGISTRY[0];
 
