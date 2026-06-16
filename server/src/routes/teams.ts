@@ -584,7 +584,7 @@ router.get("/teams/:id/schedule", async (req, res) => {
     // Short-TTL cache for the assembled schedule (memCache-only, 60s).
     // Avoids re-running 4 parallel fd.org fetches + cup scraping on every page visit.
     const assembledKey = `/team-schedule-full/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
-    const ASSEMBLED_TTL = 60 * 1000; // 60s — short enough for live-score freshness
+    const ASSEMBLED_TTL = 5 * 60 * 1000; // 5 min — schedule data changes at most every 2 min (fd.org TTL)
     const assembledCached = await getCached(assembledKey);
     if (assembledCached) return res.json(assembledCached);
 

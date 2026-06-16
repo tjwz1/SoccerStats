@@ -6,6 +6,10 @@ import { getCached, setCached } from "../db/apiCache";
 // scorer + wiki + TM lookups on every request while still refreshing after a match day.
 const PLAYER_RESPONSE_TTL_MS = 10 * 60 * 1000;
 
+// Deduplicates concurrent requests for the same player+competition so two simultaneous
+// browser tabs or a retry during the 20s window share one getPlayer() call.
+const inflightLookups = new Map<string, Promise<unknown>>();
+
 const router = Router();
 
 router.get("/:id", async (req, res) => {
@@ -25,10 +29,19 @@ router.get("/:id", async (req, res) => {
     // The background lookup continues after the timeout and caches its result
     // so the client's retry returns instantly.
     const LOOKUP_TIMEOUT_MS = 20_000;
-    const lookupPromise = getPlayer(req.params.id, competition);
-    lookupPromise.then((d) => {
-      if ((d as any)?.career?.length > 0) setCached(cacheKey, d, PLAYER_RESPONSE_TTL_MS);
-    }).catch(() => {});
+
+    // Reuse an in-flight lookup if one is already running for this player.
+    let lookupPromise = inflightLookups.get(cacheKey);
+    if (!lookupPromise) {
+      lookupPromise = getPlayer(req.params.id, competition);
+      inflightLookups.set(cacheKey, lookupPromise);
+      lookupPromise
+        .then((d) => {
+          if ((d as any)?.career?.length > 0) setCached(cacheKey, d, PLAYER_RESPONSE_TTL_MS);
+        })
+        .catch(() => {})
+        .finally(() => inflightLookups.delete(cacheKey));
+    }
 
     const data = await Promise.race([
       lookupPromise,

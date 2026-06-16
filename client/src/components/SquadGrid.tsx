@@ -130,7 +130,7 @@ export default function SquadGrid({ starters, bench, onClick, onHover }: Props) 
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
               {players.map((player) => (
                 <PlayerCard
-                  key={player.id}
+                  key={player.id === 0 ? `sup-${player.name}` : player.id}
                   player={player}
                   accent={accent}
                   onClick={onClick}

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import type { Competition, StandingsData, CompetitionSeason, Team, ScheduleMatch, StandingRow } from "../types";
 import { useApi } from "../hooks/useApi";
+import { useLiveMatches } from "../contexts/LiveMatchesContext";
 import BracketView from "../components/BracketView";
 
 // ── Qualification zone config ─────────────────────────────────────────────────
@@ -160,16 +161,13 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
     groups[0];
   const rows = activeGroup?.rows ?? [];
 
-  // Live matches for this competition — polled every 60s
-  const { data: liveMatches, retry: retryLive } = useApi<ScheduleMatch[]>(
-    `/api/competitions/${comp.code}/live-matches`
+  // Live matches come from the global context (polled every 30s by LiveMatchesContext).
+  // Filter to this competition — avoids a redundant per-competition polling interval.
+  const { liveMatches: allLiveMatches } = useLiveMatches();
+  const liveMatches = useMemo(
+    () => allLiveMatches.filter((m) => m.competitionCode === comp.code),
+    [allLiveMatches, comp.code]
   );
-  const retryLiveRef = useRef(retryLive);
-  useEffect(() => { retryLiveRef.current = retryLive; }, [retryLive]);
-  useEffect(() => {
-    const id = setInterval(() => retryLiveRef.current(), 30_000);
-    return () => clearInterval(id);
-  }, []);
 
   // team ID → live match lookup (covers all groups in tournament)
   const liveByTeam = useMemo(() => {

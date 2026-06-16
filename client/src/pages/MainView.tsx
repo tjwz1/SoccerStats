@@ -110,6 +110,7 @@ export default function MainView() {
   }
 
   function handlePlayerClick(player: Player) {
+    if (!player.id) return; // id=0 = TM/wiki supplemented player, no career data
     navigate(`/player/${player.id}?competition=${selectedComp?.code ?? "PL"}`, {
       state: { player, teamName: selectedTeam?.name },
     });

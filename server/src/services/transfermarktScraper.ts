@@ -283,7 +283,7 @@ async function fetchTmPerformanceJson(
 
 /** Resolve a club's Transfermarkt slug and numeric ID for use in schedule pages. */
 export async function getTmClubRef(clubName: string): Promise<{ slug: string; id: string } | null> {
-  const ref = await tmSearch(clubName, CLUB_HREF);
+  const ref = await resolveClubRef(clubName);
   if (!ref) return null;
   return { slug: ref.slug, id: ref.id };
 }
@@ -309,7 +309,7 @@ export async function scrapeTransfermarktPlayerStats(
 }
 
 export async function scrapeTransfermarktHonours(teamName: string): Promise<ClubTrophy[]> {
-  const club = await tmSearch(teamName, CLUB_HREF);
+  const club = await resolveClubRef(teamName);
   if (!club) {
     console.log(`[transfermarkt] Club not found for "${teamName}"`);
     return [];
@@ -431,8 +431,102 @@ function parseTmSquadHtml(html: string): TmSquadPlayer[] {
 
 const TM_SQUAD_TTL_MS = 24 * 60 * 60 * 1000; // 24 h — squads change at most at transfer deadline
 
+// Maps fd.org club names → TM search queries for clubs whose names don't match TM's catalogue.
+// Only needed when fd.org uses a different canonical name than TM (prefixes, year suffixes, etc.)
+const TM_CLUB_NAME_ALIASES: Record<string, string> = {
+  // Serie A
+  "FC Internazionale Milano": "Inter Milan",
+  "ACF Fiorentina": "Fiorentina",
+  "Atalanta BC": "Atalanta",
+  "Bologna FC 1909": "Bologna",
+  "Cagliari Calcio": "Cagliari",
+  "Genoa CFC": "Genoa",
+  "Juventus FC": "Juventus",
+  "SS Lazio": "Lazio",
+  "SSC Napoli": "Napoli",
+  "Parma Calcio 1913": "Parma",
+  "Udinese Calcio": "Udinese",
+  "Frosinone Calcio": "Frosinone",
+  "US Sassuolo Calcio": "Sassuolo",
+  "US Lecce": "Lecce",
+  "Venezia FC": "Venezia",
+  "Como 1907": "Como",
+  // Bundesliga
+  "1. FC Köln": "FC Köln",
+  "TSG 1899 Hoffenheim": "Hoffenheim",
+  "1. FSV Mainz 05": "Mainz 05",
+  "FC St. Pauli 1910": "FC St. Pauli",
+  "1. FC Union Berlin": "Union Berlin",
+  "1. FC Heidenheim 1846": "Heidenheim",
+  "FC Bayern München": "Bayern Munich",
+  // La Liga
+  "Club Atlético de Madrid": "Atletico Madrid",
+  "RCD Espanyol de Barcelona": "Espanyol",
+  "Real Betis Balompié": "Real Betis",
+  "Real Sociedad de Fútbol": "Real Sociedad",
+  "Deportivo Alavés": "Deportivo Alavés",
+  "Rayo Vallecano de Madrid": "Rayo Vallecano",
+  // Ligue 1
+  "Paris Saint-Germain FC": "Paris Saint-Germain",
+  "Stade Rennais FC 1901": "Stade Rennes",
+  "AS Monaco FC": "AS Monaco",
+  "RC Strasbourg Alsace": "RC Strasbourg",
+  "ES Troyes AC": "Troyes",
+  "Racing Club de Lens": "Racing Lens",
+  "Stade Brestois 29": "Stade Brest",
+  "Olympique Lyonnais": "Olympique Lyonnais",
+  // Eredivisie
+  "AFC Ajax": "Ajax",
+  "FC Twente '65": "FC Twente",
+  "SC Cambuur-Leeuwarden": "SC Cambuur",
+  "Willem II Tilburg": "Willem II",
+  "ADO Den Haag": "ADO Den Haag",
+  // Brasileirão
+  "CA Mineiro": "Atletico Mineiro",
+  "Grêmio FBPA": "Grêmio",
+  "CA Paranaense": "Atletico Paranaense",
+  "SE Palmeiras": "Palmeiras",
+  "Botafogo FR": "Botafogo",
+  "Cruzeiro EC": "Cruzeiro",
+  "Chapecoense AF": "Chapecoense",
+  "SC Corinthians Paulista": "Corinthians",
+  "CR Vasco da Gama": "Vasco da Gama",
+  "EC Bahia": "Bahia",
+  "EC Vitória": "Vitória",
+  "SC Internacional": "Internacional",
+  "Fluminense FC": "Fluminense",
+  "Santos FC": "Santos",
+  "São Paulo FC": "São Paulo",
+  "Coritiba FBC": "Coritiba",
+  "Clube do Remo": "Clube do Remo",
+  "Mirassol FC": "Mirassol",
+  // Primeira Liga
+  "Sport Lisboa e Benfica": "SL Benfica",
+  "Sporting Clube de Portugal": "Sporting CP",
+  "Sporting Clube de Braga": "SC Braga",
+  "GD Estoril Praia": "Estoril",
+  "Moreirense FC": "Moreirense",
+  "Gil Vicente FC": "Gil Vicente",
+  "Vitória SC": "Vitória SC",
+  "FC Arouca": "Arouca",
+  "CF Estrela da Amadora": "Estrela Amadora",
+  // Premier League
+  "Brighton & Hove Albion FC": "Brighton & Hove Albion",
+  "Wolverhampton Wanderers FC": "Wolverhampton Wanderers",
+};
+
+/** Resolve TM search query for a club: try raw name, fall back to alias if not found. */
+async function resolveClubRef(clubName: string): Promise<EntityRef | null> {
+  const ref = await tmSearch(clubName, CLUB_HREF);
+  if (ref) return ref;
+  const alias = TM_CLUB_NAME_ALIASES[clubName];
+  if (!alias) return null;
+  console.log(`[transfermarkt] Retrying "${clubName}" as "${alias}"`);
+  return tmSearch(alias, CLUB_HREF);
+}
+
 export async function getTmClubSquad(clubName: string, season: number): Promise<TmSquadPlayer[]> {
-  const club = await tmSearch(clubName, CLUB_HREF);
+  const club = await resolveClubRef(clubName);
   if (!club) {
     console.log(`[transfermarkt] Club not found for squad "${clubName}"`);
     return [];

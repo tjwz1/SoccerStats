@@ -35,9 +35,10 @@ export default function PlayerMarker({ player, x, y, size = "normal", subbedOut 
   const avatarSize = size === "small" ? "w-8 h-8 text-[10px]" : "w-10 h-10 text-xs";
   const lastName = player.name.split(" ").pop() ?? player.name;
 
+  const hasStats = player.id !== 0;
   return (
     <button
-      className="absolute flex flex-col items-center gap-0.5 -translate-x-1/2 -translate-y-1/2 cursor-pointer group"
+      className={`absolute flex flex-col items-center gap-0.5 -translate-x-1/2 -translate-y-1/2 group ${hasStats ? "cursor-pointer" : "cursor-default opacity-75"}`}
       style={{ left: `${x}%`, top: `${y}%` }}
       onMouseEnter={onHover ? (e) => onHover(player, e.clientX, e.clientY) : undefined}
       onMouseLeave={onHover ? () => onHover(null, 0, 0) : undefined}

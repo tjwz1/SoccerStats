@@ -1495,7 +1495,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     setPhotoCache(Number(id), url);
   }
 
-  const xi = selectXI(squad, allSquadPhotos, appearances, careerApps);
+  let xi = selectXI(squad, allSquadPhotos, appearances, careerApps);
   const starterIds = new Set(xi.map((x) => x.player.id));
 
   // Bench: all non-starters (no cap — squad view shows all).
@@ -1579,11 +1579,40 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     }
   } else if (compCode) {
     // Club competitions: use Transfermarkt /kader/ page
+    // 15s cap so a slow TM cold-start doesn't block the entire lineup response
     try {
-      const tmSquad = await getTmClubSquad(data.name, CURRENT_SEASON);
+      const tmSquad = await Promise.race([
+        getTmClubSquad(data.name, CURRENT_SEASON),
+        new Promise<TmSquadPlayer[]>((resolve) => setTimeout(() => resolve([]), 15_000)),
+      ]);
       addMissing(tmSquad, buildExistingNorms(), `TM (${compCode})`);
     } catch (e) {
       console.warn(`[lineup] TM squad supplement failed for ${data.name}:`, (e as Error).message);
+    }
+  }
+
+  // When fd.org returned an empty squad, promote TM supplement players to form the XI.
+  // supplementPlayers have specific TM positions (e.g. "Central Midfield") so selectXI
+  // can build a formation from them; remaining non-starters stay in supplementPlayers.
+  if (xi.length === 0 && supplementPlayers.length >= 11) {
+    // Use negative sequential IDs so selectXI's deduplication set works correctly
+    // (all supplement players would otherwise share id=0 and collide).
+    const fakeSquad = supplementPlayers.map((p, i) => ({
+      id: -(i + 1),
+      name: p.name,
+      position: p.position,
+      nationality: "",
+      dateOfBirth: p.dateOfBirth,
+      shirtNumber: null,
+    }));
+    const tmXi = selectXI(fakeSquad, {}, new Map(), new Map());
+    if (tmXi.length >= 11) {
+      const tmStarterNames = new Set(tmXi.map((x) => x.player.name));
+      const remaining = supplementPlayers.filter((p) => !tmStarterNames.has(p.name));
+      supplementPlayers.splice(0, supplementPlayers.length, ...remaining);
+      // Reset each starter's id back to 0 (non-interactive) before using
+      xi = tmXi.map((x) => ({ ...x, player: { ...x.player, id: 0 } }));
+      console.log(`[lineup] TM XI fallback for ${data.name}: ${tmXi.length} starters`);
     }
   }
 
@@ -1884,24 +1913,22 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     ...(currentSeasonCodes.has("ECL") ? ["ECL"] : []),
   ])];
 
-  // Run past-season scorer lookups with a concurrency cap of 5 to avoid mass 429s.
-  // Cached results return instantly; only cache-miss calls hit the API rate limit.
+  // Past-season scorer lookups: run all in parallel.
+  // Past seasons use FOREVER_TTL so Supabase/memCache hits dominate — running all at once
+  // reduces wait time from ceil(N/5)×50ms batches to a single ~50ms parallel read.
+  // apiFetch deduplicates in-flight requests for the same path, so concurrent fd.org
+  // misses on the same path share one HTTP call rather than stacking 429s.
   const pastSeasonTasks = CAREER_SEASONS.flatMap((season) =>
     activeComps.map((code) => ({ code, season }))
   );
 
-  const CONCURRENCY = 5;
-  const pastSeasonHits: Array<{ code: string; season: number; entry: ScorerEntry }> = [];
-  for (let i = 0; i < pastSeasonTasks.length; i += CONCURRENCY) {
-    const batch = pastSeasonTasks.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(
-      batch.map(async ({ code, season }) => {
-        const entry = await fetchScorerStats(id, code, season);
-        return entry ? { code, season, entry } : null;
-      })
-    );
-    for (const r of results) if (r) pastSeasonHits.push(r);
-  }
+  const pastSeasonResults = await Promise.all(
+    pastSeasonTasks.map(async ({ code, season }) => {
+      const entry = await fetchScorerStats(id, code, season);
+      return entry ? { code, season, entry } : null;
+    })
+  );
+  const pastSeasonHits = pastSeasonResults.filter(Boolean) as Array<{ code: string; season: number; entry: ScorerEntry }>;
 
   // Career rows: each (competition × season) pair is its own row
   interface CareerRow { season: string; team: string; competition: string; appearances: number; goals: number; assists: number; }
