@@ -1401,9 +1401,21 @@ export async function getFinishedMatchList(
 export async function getTeamLineup(teamId: string, competitionCode?: string) {
   if (useMock()) return MOCK_LINEUP;
 
-  // Kick off squad + scorers concurrently when competition code is already known
+  // Kick off squad + scorers concurrently when competition code is already known.
+  // Squad source: prefer /competitions/{code}/teams (works on fd.org free tier and is
+  // already cached in Supabase by getTeams). Fall back to /teams/{id} only when the
+  // competition endpoint doesn't contain this team (e.g. search result from another league).
   const [teamData, preloadedScorers] = await Promise.all([
-    apiFetch(`/teams/${teamId}`, SQUAD_TTL_MS),
+    (async () => {
+      if (competitionCode) {
+        try {
+          const d = await apiFetch(`/competitions/${competitionCode}/teams`, SQUAD_TTL_MS) as any;
+          const found = d.teams?.find((t: any) => String(t.id) === String(teamId));
+          if (found?.squad?.length > 0) return found;
+        } catch { /* fall through to /teams/{id} */ }
+      }
+      return apiFetch(`/teams/${teamId}`, SQUAD_TTL_MS);
+    })(),
     competitionCode
       ? apiFetch(`/competitions/${competitionCode}/scorers?season=${CURRENT_SEASON}&limit=400`, SCORERS_CURRENT_TTL_MS).catch(() => null)
       : Promise.resolve(null),
