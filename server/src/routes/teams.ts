@@ -35,11 +35,10 @@ import type { MatchLineupPlayer } from "../services/footballApi";
 
 const CLUB_HONOURS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-// In-memory cache for computed lineup responses — avoids re-running photo resolution
-// and XI selection on every request. Underlying squad + scorer data (in apiFetch/Supabase)
-// has its own TTL; this layer caches the assembled result for one hour.
+// In-memory L1 cache for assembled lineup responses — zero-latency within the same process.
+// Supabase (via serveWithSWR in the route) acts as L2, persisting across Vercel cold starts.
 const lineupCache = new Map<string, { data: unknown; fetchedAt: number }>();
-const LINEUP_TTL_MS = 60 * 60 * 1000; // 1 hour
+const LINEUP_TTL_MS = 24 * 60 * 60 * 1000; // 24h — squad changes at most weekly
 
 const router = Router();
 
@@ -363,13 +362,24 @@ router.get("/teams/search", async (req, res) => {
 
 router.get("/teams/:id/lineup", async (req, res) => {
   const competition = (req.query.competition as string) || "PL";
-  const cacheKey = `${req.params.id}:${competition}`;
-  const hit = lineupCache.get(cacheKey);
+  const memKey = `${req.params.id}:${competition}`;
+  const sbKey = `/team-lineup/v3/${req.params.id}/${competition}`;
+
+  // L1: in-memory — zero latency within the same process instance
+  const hit = lineupCache.get(memKey);
   if (hit && Date.now() - hit.fetchedAt < LINEUP_TTL_MS) return res.json(hit.data);
+
+  // L2: Supabase SWR — serves stale data immediately on Vercel cold starts,
+  // then refreshes in the background. Only blocks when there is no cached entry at all.
   try {
-    const data = await getTeamLineup(req.params.id, competition || undefined);
-    lineupCache.set(cacheKey, { data, fetchedAt: Date.now() });
-    res.json(data);
+    await serveWithSWR(res, sbKey, LINEUP_TTL_MS,
+      async () => {
+        const data = await getTeamLineup(req.params.id, competition || undefined);
+        lineupCache.set(memKey, { data, fetchedAt: Date.now() });
+        return data;
+      },
+      (d: any) => Array.isArray(d?.starters) && d.starters.length > 0
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

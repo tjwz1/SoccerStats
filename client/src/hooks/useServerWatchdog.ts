@@ -7,6 +7,11 @@ export function useServerWatchdog() {
   const lastStartedAt = useRef<number | null>(null);
 
   useEffect(() => {
+    // Serverless deployments (Vercel) create new function instances on every cold start,
+    // so startedAt changes constantly — disable the watchdog outside local dev to prevent
+    // a false-restart loop that clears the session cache every 15 seconds.
+    if (!import.meta.env.DEV) return;
+
     const check = async () => {
       try {
         const res = await fetch("/api/health");

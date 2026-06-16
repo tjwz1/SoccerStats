@@ -45,7 +45,7 @@ const BASE_URL = "https://api.football-data.org/v4";
 function apiKey() { return process.env.FOOTBALL_API_KEY; }
 function useMock() { return !apiKey(); }
 
-const SQUAD_TTL_MS = 6 * 60 * 60 * 1000;        // 6 h — squad composition changes at most weekly
+const SQUAD_TTL_MS = 24 * 60 * 60 * 1000;       // 24 h — squad composition changes at most weekly
 const SCORERS_CURRENT_TTL_MS = 2 * 60 * 1000;   // 2 min — fd.org updates scorers every ~2-5 min during live matches
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -1583,7 +1583,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     try {
       const tmSquad = await Promise.race([
         getTmClubSquad(data.name, CURRENT_SEASON),
-        new Promise<TmSquadPlayer[]>((resolve) => setTimeout(() => resolve([]), 15_000)),
+        new Promise<TmSquadPlayer[]>((resolve) => setTimeout(() => resolve([]), 7_000)),
       ]);
       addMissing(tmSquad, buildExistingNorms(), `TM (${compCode})`);
     } catch (e) {
