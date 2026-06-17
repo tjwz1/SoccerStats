@@ -751,8 +751,10 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
   if (forcedSeason) {
     seasons = [forcedSeason];
   } else if (isIntl) {
-    const intlYear = now.getFullYear();
-    seasons = [intlYear, intlYear - 1, intlYear - 2, intlYear - 3, intlYear - 4];
+    // Default to current year only — past tournament seasons are selected via the season picker.
+    // Fetching 5 years back for WC/EC causes 5 parallel fd.org calls, most returning empty,
+    // and the resulting payload pushes over Vercel's 10-second function timeout on cold cache.
+    seasons = [now.getFullYear()];
   } else {
     seasons = [CURRENT_SEASON];
   }
