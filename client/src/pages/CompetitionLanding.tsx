@@ -134,9 +134,10 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
   const retryStandingsRef = useRef(retryStandings);
   useEffect(() => { retryStandingsRef.current = retryStandings; }, [retryStandings]);
   useEffect(() => {
+    if (!hasLiveInGroup) return;
     const id = setInterval(() => retryStandingsRef.current(), 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, [hasLiveInGroup]);
 
   const groups = standings?.groups ?? [];
   const isMultiGroup = groups.length > 1;

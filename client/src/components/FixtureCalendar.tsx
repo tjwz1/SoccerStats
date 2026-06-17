@@ -351,9 +351,19 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
           >
             ‹
           </button>
-          <span className="text-white font-semibold text-sm tracking-wide">
-            {MONTH_NAMES[viewMonth]} {viewYear}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-white font-semibold text-sm tracking-wide">
+              {MONTH_NAMES[viewMonth]} {viewYear}
+            </span>
+            {(viewYear !== TODAY_YEAR || viewMonth !== TODAY_MONTH) && (
+              <button
+                onClick={() => { setViewYear(TODAY_YEAR); setViewMonth(TODAY_MONTH); setSelected(TODAY); }}
+                className="text-[10px] text-green-400 hover:text-green-300 font-medium px-1.5 py-0.5 rounded border border-green-600/40 hover:border-green-500/60 transition-colors"
+              >
+                Today
+              </button>
+            )}
+          </div>
           <button
             onClick={nextMonth}
             className="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors text-lg leading-none"

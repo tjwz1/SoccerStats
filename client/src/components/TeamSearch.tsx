@@ -47,13 +47,14 @@ function StatLeaders({
     `/api/competitions/${compCode}/live-scorers${qs}`
   );
 
-  // Poll every 30s — scorers TTL on server is 2min, so this picks up updates promptly
+  // Poll every 30s only while there are live entries — scorers TTL on server is 2min
   const retryRef = useRef(retry);
   useEffect(() => { retryRef.current = retry; }, [retry]);
   useEffect(() => {
+    if (!hasLive) return;
     const id = setInterval(() => retryRef.current(), 30_000);
     return () => clearInterval(id);
-  }, []);
+  }, [hasLive]);
 
   const FILTERS: { key: StatFilter; label: string; col: string }[] = [
     { key: "goals",       label: "Goals",  col: "G" },
