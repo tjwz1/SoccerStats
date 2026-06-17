@@ -1136,7 +1136,10 @@ export async function getCompetitionSeasons(competitionCode: string): Promise<Co
 
 // Compute last-5-results form per team from the competition's finished matches.
 // Called for any team where fd.org's standings response returned null form.
-async function computeFormFromMatches(competitionCode: string, seasonYear: number): Promise<Map<number, string>> {
+async function computeStatsFromMatches(
+  competitionCode: string,
+  seasonYear: number
+): Promise<{ form: Map<number, string>; gd: Map<number, number> }> {
   // Same URL and TTL as getTeamCleanSheets/getFinishedMatchList so all three share the
   // same Supabase cache entry. SCORERS_CURRENT_TTL_MS (2 min) ensures the finished-match
   // list stays fresh during live tournaments so form updates promptly when matches end.
@@ -1146,14 +1149,18 @@ async function computeFormFromMatches(competitionCode: string, seasonYear: numbe
   ) as any;
   const matches: any[] = data?.matches ?? [];
 
-  // Sort most-recent first so we can stop collecting per-team after 5
+  // Sort most-recent first so we can stop collecting per-team after 5 for form
   matches.sort((a, b) => new Date(b.utcDate).getTime() - new Date(a.utcDate).getTime());
 
   const teamResults = new Map<number, string[]>(); // teamId → results, most-recent first
+  const teamGD = new Map<number, number>();         // teamId → cumulative goal difference
+
   for (const m of matches) {
     const homeId: number = m.homeTeam?.id;
     const awayId: number = m.awayTeam?.id;
     const winner: string | null = m.score?.winner ?? null;
+    const homeGoals: number | null = m.score?.fullTime?.home ?? null;
+    const awayGoals: number | null = m.score?.fullTime?.away ?? null;
     if (!homeId || !awayId || !winner) continue;
 
     if ((teamResults.get(homeId)?.length ?? 0) < 5) {
@@ -1166,6 +1173,11 @@ async function computeFormFromMatches(competitionCode: string, seasonYear: numbe
       r.push(winner === "AWAY_TEAM" ? "W" : winner === "DRAW" ? "D" : "L");
       teamResults.set(awayId, r);
     }
+
+    if (homeGoals !== null && awayGoals !== null) {
+      teamGD.set(homeId, (teamGD.get(homeId) ?? 0) + (homeGoals - awayGoals));
+      teamGD.set(awayId, (teamGD.get(awayId) ?? 0) + (awayGoals - homeGoals));
+    }
   }
 
   // Reverse each team's list so the string reads oldest→newest (rightmost = most recent)
@@ -1173,7 +1185,7 @@ async function computeFormFromMatches(competitionCode: string, seasonYear: numbe
   for (const [id, results] of teamResults) {
     form.set(id, [...results].reverse().join(","));
   }
-  return form;
+  return { form, gd: teamGD };
 }
 
 export async function getStandings(competitionCode: string, season?: number): Promise<StandingsData> {
@@ -1205,29 +1217,33 @@ export async function getStandings(competitionCode: string, season?: number): Pr
       : { groups: [] };
   }
 
-  // Compute form from FINISHED matches for the current season.
-  // For international comps (WC/EC), fd.org's `form` field updates slowly after tournament
-  // matches — always recompute and override it regardless of whether fd.org returned a value.
-  // For domestic leagues, fd.org form is reliable; only fill in nulls.
+  // Recompute form and GD from FINISHED matches for the current season.
+  // For international comps (WC/EC), fd.org's standings update slowly after tournament
+  // matches — always recompute both form and GD to stay accurate.
+  // For domestic leagues, fd.org standings are reliable; only fill in null form values.
   const isCurrentSeason = !season || season >= currentYear;
   if (isCurrentSeason && result.groups.length > 0) {
-    const needsForm = isIntl
+    const needsStats = isIntl
       ? true
       : result.groups.some((g) => g.rows.some((r) => r.form === null));
-    if (needsForm) {
+    if (needsStats) {
       try {
         const seasonYear = isIntl ? new Date().getFullYear() : CURRENT_SEASON;
-        const computedForm = await computeFormFromMatches(competitionCode, seasonYear);
+        const { form: computedForm, gd: computedGD } = await computeStatsFromMatches(competitionCode, seasonYear);
         for (const group of result.groups) {
           for (const row of group.rows) {
             if (isIntl || row.form === null) {
               const f = computedForm.get(row.team.id);
               if (f) row.form = f;
             }
+            if (isIntl) {
+              const gd = computedGD.get(row.team.id);
+              if (gd !== undefined) row.goalDifference = gd;
+            }
           }
         }
       } catch (e) {
-        console.warn(`[standings] form computation failed for ${competitionCode}:`, (e as Error).message);
+        console.warn(`[standings] stats computation failed for ${competitionCode}:`, (e as Error).message);
       }
     }
   }
