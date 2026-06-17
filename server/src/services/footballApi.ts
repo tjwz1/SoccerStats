@@ -1195,6 +1195,15 @@ export async function getStandings(competitionCode: string, season?: number): Pr
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
   const currentYear = isIntl ? new Date().getFullYear() : CURRENT_SEASON;
   const standingsTtl = (season && season < currentYear) ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
+  const isCurrentSeason = !season || season >= currentYear;
+
+  // For international comps we always need match stats (form + GD recomputation).
+  // Start that fetch concurrently with the standings fetch so both hit Supabase/fd.org
+  // in parallel rather than sequentially — saves one full round-trip on cache miss.
+  const matchStatsPromise = (isIntl && isCurrentSeason)
+    ? computeStatsFromMatches(competitionCode, currentYear).catch(() => null)
+    : Promise.resolve(null);
+
   const data = await apiFetch(`/competitions/${competitionCode}/standings${query}`, standingsTtl) as any;
   const all: any[] = data.standings ?? [];
 
@@ -1221,24 +1230,26 @@ export async function getStandings(competitionCode: string, season?: number): Pr
   // For international comps (WC/EC), fd.org's standings update slowly after tournament
   // matches — always recompute both form and GD to stay accurate.
   // For domestic leagues, fd.org standings are reliable; only fill in null form values.
-  const isCurrentSeason = !season || season >= currentYear;
   if (isCurrentSeason && result.groups.length > 0) {
     const needsStats = isIntl
       ? true
       : result.groups.some((g) => g.rows.some((r) => r.form === null));
     if (needsStats) {
       try {
-        const seasonYear = isIntl ? new Date().getFullYear() : CURRENT_SEASON;
-        const { form: computedForm, gd: computedGD } = await computeStatsFromMatches(competitionCode, seasonYear);
-        for (const group of result.groups) {
-          for (const row of group.rows) {
-            if (isIntl || row.form === null) {
-              const f = computedForm.get(row.team.id);
-              if (f) row.form = f;
-            }
-            if (isIntl) {
-              const gd = computedGD.get(row.team.id);
-              if (gd !== undefined) row.goalDifference = gd;
+        const seasonYear = isIntl ? currentYear : CURRENT_SEASON;
+        const computed = await (matchStatsPromise ?? computeStatsFromMatches(competitionCode, seasonYear).catch(() => null));
+        if (computed) {
+          const { form: computedForm, gd: computedGD } = computed;
+          for (const group of result.groups) {
+            for (const row of group.rows) {
+              if (isIntl || row.form === null) {
+                const f = computedForm.get(row.team.id);
+                if (f) row.form = f;
+              }
+              if (isIntl) {
+                const gd = computedGD.get(row.team.id);
+                if (gd !== undefined) row.goalDifference = gd;
+              }
             }
           }
         }
