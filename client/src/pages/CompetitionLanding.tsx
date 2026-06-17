@@ -128,16 +128,8 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
   }`;
   const { data: standings, loading, retry: retryStandings } = useApi<StandingsData>(standingsUrl);
 
-  // Poll standings every 60s so form and points update automatically after a match ends.
-  // The server's 15-min SWR handles the expensive re-computation; this just ensures the
-  // client triggers it rather than showing stale data until the next page navigation.
   const retryStandingsRef = useRef(retryStandings);
   useEffect(() => { retryStandingsRef.current = retryStandings; }, [retryStandings]);
-  useEffect(() => {
-    if (!hasLiveInGroup) return;
-    const id = setInterval(() => retryStandingsRef.current(), 60_000);
-    return () => clearInterval(id);
-  }, [hasLiveInGroup]);
 
   const groups = standings?.groups ?? [];
   const isMultiGroup = groups.length > 1;
@@ -182,6 +174,15 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
   const hasLiveInGroup = (liveMatches?.length ?? 0) > 0 &&
     rows.some((r) => liveByTeam.has(r.team.id));
+
+  // Poll standings every 60s so form and points update automatically after a match ends.
+  // The server's 15-min SWR handles the expensive re-computation; this just ensures the
+  // client triggers it rather than showing stale data until the next page navigation.
+  useEffect(() => {
+    if (!hasLiveInGroup) return;
+    const id = setInterval(() => retryStandingsRef.current(), 60_000);
+    return () => clearInterval(id);
+  }, [hasLiveInGroup]);
 
   // Projected standings: apply current live score outcomes then re-sort
   const projectedRows = useMemo((): LiveRow[] => {
