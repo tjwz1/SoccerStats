@@ -163,7 +163,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
     const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
     const intl = isInternationalComp(code);
 
-    const [fdData, csData, allLive, finishedList] = await Promise.all([
+    const [fdDataRaw, csData, allLive, finishedList] = await Promise.all([
       getTopScorers(code, season).catch(() => ({ goals: [], assists: [] })),
       getTeamCleanSheets(code, season).catch(() => []),
       getLiveMatches().catch(() => []),
@@ -173,6 +173,9 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
         ? getFinishedMatchList(code, season).catch(() => [] as FinishedMatchRef[])
         : Promise.resolve([] as FinishedMatchRef[]),
     ]);
+
+    // Trim to 50 — client shows 10; extra headroom for live re-ordering without sending 400 entries
+    const fdData = { goals: fdDataRaw.goals.slice(0, 50), assists: fdDataRaw.assists.slice(0, 50) };
 
     const liveMatches = allLive.filter((m) => m.competitionCode === code);
 
@@ -591,52 +594,46 @@ router.get("/teams/:id/schedule", async (req, res) => {
       return res.json(cached ?? []);
     }
 
-    // Short-TTL cache for the assembled schedule (memCache-only, 60s).
-    // Avoids re-running 4 parallel fd.org fetches + cup scraping on every page visit.
+    // SWR: serve stale assembled schedule immediately on cache expiry (background refresh).
+    // Prevents Vercel timeouts caused by blocking on 4 parallel fd.org fetches + cup scraping.
     const assembledKey = `/team-schedule-full/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
-    const ASSEMBLED_TTL = 5 * 60 * 1000; // 5 min — schedule data changes at most every 2 min (fd.org TTL)
-    const assembledCached = await getCached(assembledKey);
-    if (assembledCached) return res.json(assembledCached);
+    const ASSEMBLED_TTL = 30 * 60 * 1000; // 30 min — aligned with SCHEDULE_TTL_MS in footballApi
 
-    // Fetch football-data.org schedule + cup matches in parallel
-    const [fdMatches, cupMatches] = await Promise.all([
-      getTeamSchedule(req.params.id, domestic, season),
-      (async () => {
-        if (!teamName || season) return []; // skip cup scraping for specific historical seasons
-        // ESPN cup scraper (Copa del Rey, DFB-Pokal, Coppa Italia, KNVB Beker)
-        if (DOMESTIC_CUP_MAP[domestic]) {
-          return fetchEspnCupMatches(teamIdNum, teamName, domestic);
+    await serveWithSWR(res, assembledKey, ASSEMBLED_TTL,
+      async () => {
+        const [fdMatches, cupMatches] = await Promise.all([
+          getTeamSchedule(req.params.id, domestic, season),
+          (async () => {
+            if (!teamName || season) return [];
+            if (DOMESTIC_CUP_MAP[domestic]) {
+              return fetchEspnCupMatches(teamIdNum, teamName, domestic);
+            }
+            if (TM_CUP_LEAGUES.has(domestic)) {
+              const tmRef = await getTmClubRef(teamName);
+              if (tmRef) {
+                const now = new Date();
+                const tmSeason = now.getFullYear() - (now.getMonth() < 7 ? 1 : 0);
+                return fetchTmCupMatches(teamIdNum, teamName, tmRef.slug, tmRef.id, tmSeason);
+              }
+            }
+            return [];
+          })(),
+        ]);
+
+        const seen = new Set<number>(fdMatches.map((m) => m.id));
+        const merged = [...fdMatches];
+        for (const m of cupMatches) {
+          if (!seen.has(m.id)) { seen.add(m.id); merged.push(m); }
         }
-        // Transfermarkt cup scraper (FA Cup / EFL Cup for PL + Championship)
-        if (TM_CUP_LEAGUES.has(domestic)) {
-          const tmRef = await getTmClubRef(teamName);
-          if (tmRef) {
-            // TM saison_id: 2025 = 2025/26 season. Season starts in ~July.
-            const now = new Date();
-            const season = now.getFullYear() - (now.getMonth() < 7 ? 1 : 0);
-            return fetchTmCupMatches(teamIdNum, teamName, tmRef.slug, tmRef.id, season);
-          }
-        }
-        return [];
-      })(),
-    ]);
+        merged.sort((a, b) => +new Date(b.utcDate) - +new Date(a.utcDate));
 
-    // Merge, deduplicate by id, sort newest-first
-    const seen = new Set<number>(fdMatches.map((m) => m.id));
-    const merged = [...fdMatches];
-    for (const m of cupMatches) {
-      if (!seen.has(m.id)) { seen.add(m.id); merged.push(m); }
-    }
-    merged.sort((a, b) => +new Date(b.utcDate) - +new Date(a.utcDate));
+        const finished = merged.filter((m) => m.status === "FINISHED");
+        if (finished.length > 0) setCached(pastKey, finished, FOREVER_TTL_MS);
 
-    // Persist finished matches permanently — they are immutable and serve the ?past=true fast path.
-    const finished = merged.filter((m) => m.status === "FINISHED");
-    if (finished.length > 0) setCached(pastKey, finished, FOREVER_TTL_MS);
-
-    // Cache assembled result in memCache for 60s so repeated visits are instant.
-    setCached(assembledKey, merged, ASSEMBLED_TTL);
-
-    res.json(merged);
+        return merged;
+      },
+      (d) => d.length > 0
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

@@ -68,7 +68,7 @@ async function doFetch(path: string, ttlMs?: number): Promise<unknown> {
         agent: fdAgent,
       } as Parameters<typeof fetch>[1]);
       if (res.status === 429) {
-        const waitMs = 65_000;
+        const waitMs = 30_000; // capped so Vercel functions can still respond; SWR routes serve stale meanwhile
         console.warn(`[footballApi] Rate limited on ${path} (attempt ${attempt + 1}), waiting ${waitMs / 1000}s…`);
         if (attempt < 2) await sleep(waitMs);
         continue;
@@ -702,9 +702,9 @@ export async function getBracketMatches(competitionCode: string, season?: number
 }
 
 // ── Schedule ──────────────────────────────────────────────────────────────
-// Past results are immutable; upcoming change rarely. 30-min TTL balances
-// freshness (live score status) with API budget.
-const SCHEDULE_TTL_MS = 2 * 60 * 1000; // short TTL so live scores refresh within ~2 min
+// Past results are immutable; upcoming fixtures change only when postponed/rescheduled.
+// Live scores come from the separate live-matches endpoint, not this cache.
+const SCHEDULE_TTL_MS = 30 * 60 * 1000; // 30 min — live scores handled by live-matches overlay
 
 export interface ScheduleMatch {
   id: number;
