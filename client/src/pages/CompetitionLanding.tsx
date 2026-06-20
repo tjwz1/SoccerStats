@@ -6,6 +6,9 @@ import BracketView from "../components/BracketView";
 
 // ── Qualification zone config ─────────────────────────────────────────────────
 
+// International group tournaments where top 2 advance + best 3rd-placed teams
+const INTL_GROUP_CODES = new Set(["WC", "EC"]);
+
 type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel";
 
 // [minPos, maxPos, zone] — inclusive position bounds
@@ -153,6 +156,34 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
     (selectedGroupType ? groups.find((g) => g.type === selectedGroupType) : null) ??
     groups[0];
   const rows = activeGroup?.rows ?? [];
+
+  // ── WC / EC group qualification status ─────────────────────────────────────
+  const isIntlMultiGroup = isMultiGroup && INTL_GROUP_CODES.has(comp.code);
+
+  type WcStatus = "Q" | "E" | "3rd";
+
+  const wcStatusMap = useMemo((): Map<number, WcStatus> => {
+    if (!isIntlMultiGroup || rows.length !== 4) return new Map();
+    const sorted = [...rows].sort((a, b) => a.position - b.position);
+    const second = sorted[1];
+    const third  = sorted[2];
+    const thirdMaxPts = third.points + Math.max(0, 3 - third.playedGames) * 3;
+    const allDone = sorted.every(r => r.playedGames >= 3);
+
+    const map = new Map<number, WcStatus>();
+    sorted.forEach((r, i) => {
+      const pos = i + 1;
+      const maxPts = r.points + Math.max(0, 3 - r.playedGames) * 3;
+      if (pos <= 2 && r.points > thirdMaxPts) {
+        map.set(r.team.id, "Q");
+      } else if (maxPts < second.points) {
+        map.set(r.team.id, "E");
+      } else if (allDone && pos === 3) {
+        map.set(r.team.id, "3rd");
+      }
+    });
+    return map;
+  }, [isIntlMultiGroup, rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live matches come from the global context (polled every 30s by LiveMatchesContext).
   // Filter to this competition — avoids a redundant per-competition polling interval.
@@ -332,7 +363,13 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
         {/* Rows */}
         {projectedRows.map((row, i) => {
-          const zone = getZone(comp.code, row.position, rows.length);
+          const zone = isIntlMultiGroup ? null : getZone(comp.code, row.position, rows.length);
+          const wcStatus = isIntlMultiGroup ? (wcStatusMap.get(row.team.id) ?? null) : null;
+          const intlBarColor = isIntlMultiGroup
+            ? row.position <= 2 ? "bg-green-500"
+            : row.position === 3 ? "bg-amber-500"
+            : "bg-red-500"
+            : null;
           const isLive = row.liveMatch !== null;
           const oppName = isLive
             ? (row.liveMatch!.homeTeamId === row.team.id
@@ -362,6 +399,9 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
             {zone && (
               <span className={`absolute left-0 top-0 bottom-0 w-1 ${ZONE_DOT[zone]}`} />
             )}
+            {intlBarColor && (
+              <span className={`absolute left-0 top-0 bottom-0 w-1 ${intlBarColor}`} />
+            )}
 
             {/* Position */}
             <span className="flex items-center justify-end text-sm text-slate-500 tabular-nums font-medium">
@@ -390,6 +430,21 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
                   <span className="text-[9px] text-green-600 font-medium">
                     vs {oppName.slice(0, 3).toUpperCase()}
                   </span>
+                </span>
+              )}
+              {wcStatus === "Q" && (
+                <span className="shrink-0 ml-1 text-[9px] font-bold text-green-400 bg-green-400/10 border border-green-500/30 px-1 py-px rounded" title="Advancing to knockout stage">
+                  Q
+                </span>
+              )}
+              {wcStatus === "E" && (
+                <span className="shrink-0 ml-1 text-[9px] font-bold text-red-400 bg-red-400/10 border border-red-500/30 px-1 py-px rounded" title="Eliminated">
+                  E
+                </span>
+              )}
+              {wcStatus === "3rd" && (
+                <span className="shrink-0 ml-1 text-[9px] font-bold text-amber-400 bg-amber-400/10 border border-amber-500/30 px-1 py-px rounded" title="May advance as best 3rd-placed team">
+                  3rd
                 </span>
               )}
             </button>
@@ -449,7 +504,32 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
       </div>}
 
       {/* Zone legend */}
-      {compView === "standings" && rows.length > 0 && (() => {
+      {compView === "standings" && rows.length > 0 && (isIntlMultiGroup ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 px-1">
+          <div className="flex items-center gap-1.5">
+            <div className="w-0.5 h-3 rounded-full bg-green-500" />
+            <span className="text-[10px] text-slate-500">Advancing (top 2)</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-0.5 h-3 rounded-full bg-amber-500" />
+            <span className="text-[10px] text-slate-500">May advance (best 3rd)</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-0.5 h-3 rounded-full bg-red-500" />
+            <span className="text-[10px] text-slate-500">Eliminated</span>
+          </div>
+          {[...wcStatusMap.values()].some(s => s === "Q" || s === "E") && <>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-bold text-green-400 bg-green-400/10 border border-green-500/30 px-1 py-px rounded">Q</span>
+              <span className="text-[10px] text-slate-500">Confirmed through</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-bold text-red-400 bg-red-400/10 border border-red-500/30 px-1 py-px rounded">E</span>
+              <span className="text-[10px] text-slate-500">Confirmed eliminated</span>
+            </div>
+          </>}
+        </div>
+      ) : (() => {
         const zoneRanges = getZoneRanges(comp.code, rows.length);
         if (zoneRanges.length === 0) return null;
         const uniqueZones = zoneRanges.map(([,, z]) => z).filter((z, i, a) => a.indexOf(z) === i) as Zone[];
@@ -463,7 +543,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
             ))}
           </div>
         );
-      })()}
+      })())}
 
       {compView === "standings" && (
         <p className="text-[10px] text-slate-600 text-right mt-2 uppercase tracking-wider">
