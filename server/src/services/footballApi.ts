@@ -416,7 +416,14 @@ export async function getMatchLineups(matchId: number, status = "FINISHED"): Pro
 const COMP_DISPLAY_NAMES: Record<string, string> = {
   "Primera Division": "La Liga",
   "Campeonato Brasileiro Série A": "Brasileirão",
-  "ELC": "Championship",          // code-based override for display
+  "ELC": "Championship",
+  "1. Bundesliga": "Bundesliga",
+  "UEFA Champions League": "Champions League",
+  "UEFA Europa League": "Europa League",
+  "UEFA Europa Conference League": "Conference League",
+  "Copa CONMEBOL Libertadores": "Copa Libertadores",
+  "FIFA World Cup": "World Cup",
+  "UEFA European Championship": "Euro",
 };
 
 // ── Match detail ──────────────────────────────────────────────────────────
@@ -1766,6 +1773,7 @@ const COMP_DISPLAY: Record<string, string> = {
   ELC: "Championship",
   CL:  "Champions League",
   EL:  "Europa League",
+  ECL: "Conference League",
   CLI: "Copa Libertadores",
   EC:  "Euro",
   WC:  "World Cup",
