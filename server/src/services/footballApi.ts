@@ -936,8 +936,13 @@ function mapFixtureMatch(m: any): ScheduleMatch {
   };
 }
 
+// fd.org interprets dateTo as utcDate ≤ dateTo 00:00 UTC, so games later on dateTo day are missed.
+// We advance dateTo by one day so the full requested end date is included.
 async function fetchFixtureChunk(dateFrom: string, dateTo: string): Promise<ScheduleMatch[]> {
-  const data = await apiFetch(`/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`, 5 * 60_000) as any;
+  const toDate = new Date(dateTo);
+  toDate.setUTCDate(toDate.getUTCDate() + 1);
+  const dateToPlusOne = toDate.toISOString().slice(0, 10);
+  const data = await apiFetch(`/matches?dateFrom=${dateFrom}&dateTo=${dateToPlusOne}`, 5 * 60_000) as any;
   return (data?.matches ?? []).map(mapFixtureMatch);
 }
 
@@ -961,7 +966,15 @@ export async function getUpcomingFixtures(dateFrom: string, dateTo: string): Pro
     cur.setDate(cur.getDate() + 10);
   }
   const results = await Promise.all(chunks.map(([f, t]) => fetchFixtureChunk(f, t)));
-  return results.flat();
+  // Deduplicate: midnight-UTC games on chunk boundaries appear in two adjacent chunks
+  const seen = new Set<number>();
+  const all: ScheduleMatch[] = [];
+  for (const chunk of results) {
+    for (const m of chunk) {
+      if (!seen.has(m.id)) { seen.add(m.id); all.push(m); }
+    }
+  }
+  return all;
 }
 
 export interface PositionPoint {
