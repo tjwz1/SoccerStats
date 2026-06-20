@@ -174,9 +174,9 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
     sorted.forEach((r, i) => {
       const pos = i + 1;
       const maxPts = r.points + Math.max(0, 3 - r.playedGames) * 3;
-      if (pos <= 2 && r.points > thirdMaxPts) {
+      if (pos <= 2 && r.points >= thirdMaxPts) {
         map.set(r.team.id, "Q");
-      } else if (maxPts < second.points) {
+      } else if (maxPts <= second.points) {
         map.set(r.team.id, "E");
       } else if (allDone && pos === 3) {
         map.set(r.team.id, "3rd");
