@@ -935,77 +935,100 @@ export async function getEcSquadFromWiki(teamName: string): Promise<IntlSquadPla
 
 function normalizeForMatch(name: string): string {
   return name.toLowerCase()
-    .normalize("NFD").replace(/[̀-ͯ]/g, "")   // strip accents
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9 ]/g, "").trim();
 }
 
 // Wikipedia sometimes uses different names than football-data.org.
 // Keys are normalised Wikipedia names; values are normalised fd.org names.
 const WIKI_NAME_MAP: Record<string, string> = {
-  "south korea":       "korea republic",
-  "ivory coast":       "cote divoire",
-  "iran":              "ir iran",
-  "cape verde":        "cabo verde",
-  "republic of ireland": "ireland",
-  "trinidad and tobago": "trinidad tobago",
-  "antigua and barbuda": "antigua barbuda",
+  "south korea":           "korea republic",
+  "ivory coast":           "cote divoire",
+  "iran":                  "ir iran",
+  "cape verde":            "cabo verde",
+  "republic of ireland":   "ireland",
+  "trinidad and tobago":   "trinidad tobago",
+  "antigua and barbuda":   "antigua barbuda",
   "saint kitts and nevis": "saint kitts nevis",
+  "united states":         "united states",
 };
 
-export type KnockoutStatus = "Q" | "E";
+export type KnockoutStatus = "Q" | "E" | "3rd";
+
+// The main "2026 FIFA World Cup" article contains group tables in sections 20–31
+// (Group A = 20, Group B = 21, … Group L = 31).
+// Wikipedia only adds "Knockout stage" text to the last cell of a row when
+// advancement is CONFIRMED (not just "currently in top 2"), and "Eliminated"
+// when a team is mathematically out. This is more accurate than colours alone.
+async function fetchGroupSection(season: number, sectionIndex: number): Promise<string> {
+  const url =
+    `https://en.wikipedia.org/w/api.php?action=parse` +
+    `&page=${season}_FIFA_World_Cup&prop=text&format=json` +
+    `&section=${sectionIndex}&redirects=1`;
+  const text = await wikiFetch(url, 15000);
+  if (!text) return "";
+  try {
+    const parsed = JSON.parse(text);
+    return parsed?.parse?.text?.["*"] ?? "";
+  } catch { return ""; }
+}
+
+function parseGroupHtml(html: string, result: Map<string, KnockoutStatus>): void {
+  if (!html) return;
+  const $ = cheerio.load(html);
+
+  $("table.wikitable").each((_, table) => {
+    const $table = $(table);
+    const headerCells = $table.find("tr").first().find("th");
+    const headers = headerCells.map((_, th) => $(th).text().trim().toLowerCase()).get();
+    if (!headers.includes("pos") || !headers.some(h => h.startsWith("team"))) return;
+
+    $table.find("tr").slice(1).each((_, row) => {
+      const $row = $(row);
+
+      // Team name is in the <th scope="row"> cell (not a <td>)
+      const teamCell = $row.find("th[scope='row']");
+      const rawName = teamCell.find("a").first().text().trim() || teamCell.text().trim();
+      if (!rawName) return;
+
+      // Status is in the last <td> cell of the row
+      const lastTd = $row.find("td").last();
+      const statusText = lastTd.text().trim().toLowerCase();
+
+      let status: KnockoutStatus | null = null;
+      if (statusText.startsWith("knockout stage") && !statusText.includes("possible")) {
+        status = "Q";
+      } else if (statusText.includes("eliminated")) {
+        status = "E";
+      } else if (statusText.includes("possible knockout")) {
+        status = "3rd";
+      }
+
+      if (!status) return;
+
+      const norm   = normalizeForMatch(rawName);
+      const mapped = WIKI_NAME_MAP[norm] ?? norm;
+      result.set(mapped, status);
+    });
+  });
+}
 
 export async function getWcKnockoutStatus(season: number): Promise<Map<string, KnockoutStatus>> {
   const cacheKey = `/wiki/wc-knockout/${season}`;
   const cached = await getCached(cacheKey);
   if (cached) return new Map(Object.entries(cached as Record<string, KnockoutStatus>));
 
-  const page = `${season}_FIFA_World_Cup_group_stage`;
-  const url =
-    `https://en.wikipedia.org/w/api.php?action=parse` +
-    `&page=${encodeURIComponent(page)}&prop=text&format=json&redirects=1`;
+  // Groups A–L = sections 20–31 in the main WC article.
+  const GROUP_SECTIONS = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31];
 
-  const text = await wikiFetch(url, 20000);
-  if (!text) return new Map();
+  const htmlChunks = await Promise.all(
+    GROUP_SECTIONS.map(idx => fetchGroupSection(season, idx))
+  );
 
-  let html: string;
-  try {
-    const parsed = JSON.parse(text);
-    html = parsed?.parse?.text?.["*"] ?? "";
-  } catch { return new Map(); }
-
-  const $ = cheerio.load(html);
   const result = new Map<string, KnockoutStatus>();
-
-  $("table.wikitable").each((_, table) => {
-    // Only process tables that look like group standings (have Pos + Team headers)
-    const headers = $(table).find("tr").first()
-      .find("th").map((_, th) => $(th).text().trim().toLowerCase()).get();
-    if (!headers.includes("pos") || !headers.some(h => h.startsWith("team"))) return;
-
-    $(table).find("tr").slice(1).each((_, row) => {
-      const $row = $(row);
-      const style = ($row.attr("style") ?? "").toLowerCase().replace(/\s/g, "");
-      const cls   = ($row.attr("class") ?? "").toLowerCase();
-
-      const isGreen = style.includes("#cfc") || style.includes("#ccffcc") ||
-                      style.includes("#ccff99") || cls.includes("table-success");
-      const isRed   = style.includes("#fcc") || style.includes("#ffcccc") ||
-                      cls.includes("table-danger");
-
-      if (!isGreen && !isRed) return;
-
-      // Team name is in the 2nd data cell (after the position cell)
-      const cells = $row.find("td");
-      const teamCell = cells.eq(1);
-      const rawName = teamCell.find("a").first().text().trim() ||
-                      teamCell.text().trim();
-      if (!rawName) return;
-
-      const norm   = normalizeForMatch(rawName);
-      const mapped = WIKI_NAME_MAP[norm] ?? norm;
-      result.set(mapped, isGreen ? "Q" : "E");
-    });
-  });
+  for (const html of htmlChunks) {
+    parseGroupHtml(html, result);
+  }
 
   if (result.size > 0) {
     await setCached(cacheKey, Object.fromEntries(result), 30 * 60_000);
