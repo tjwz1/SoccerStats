@@ -930,3 +930,85 @@ export async function getEcSquadFromWiki(teamName: string): Promise<IntlSquadPla
     "ecSquad"
   );
 }
+
+// ── WC knockout qualification status ─────────────────────────────────────────
+
+function normalizeForMatch(name: string): string {
+  return name.toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")   // strip accents
+    .replace(/[^a-z0-9 ]/g, "").trim();
+}
+
+// Wikipedia sometimes uses different names than football-data.org.
+// Keys are normalised Wikipedia names; values are normalised fd.org names.
+const WIKI_NAME_MAP: Record<string, string> = {
+  "south korea":       "korea republic",
+  "ivory coast":       "cote divoire",
+  "iran":              "ir iran",
+  "cape verde":        "cabo verde",
+  "republic of ireland": "ireland",
+  "trinidad and tobago": "trinidad tobago",
+  "antigua and barbuda": "antigua barbuda",
+  "saint kitts and nevis": "saint kitts nevis",
+};
+
+export type KnockoutStatus = "Q" | "E";
+
+export async function getWcKnockoutStatus(season: number): Promise<Map<string, KnockoutStatus>> {
+  const cacheKey = `/wiki/wc-knockout/${season}`;
+  const cached = await getCached(cacheKey);
+  if (cached) return new Map(Object.entries(cached as Record<string, KnockoutStatus>));
+
+  const page = `${season}_FIFA_World_Cup_group_stage`;
+  const url =
+    `https://en.wikipedia.org/w/api.php?action=parse` +
+    `&page=${encodeURIComponent(page)}&prop=text&format=json&redirects=1`;
+
+  const text = await wikiFetch(url, 20000);
+  if (!text) return new Map();
+
+  let html: string;
+  try {
+    const parsed = JSON.parse(text);
+    html = parsed?.parse?.text?.["*"] ?? "";
+  } catch { return new Map(); }
+
+  const $ = cheerio.load(html);
+  const result = new Map<string, KnockoutStatus>();
+
+  $("table.wikitable").each((_, table) => {
+    // Only process tables that look like group standings (have Pos + Team headers)
+    const headers = $(table).find("tr").first()
+      .find("th").map((_, th) => $(th).text().trim().toLowerCase()).get();
+    if (!headers.includes("pos") || !headers.some(h => h.startsWith("team"))) return;
+
+    $(table).find("tr").slice(1).each((_, row) => {
+      const $row = $(row);
+      const style = ($row.attr("style") ?? "").toLowerCase().replace(/\s/g, "");
+      const cls   = ($row.attr("class") ?? "").toLowerCase();
+
+      const isGreen = style.includes("#cfc") || style.includes("#ccffcc") ||
+                      style.includes("#ccff99") || cls.includes("table-success");
+      const isRed   = style.includes("#fcc") || style.includes("#ffcccc") ||
+                      cls.includes("table-danger");
+
+      if (!isGreen && !isRed) return;
+
+      // Team name is in the 2nd data cell (after the position cell)
+      const cells = $row.find("td");
+      const teamCell = cells.eq(1);
+      const rawName = teamCell.find("a").first().text().trim() ||
+                      teamCell.text().trim();
+      if (!rawName) return;
+
+      const norm   = normalizeForMatch(rawName);
+      const mapped = WIKI_NAME_MAP[norm] ?? norm;
+      result.set(mapped, isGreen ? "Q" : "E");
+    });
+  });
+
+  if (result.size > 0) {
+    await setCached(cacheKey, Object.fromEntries(result), 30 * 60_000);
+  }
+  return result;
+}

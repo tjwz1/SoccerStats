@@ -7,7 +7,7 @@ import { fetchSofaScorePhotos } from "./sofaScorePhotos";
 import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
 import { getWikiStats, getWikiStatsBatch, setWikiStats } from "../db/wikiCareerCache";
 import { getWikiTrophies, setWikiTrophies } from "../db/wikiTrophyCache";
-import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, type IntlSquadPlayer } from "./wikiStats";
+import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus } from "./wikiStats";
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
 import type { ClubTrophy as TmClubTrophy } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
@@ -424,6 +424,7 @@ const COMP_DISPLAY_NAMES: Record<string, string> = {
   "Copa CONMEBOL Libertadores": "Copa Libertadores",
   "FIFA World Cup": "World Cup",
   "UEFA European Championship": "Euro",
+  "European Championship": "Euro",
 };
 
 // ── Match detail ──────────────────────────────────────────────────────────
@@ -1094,6 +1095,7 @@ export interface StandingRow {
   points: number;
   goalDifference: number;
   form: string | null;
+  knockoutStatus?: "Q" | "E" | "3rd" | null;
 }
 
 export interface StandingsGroup {
@@ -1278,6 +1280,37 @@ export async function getStandings(competitionCode: string, season?: number): Pr
       } catch (e) {
         console.warn(`[standings] stats computation failed for ${competitionCode}:`, (e as Error).message);
       }
+    }
+  }
+
+  // Annotate WC group rows with confirmed knockout status scraped from Wikipedia.
+  // EC format doesn't have the same "best 3rd" complexity — skip for now.
+  if (competitionCode === "WC" && isCurrentSeason && result.groups.length > 0) {
+    try {
+      const wcYear = isIntl ? currentYear : new Date().getFullYear();
+      const statusMap = await getWcKnockoutStatus(wcYear);
+      if (statusMap.size > 0) {
+        const normalize = (s: string) =>
+          s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, "").trim();
+
+        for (const group of result.groups) {
+          const allDone = group.rows.every(r => r.playedGames >= 3);
+          for (const row of group.rows) {
+            const key = normalize(row.team.name);
+            const scraped = statusMap.get(key) ?? null;
+            if (scraped) {
+              row.knockoutStatus = scraped;
+            } else if (allDone && row.position === 3) {
+              // Group finished, 3rd place — may advance as best 3rd (Wikipedia hasn't confirmed yet)
+              row.knockoutStatus = "3rd";
+            } else {
+              row.knockoutStatus = null;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[standings] WC knockout status fetch failed:", (e as Error).message);
     }
   }
 

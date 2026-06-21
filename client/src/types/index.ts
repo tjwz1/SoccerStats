@@ -26,6 +26,7 @@ export interface StandingRow {
   points: number;
   goalDifference: number;
   form: string | null;
+  knockoutStatus?: "Q" | "E" | "3rd" | null;
 }
 
 export interface CompetitionSeason {

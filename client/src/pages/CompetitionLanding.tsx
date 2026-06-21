@@ -162,28 +162,16 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
   type WcStatus = "Q" | "E" | "3rd";
 
+  // Server annotates each row with knockoutStatus scraped from Wikipedia (WC only).
+  // Build a lookup map keyed by team id for O(1) access in the render loop.
   const wcStatusMap = useMemo((): Map<number, WcStatus> => {
-    if (!isIntlMultiGroup || rows.length !== 4) return new Map();
-    const sorted = [...rows].sort((a, b) => a.position - b.position);
-    const second = sorted[1];
-    const third  = sorted[2];
-    const thirdMaxPts = third.points + Math.max(0, 3 - third.playedGames) * 3;
-    const allDone = sorted.every(r => r.playedGames >= 3);
-
+    if (!isIntlMultiGroup) return new Map();
     const map = new Map<number, WcStatus>();
-    sorted.forEach((r, i) => {
-      const pos = i + 1;
-      const maxPts = r.points + Math.max(0, 3 - r.playedGames) * 3;
-      if (pos <= 2 && r.points >= thirdMaxPts) {
-        map.set(r.team.id, "Q");
-      } else if (maxPts <= second.points) {
-        map.set(r.team.id, "E");
-      } else if (allDone && pos === 3) {
-        map.set(r.team.id, "3rd");
-      }
-    });
+    for (const row of rows) {
+      if (row.knockoutStatus) map.set(row.team.id, row.knockoutStatus);
+    }
     return map;
-  }, [isIntlMultiGroup, rows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isIntlMultiGroup, rows]);
 
   // Live matches come from the global context (polled every 30s by LiveMatchesContext).
   // Filter to this competition — avoids a redundant per-competition polling interval.
