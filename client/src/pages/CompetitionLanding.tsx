@@ -129,7 +129,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
   const standingsUrl = `/api/competitions/${comp.code}/standings${
     selectedSeason ? `?season=${selectedSeason}` : ""
   }`;
-  const { data: standings, loading, retry: retryStandings } = useApi<StandingsData>(standingsUrl);
+  const { data: standings, loading, error: standingsError, retry: retryStandings } = useApi<StandingsData>(standingsUrl);
 
   const retryStandingsRef = useRef(retryStandings);
   useEffect(() => { retryStandingsRef.current = retryStandings; }, [retryStandings]);
@@ -159,19 +159,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
   // ── WC / EC group qualification status ─────────────────────────────────────
   const isIntlMultiGroup = isMultiGroup && INTL_GROUP_CODES.has(comp.code);
-
-  type WcStatus = "Q" | "E" | "3rd";
-
-  // Server annotates each row with knockoutStatus scraped from Wikipedia (WC only).
-  // Build a lookup map keyed by team id for O(1) access in the render loop.
-  const wcStatusMap = useMemo((): Map<number, WcStatus> => {
-    if (!isIntlMultiGroup) return new Map();
-    const map = new Map<number, WcStatus>();
-    for (const row of rows) {
-      if (row.knockoutStatus) map.set(row.team.id, row.knockoutStatus);
-    }
-    return map;
-  }, [isIntlMultiGroup, rows]);
 
   // Live matches come from the global context (polled every 30s by LiveMatchesContext).
   // Filter to this competition — avoids a redundant per-competition polling interval.
@@ -343,7 +330,25 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
           </div>
         )}
 
-        {!loading && rows.length === 0 && (
+        {!loading && standingsError && (
+          <div className="flex flex-col items-center py-14 gap-2">
+            <p className="text-sm text-red-400">
+              {standingsError.includes("403")
+                ? "This competition requires a paid API tier."
+                : standingsError.includes("429")
+                ? "Rate limit hit — try again in a moment."
+                : "Failed to load standings."}
+            </p>
+            <button
+              onClick={retryStandings}
+              className="text-xs text-slate-400 hover:text-white underline transition-colors"
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
+        {!loading && !standingsError && rows.length === 0 && (
           <p className="text-sm text-slate-500 text-center py-14">
             No standings available for this competition.
           </p>
@@ -352,7 +357,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         {/* Rows */}
         {projectedRows.map((row, i) => {
           const zone = isIntlMultiGroup ? null : getZone(comp.code, row.position, rows.length);
-          const wcStatus = isIntlMultiGroup ? (wcStatusMap.get(row.team.id) ?? null) : null;
           const intlBarColor = isIntlMultiGroup
             ? row.position <= 2 ? "bg-green-500"
             : row.position === 3 ? "bg-amber-500"
@@ -418,21 +422,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
                   <span className="text-[9px] text-green-600 font-medium">
                     vs {oppName.slice(0, 3).toUpperCase()}
                   </span>
-                </span>
-              )}
-              {wcStatus === "Q" && (
-                <span className="shrink-0 ml-1 text-[9px] font-bold text-green-400 bg-green-400/10 border border-green-500/30 px-1 py-px rounded" title="Advancing to knockout stage">
-                  Q
-                </span>
-              )}
-              {wcStatus === "E" && (
-                <span className="shrink-0 ml-1 text-[9px] font-bold text-red-400 bg-red-400/10 border border-red-500/30 px-1 py-px rounded" title="Eliminated">
-                  E
-                </span>
-              )}
-              {wcStatus === "3rd" && (
-                <span className="shrink-0 ml-1 text-[9px] font-bold text-amber-400 bg-amber-400/10 border border-amber-500/30 px-1 py-px rounded" title="May advance as best 3rd-placed team">
-                  3rd
                 </span>
               )}
             </button>
@@ -506,16 +495,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
             <div className="w-0.5 h-3 rounded-full bg-red-500" />
             <span className="text-[10px] text-slate-500">Eliminated</span>
           </div>
-          {[...wcStatusMap.values()].some(s => s === "Q" || s === "E") && <>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-bold text-green-400 bg-green-400/10 border border-green-500/30 px-1 py-px rounded">Q</span>
-              <span className="text-[10px] text-slate-500">Confirmed through</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-bold text-red-400 bg-red-400/10 border border-red-500/30 px-1 py-px rounded">E</span>
-              <span className="text-[10px] text-slate-500">Confirmed eliminated</span>
-            </div>
-          </>}
         </div>
       ) : (() => {
         const zoneRanges = getZoneRanges(comp.code, rows.length);

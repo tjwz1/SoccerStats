@@ -5,7 +5,7 @@ import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transferma
 import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoalEvents, getMatchBookingsAndSubs, teamsMatch, type EspnLineupPlayer } from "../services/matchStatsScraper";
 import { fetchEspnCupMatches, fetchTmCupMatches, DOMESTIC_CUP_MAP, TM_CUP_LEAGUES } from "../services/cupSchedule";
 import { fetchTeamNews } from "../services/newsService";
-import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
+import { getCached, getAnyCached, setCached, clearMemCache, FOREVER_TTL_MS } from "../db/apiCache";
 import type { Response } from "express";
 
 // Stale-while-revalidate helper: if a cached entry exists (even expired) return it
@@ -327,12 +327,41 @@ router.get("/competitions/:code/position-history", async (req, res) => {
   }
 });
 
+// SSE stream — must be registered before the plain /live-matches route
+router.get("/live-matches/stream", async (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders();
+
+  const send = async () => {
+    try {
+      const data = await getLiveMatches();
+      if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch {
+      if (!res.writableEnded) res.write(`data: []\n\n`);
+    }
+  };
+
+  await send();
+  const interval = setInterval(send, 30_000);
+  req.on("close", () => clearInterval(interval));
+});
+
 router.get("/live-matches", async (_req, res) => {
   try {
     res.json(await getLiveMatches());
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
+});
+
+router.post("/admin/cache/clear", (_req, res) => {
+  clearMemCache();
+  res.status(204).send();
 });
 
 router.get("/teams/search", async (req, res) => {

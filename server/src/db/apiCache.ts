@@ -64,6 +64,10 @@ export function warmMemCache(path: string, value: unknown, expiresAt: number): v
   memCache.set(path, { value, expiresAt });
 }
 
+export function clearMemCache(): void {
+  memCache.clear();
+}
+
 export async function setCached(path: string, value: unknown, ttlMs = DEFAULT_TTL_MS): Promise<void> {
   // Always write to memory cache first — this works even when Supabase is down
   memCache.set(path, { value, expiresAt: Date.now() + ttlMs });

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, useParams } from "react-router-dom";
 import type { Player, Team, LineupData, Competition, ClubTrophy } from "../types";
 import { useApi, sessionGet, sessionSet } from "../hooks/useApi";
 import { useFavourites } from "../hooks/useFavourites";
@@ -30,6 +30,7 @@ type ViewId = typeof VIEW_REGISTRY[number]["id"];
 export default function MainView() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { code: urlCode, teamId: urlTeamId } = useParams<{ code?: string; teamId?: string }>();
   const { theme, toggle: toggleTheme } = useTheme();
   const [selectedComp, setSelectedComp] = useState<Competition | null>(() => readSession("ss_comp"));
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(() => readSession("ss_team"));
@@ -55,6 +56,36 @@ export default function MainView() {
     sessionStorage.setItem("ss_view", view);
   }, [view]);
 
+  // URL → state: auto-select competition when navigating directly to /competitions/:code
+  const { data: competitions } = useApi<Competition[]>("/api/competitions");
+  useEffect(() => {
+    if (!urlCode || !competitions?.length) return;
+    if (selectedComp?.code === urlCode) return;
+    const comp = competitions.find((c) => c.code === urlCode);
+    if (comp) { setSelectedComp(comp); setSelectedTeam(null); }
+  }, [urlCode, competitions?.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // URL → state: restore team from sessionStorage when navigating to /competitions/:code/teams/:id
+  useEffect(() => {
+    if (!urlTeamId) return;
+    const id = parseInt(urlTeamId, 10);
+    const saved = readSession<Team>("ss_team");
+    if (saved?.id === id && !selectedTeam) setSelectedTeam(saved);
+  }, [urlTeamId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // State → URL: keep address bar in sync so links are shareable.
+  // Guards prevent redirect races when URL params are driving state (URL→state transition in flight).
+  useEffect(() => {
+    // URL params have a comp code that state hasn't caught up to yet — don't clobber the URL.
+    if (urlCode && selectedComp?.code !== urlCode) return;
+    // URL params have a team that state hasn't restored yet — same.
+    if (urlTeamId && selectedComp && !selectedTeam) return;
+    const target = !selectedComp ? "/"
+      : !selectedTeam ? `/competitions/${selectedComp.code}`
+      : `/competitions/${selectedComp.code}/teams/${selectedTeam.id}`;
+    if (location.pathname !== target) navigate(target, { replace: true });
+  }, [selectedComp?.code, selectedTeam?.id, urlCode, urlTeamId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Handle team navigation from match card team name buttons
   useEffect(() => {
     const s = location.state as { navTeam?: Team; navComp?: Competition; navView?: string } | null;
@@ -65,8 +96,6 @@ export default function MainView() {
     setHoveredPlayer(null);
     navigate("/", { replace: true, state: null });
   }, [location.key]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const { data: competitions } = useApi<Competition[]>("/api/competitions");
 
   const { data: lineup, loading: lineupLoading } = useApi<LineupData>(
     selectedTeam

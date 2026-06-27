@@ -10,6 +10,8 @@ function AppInner() {
   return (
     <Routes>
       <Route path="/" element={<MainView />} />
+      <Route path="/competitions/:code" element={<MainView />} />
+      <Route path="/competitions/:code/teams/:teamId" element={<MainView />} />
       <Route path="/player/:id" element={<PlayerPage />} />
     </Routes>
   );

@@ -1,5 +1,7 @@
+import { useState } from "react";
 import type { BracketData, BracketTie, BracketMatchData } from "../types";
 import { useApi } from "../hooks/useApi";
+import MatchDetailModal from "./MatchDetailModal";
 
 interface Props {
   compCode: string;
@@ -130,15 +132,17 @@ function TwoLeggedCard({ tie }: { tie: BracketTie }) {
   );
 }
 
-function TieCard({ tie }: { tie: BracketTie }) {
+function TieCard({ tie, onClick }: { tie: BracketTie; onClick: () => void }) {
   const isLive = (["IN_PLAY", "PAUSED"] as string[]).some(
     (s) => tie.leg1.status === s || tie.leg2?.status === s
   );
+  const isClickable = tie.leg1.status !== "SCHEDULED" || tie.leg2?.status !== "SCHEDULED";
   return (
     <div
-      className={`bg-slate-900/70 border rounded-lg overflow-hidden ${
+      onClick={isClickable ? onClick : undefined}
+      className={`bg-slate-900/70 border rounded-lg overflow-hidden transition-colors ${
         isLive ? "border-red-500/50" : "border-slate-800"
-      }`}
+      } ${isClickable ? "cursor-pointer hover:border-green-600/50 hover:bg-slate-800/60" : ""}`}
     >
       {tie.leg2 ? (
         <TwoLeggedCard tie={tie} />
@@ -152,6 +156,7 @@ function TieCard({ tie }: { tie: BracketTie }) {
 export default function BracketView({ compCode, season }: Props) {
   const url = `/api/competitions/${compCode}/bracket${season ? `?season=${season}` : ""}`;
   const { data, loading, error } = useApi<BracketData>(url);
+  const [selectedTie, setSelectedTie] = useState<BracketTie | null>(null);
 
   if (loading) {
     return (
@@ -171,7 +176,9 @@ export default function BracketView({ compCode, season }: Props) {
   if (error || !data?.rounds.length) {
     return (
       <p className="text-sm text-slate-500 text-center py-14">
-        Knockout bracket not yet available for this competition.
+        {error && !error.includes("404")
+          ? "Failed to load bracket — try refreshing."
+          : "Knockout bracket not yet available for this competition."}
       </p>
     );
   }
@@ -188,40 +195,44 @@ export default function BracketView({ compCode, season }: Props) {
   const totalH = maxTies * SLOT_PX;
 
   return (
-    <div className="overflow-x-auto pb-4">
-      <div className="flex gap-2 min-w-max">
-        {rounds.map((round) => {
-          const slotH = totalH / round.ties.length;
-          return (
-            <div key={round.stage} className="flex-none w-48">
-              {/* Round header */}
-              <div className="text-center mb-3">
-                <span className="inline-block px-3 py-1 rounded-md bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300 uppercase tracking-wider whitespace-nowrap">
-                  {round.name}
-                </span>
-                <div className="text-[10px] text-slate-600 mt-1">
-                  {round.ties.length} {round.ties.length === 1 ? "match" : "ties"}
+    <>
+      <div className="overflow-x-auto pb-4">
+        <div className="flex gap-2 min-w-max">
+          {rounds.map((round) => {
+            const slotH = totalH / round.ties.length;
+            return (
+              <div key={round.stage} className="flex-none w-48">
+                <div className="text-center mb-3">
+                  <span className="inline-block px-3 py-1 rounded-md bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300 uppercase tracking-wider whitespace-nowrap">
+                    {round.name}
+                  </span>
+                  <div className="text-[10px] text-slate-600 mt-1">
+                    {round.ties.length} {round.ties.length === 1 ? "match" : "ties"}
+                  </div>
+                </div>
+
+                <div style={{ height: totalH }}>
+                  {round.ties.map((tie) => (
+                    <div
+                      key={`${tie.leg1.id}-${tie.leg2?.id ?? "s"}`}
+                      style={{ height: slotH }}
+                      className="flex items-center px-1"
+                    >
+                      <div className="w-full">
+                        <TieCard tie={tie} onClick={() => setSelectedTie(tie)} />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-
-              {/* Ties: each in a proportionally-sized slot, card centred */}
-              <div style={{ height: totalH }}>
-                {round.ties.map((tie) => (
-                  <div
-                    key={`${tie.leg1.id}-${tie.leg2?.id ?? "s"}`}
-                    style={{ height: slotH }}
-                    className="flex items-center px-1"
-                  >
-                    <div className="w-full">
-                      <TieCard tie={tie} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
-    </div>
+
+      {selectedTie && (
+        <MatchDetailModal tie={selectedTie} onClose={() => setSelectedTie(null)} />
+      )}
+    </>
   );
 }

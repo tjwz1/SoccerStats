@@ -14,21 +14,59 @@ const LiveMatchesContext = createContext<LiveMatchesContextValue>({
 export function LiveMatchesProvider({ children }: { children: React.ReactNode }) {
   const [liveMatches, setLiveMatches] = useState<ScheduleMatch[]>([]);
 
-  function fetchLive() {
-    fetch("/api/live-matches")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data: ScheduleMatch[]) => setLiveMatches(data))
-      .catch(() => {});
-  }
-
   useEffect(() => {
-    fetchLive();
-    const id = setInterval(fetchLive, 30_000);
-    // Re-fetch immediately when the server restarts
-    window.addEventListener("server-restart", fetchLive);
+    let es: EventSource | null = null;
+    let fallbackInterval: ReturnType<typeof setInterval> | null = null;
+    let alive = true;
+
+    function applyData(data: ScheduleMatch[]) {
+      if (alive) setLiveMatches(data);
+    }
+
+    function fetchOnce() {
+      fetch("/api/live-matches")
+        .then((r) => (r.ok ? r.json() : []))
+        .then((d: ScheduleMatch[]) => applyData(d))
+        .catch(() => {});
+    }
+
+    function startFallback() {
+      fetchOnce();
+      fallbackInterval = setInterval(fetchOnce, 30_000);
+    }
+
+    function startSSE() {
+      try {
+        es = new EventSource("/api/live-matches/stream");
+        es.onmessage = (e) => {
+          try { applyData(JSON.parse(e.data) as ScheduleMatch[]); } catch {}
+        };
+        es.onerror = () => {
+          es?.close();
+          es = null;
+          // Switch to polling if SSE fails (e.g. Vercel function timeout, proxy issue)
+          if (!fallbackInterval) startFallback();
+        };
+      } catch {
+        startFallback();
+      }
+    }
+
+    startSSE();
+
+    function onRestart() {
+      // Clear live state and re-establish connection after server restart
+      if (es) { es.close(); es = null; }
+      if (fallbackInterval) { clearInterval(fallbackInterval); fallbackInterval = null; }
+      startSSE();
+    }
+    window.addEventListener("server-restart", onRestart);
+
     return () => {
-      clearInterval(id);
-      window.removeEventListener("server-restart", fetchLive);
+      alive = false;
+      es?.close();
+      if (fallbackInterval) clearInterval(fallbackInterval);
+      window.removeEventListener("server-restart", onRestart);
     };
   }, []);
 
