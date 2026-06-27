@@ -19,7 +19,7 @@ function goalIcon(type: MatchGoalEvent["type"]) {
   return "⚽";
 }
 
-function GoalLine({ g, homeTeamName }: { g: MatchGoalEvent; homeTeamName: string }) {
+function GoalLine({ g }: { g: MatchGoalEvent }) {
   const isHome = g.team === "home";
   const min = g.extraTime ? `${g.minute}+${g.extraTime}'` : `${g.minute}'`;
   return (
@@ -46,8 +46,6 @@ function LegDetail({ match, label }: { match: BracketMatchData; label?: string }
   );
 
   const done = match.status === "FINISHED";
-  const homeGoals = data?.goals.filter((g) => g.team === "home") ?? [];
-  const awayGoals = data?.goals.filter((g) => g.team === "away") ?? [];
   const allGoals = [...(data?.goals ?? [])].sort((a, b) => a.minute - b.minute);
 
   return (
@@ -102,7 +100,7 @@ function LegDetail({ match, label }: { match: BracketMatchData; label?: string }
       {!loading && allGoals.length > 0 && (
         <div className="mt-3 border-t border-slate-800/60 pt-2 space-y-0.5">
           {allGoals.map((g, i) => (
-            <GoalLine key={i} g={g} homeTeamName={match.homeTeam.name} />
+            <GoalLine key={i} g={g} />
           ))}
         </div>
       )}
