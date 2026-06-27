@@ -996,7 +996,7 @@ function parseGroupHtml(html: string, result: Map<string, KnockoutStatus>): void
       const statusText = lastTd.text().trim().toLowerCase();
 
       let status: KnockoutStatus | null = null;
-      if (statusText.startsWith("knockout stage") && !statusText.includes("possible")) {
+      if (statusText.includes("knockout stage") && !statusText.includes("possible")) {
         status = "Q";
       } else if (statusText.includes("eliminated")) {
         status = "E";
