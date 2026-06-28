@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
 import type { Player, Team, LineupData, Competition, ClubTrophy } from "../types";
 import { useApi, sessionGet, sessionSet } from "../hooks/useApi";
@@ -58,11 +58,18 @@ export default function MainView() {
 
   // URL → state: auto-select competition when navigating directly to /competitions/:code
   const { data: competitions } = useApi<Competition[]>("/api/competitions");
+  // Tracks which urlCode is currently being applied to state so state→URL doesn't
+  // clobber the URL before the URL→state effect finishes.
+  const urlTransitionPending = useRef<string | null>(null);
   useEffect(() => {
     if (!urlCode || !competitions?.length) return;
     if (selectedComp?.code === urlCode) return;
     const comp = competitions.find((c) => c.code === urlCode);
-    if (comp) { setSelectedComp(comp); setSelectedTeam(null); }
+    if (comp) {
+      urlTransitionPending.current = urlCode;
+      setSelectedComp(comp);
+      setSelectedTeam(null);
+    }
   }, [urlCode, competitions?.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // URL → state: restore team from sessionStorage when navigating to /competitions/:code/teams/:id
@@ -74,11 +81,12 @@ export default function MainView() {
   }, [urlTeamId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // State → URL: keep address bar in sync so links are shareable.
-  // Guards prevent redirect races when URL params are driving state (URL→state transition in flight).
+  // Only blocked during an active URL→state transition (while state hasn't caught up yet).
   useEffect(() => {
-    // URL params have a comp code that state hasn't caught up to yet — don't clobber the URL.
-    if (urlCode && selectedComp?.code !== urlCode) return;
-    // URL params have a team that state hasn't restored yet — same.
+    // URL→state is in flight: state hasn't applied the new urlCode yet — wait.
+    if (urlTransitionPending.current !== null && selectedComp?.code !== urlTransitionPending.current) return;
+    urlTransitionPending.current = null;
+    // URL has a team but state hasn't restored it yet — wait.
     if (urlTeamId && selectedComp && !selectedTeam) return;
     const target = !selectedComp ? "/"
       : !selectedTeam ? `/competitions/${selectedComp.code}`

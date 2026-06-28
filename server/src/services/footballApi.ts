@@ -603,7 +603,8 @@ function mapBracketMatch(m: any): BracketMatchData {
 export async function getBracketMatches(competitionCode: string, season?: number): Promise<BracketData | null> {
   if (useMock()) return null;
 
-  const seasonYear = season ?? CURRENT_SEASON;
+  const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
   const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : 30 * 60_000;
 
   let raw: any;
