@@ -649,9 +649,13 @@ export async function getBracketMatches(competitionCode: string, season?: number
       if (used.has(m.id)) continue;
       used.add(m.id);
 
-      const leg2 = stageMatches.find(
-        (n) => !used.has(n.id) && n.homeTeam.id === m.awayTeam.id && n.awayTeam.id === m.homeTeam.id
-      ) ?? null;
+      // Don't pair when teams are TBD (id=0) — placeholder slots all share id=0
+      // and would incorrectly match each other as home/away legs.
+      const leg2 = (m.homeTeam.id !== 0 && m.awayTeam.id !== 0)
+        ? stageMatches.find(
+            (n) => !used.has(n.id) && n.homeTeam.id === m.awayTeam.id && n.awayTeam.id === m.homeTeam.id
+          ) ?? null
+        : null;
       if (leg2) used.add(leg2.id);
 
       // leg1 is the chronologically earlier match (or whichever we find first)
