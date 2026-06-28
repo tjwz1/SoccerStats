@@ -83,6 +83,8 @@ export default function MainView() {
   // State → URL: keep address bar in sync so links are shareable.
   // Only blocked during an active URL→state transition (while state hasn't caught up yet).
   useEffect(() => {
+    // urlCode present but competitions not yet loaded — URL→state can't have fired yet, wait.
+    if (urlCode && !competitions?.length) return;
     // URL→state is in flight: state hasn't applied the new urlCode yet — wait.
     if (urlTransitionPending.current !== null && selectedComp?.code !== urlTransitionPending.current) return;
     urlTransitionPending.current = null;
