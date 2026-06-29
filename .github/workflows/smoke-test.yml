@@ -140,13 +140,16 @@ jobs:
           if [ -n "$ISSUE_NUMBER" ]; then
             STATUS_ICON=$([ "$FAIL" -gt 0 ] && echo "❌" || echo "✅")
             RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            COMMENT_FILE=$(mktemp)
+            {
+              printf '%s\n\n```\n' "${STATUS_ICON} **$(date -u '+%Y-%m-%d')** — ${SUMMARY} — [Run #${GITHUB_RUN_NUMBER}](${RUN_URL})"
+              cat "$LOGFILE"
+              printf '```\n'
+            } > "$COMMENT_FILE"
             gh issue comment "$ISSUE_NUMBER" \
               --repo "$GITHUB_REPOSITORY" \
-              --body "${STATUS_ICON} **$(date -u '+%Y-%m-%d')** — ${SUMMARY} — [Run #${GITHUB_RUN_NUMBER}](${RUN_URL})
-
-\`\`\`
-$(cat "$LOGFILE")
-\`\`\`"
+              --body-file "$COMMENT_FILE"
+            rm -f "$COMMENT_FILE"
           fi
 
           rm -f "$LOGFILE"
