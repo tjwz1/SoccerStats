@@ -3,52 +3,60 @@ name: Daily Smoke Test
 on:
   schedule:
     - cron: "0 14 * * *"   # 14:00 UTC = 8:00 AM Mountain
-  workflow_dispatch:        # allow manual runs from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  issues: write
 
 jobs:
   smoke-test:
     runs-on: ubuntu-latest
+    env:
+      BYPASS: ${{ secrets.VERCEL_BYPASS_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+
     steps:
+      - name: Ensure smoke-test label exists
+        run: gh label create smoke-test --color "#e11d48" --description "Daily smoke test" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+
       - name: Run smoke test
-        env:
-          BYPASS: ${{ secrets.VERCEL_BYPASS_TOKEN }}
         run: |
-          set +e  # manage our own pass/fail; don't let curl timeouts abort the step
+          set +e
           BASE="https://soccer-stats-flame.vercel.app/api"
           PASS=0; FAIL=0; SKIP=0
+          LOGFILE=$(mktemp)
 
           check() {
-            local label="$1" url="$2"
-            local out code
+            local label="$1" url="$2" out code line
             out=$(curl -s -w "\n__STATUS__%{http_code}" \
               -H "x-vercel-protection-bypass: $BYPASS" \
               --max-time 30 \
               "$url" 2>/dev/null || true)
             code=$(printf '%s' "$out" | tail -n1 | sed 's/__STATUS__//')
             case "$code" in
-              200) printf 'PASS -- %s (%s)\n' "$label" "$code"; PASS=$((PASS+1)) ;;
-              403) printf 'SKIP -- %s (%s, paid tier)\n' "$label" "$code"; SKIP=$((SKIP+1)) ;;
-              404) printf 'PASS -- %s (%s, not yet available)\n' "$label" "$code"; PASS=$((PASS+1)) ;;
-              "")  printf 'FAIL -- %s (no response / timeout)\n' "$label"; FAIL=$((FAIL+1)) ;;
-              *)   printf 'FAIL -- %s (HTTP %s)\n' "$label" "$code"; FAIL=$((FAIL+1)) ;;
+              200) line="PASS -- $label ($code)";               PASS=$((PASS+1)) ;;
+              403) line="SKIP -- $label ($code, paid tier)";    SKIP=$((SKIP+1)) ;;
+              404) line="PASS -- $label ($code, not yet available)"; PASS=$((PASS+1)) ;;
+              "")  line="FAIL -- $label (no response / timeout)";    FAIL=$((FAIL+1)) ;;
+              *)   line="FAIL -- $label (HTTP $code)";               FAIL=$((FAIL+1)) ;;
             esac
+            echo "$line" | tee -a "$LOGFILE"
           }
 
-          # CORE
-          check "1. Health"             "$BASE/health"
+          # ── CORE ─────────────────────────────────────────────────────────────
+          check "1.  Health"            "$BASE/health"
           HB=$(curl -s --max-time 30 -H "x-vercel-protection-bypass: $BYPASS" "$BASE/health" 2>/dev/null || true)
           if printf '%s' "$HB" | grep -q '"mock":false'; then
-            echo "PASS - 1b. mock:false"
-            PASS=$((PASS+1))
+            LINE="PASS - 1b. mock:false"; PASS=$((PASS+1))
           else
-            echo "FAIL - 1b. mock is true or missing: $HB"
-            FAIL=$((FAIL+1))
+            LINE="FAIL - 1b. mock is true or missing: $HB"; FAIL=$((FAIL+1))
           fi
+          echo "$LINE" | tee -a "$LOGFILE"
 
-          check "2. Competitions list"  "$BASE/competitions"
-          check "3. Live matches"       "$BASE/live-matches"
+          check "2.  Competitions list" "$BASE/competitions"
+          check "3.  Live matches"      "$BASE/live-matches"
 
-          # STANDINGS
+          # ── STANDINGS ────────────────────────────────────────────────────────
           check "4.  PL standings"     "$BASE/competitions/PL/standings"
           check "5.  ELC standings"    "$BASE/competitions/ELC/standings"
           check "6.  BL1 standings"    "$BASE/competitions/BL1/standings"
@@ -62,36 +70,86 @@ jobs:
           check "14. WC standings"     "$BASE/competitions/WC/standings"
           check "15. CLI standings"    "$BASE/competitions/CLI/standings"
 
-          # BRACKETS
+          # Pause — ~16 football-data.org calls so far; respect 10 req/min limit
+          echo "--- rate-limit pause (20s) ---" | tee -a "$LOGFILE"
+          sleep 20
+
+          # ── BRACKETS & TEAMS ─────────────────────────────────────────────────
           check "16. CL bracket"       "$BASE/competitions/CL/bracket"
           check "17. WC bracket"       "$BASE/competitions/WC/bracket"
-
-          # TEAMS
           check "18. PL teams"         "$BASE/competitions/PL/teams"
           check "19. WC teams"         "$BASE/competitions/WC/teams"
           check "20. CL teams"         "$BASE/competitions/CL/teams"
 
-          # SCORERS
+          # ── SCORERS ──────────────────────────────────────────────────────────
           check "21. WC scorers"       "$BASE/competitions/WC/scorers"
           check "22. CL scorers"       "$BASE/competitions/CL/scorers"
           check "23. PL scorers"       "$BASE/competitions/PL/scorers"
           check "24. BL1 scorers"      "$BASE/competitions/BL1/scorers"
           check "25. SA scorers"       "$BASE/competitions/SA/scorers"
 
-          # TEAM SCHEDULES
+          # Pause before team-specific calls (each hits a fresh Vercel instance)
+          echo "--- rate-limit pause (20s) ---" | tee -a "$LOGFILE"
+          sleep 20
+
+          # ── TEAM SCHEDULES ───────────────────────────────────────────────────
           check "26. England WC schedule"   "$BASE/teams/770/schedule?competition=WC&name=England"
           check "27. Arsenal PL schedule"   "$BASE/teams/57/schedule?competition=PL&name=Arsenal"
           check "28. Bayern BL1 schedule"   "$BASE/teams/5/schedule?competition=BL1&name=Bayern%20Munich"
           check "29. Juventus SA schedule"  "$BASE/teams/109/schedule?competition=SA&name=Juventus"
           check "30. PSG FL1 schedule"      "$BASE/teams/524/schedule?competition=FL1&name=PSG"
 
-          # LINEUPS
+          # ── LINEUPS ──────────────────────────────────────────────────────────
           check "31. Arsenal PL lineup"     "$BASE/teams/57/lineup?competition=PL"
           check "32. Bayern BL1 lineup"     "$BASE/teams/5/lineup?competition=BL1"
           check "33. England WC lineup"     "$BASE/teams/770/lineup?competition=WC"
 
-          echo ""
-          echo "=== SMOKE TEST COMPLETE: PASS=$PASS SKIP=$SKIP FAIL=$FAIL ==="
+          # ── SUMMARY ──────────────────────────────────────────────────────────
+          SUMMARY="PASS=$PASS SKIP=$SKIP FAIL=$FAIL"
+          echo "" | tee -a "$LOGFILE"
+          echo "=== SMOKE TEST COMPLETE: $SUMMARY ===" | tee -a "$LOGFILE"
+
+          # GitHub Step Summary (visible in Actions UI)
+          {
+            echo "## Smoke Test — $(date -u '+%Y-%m-%d')"
+            [ "$FAIL" -gt 0 ] && echo "**Status: FAILED** — $SUMMARY" || echo "**Status: PASSED** — $SUMMARY"
+            echo '```'
+            cat "$LOGFILE"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Post results to tracking issue so they're readable without copy-paste
+          ISSUE_NUMBER=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label smoke-test \
+            --state open \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number' 2>/dev/null)
+
+          if [ -z "$ISSUE_NUMBER" ]; then
+            ISSUE_NUMBER=$(gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Daily Smoke Test Tracking" \
+              --label smoke-test \
+              --body "Automated daily smoke test results — one comment per run." \
+              --json number \
+              --jq '.number' 2>/dev/null)
+          fi
+
+          if [ -n "$ISSUE_NUMBER" ]; then
+            STATUS_ICON=$([ "$FAIL" -gt 0 ] && echo "❌" || echo "✅")
+            RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            gh issue comment "$ISSUE_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "${STATUS_ICON} **$(date -u '+%Y-%m-%d')** — ${SUMMARY} — [Run #${GITHUB_RUN_NUMBER}](${RUN_URL})
+
+\`\`\`
+$(cat "$LOGFILE")
+\`\`\`"
+          fi
+
+          rm -f "$LOGFILE"
 
           if [ "$FAIL" -gt 0 ]; then
             echo "ACTION NEEDED: Review FAIL lines above."
