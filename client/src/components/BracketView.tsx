@@ -1,6 +1,7 @@
-import { useState } from "react";
-import type { BracketData, BracketTie, BracketMatchData } from "../types";
+import { useState, useEffect } from "react";
+import type { BracketData, BracketTie, BracketMatchData, ScheduleMatch } from "../types";
 import { useApi } from "../hooks/useApi";
+import { useLiveMatches } from "../contexts/LiveMatchesContext";
 import MatchDetailModal from "./MatchDetailModal";
 
 interface Props {
@@ -12,14 +13,76 @@ function fmt(utcDate: string) {
   return new Date(utcDate).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
+function shortName(name: string): string {
+  return name
+    .replace(/\s+(FC|F\.C\.|CF|AFC|SC|SV|RCD|CD|UD|SD)$/i, "")
+    .replace(/^(FC|AFC)\s+/i, "")
+    .replace(/\s+Football Club$/i, "")
+    .trim();
+}
+
+// Overlay live match data onto a bracket match so scores/status are always current.
+function withLive(match: BracketMatchData, liveById: Map<number, ScheduleMatch>): BracketMatchData {
+  const live = liveById.get(match.id);
+  if (!live) return match;
+  return {
+    ...match,
+    status: live.status,
+    scoreHome: live.scoreHome,
+    scoreAway: live.scoreAway,
+    winner: live.winner,
+    etScoreHome: live.etScoreHome,
+    etScoreAway: live.etScoreAway,
+    penScoreHome: live.penScoreHome,
+    penScoreAway: live.penScoreAway,
+  };
+}
+
+// ── Compact live ticker for the bracket ───────────────────────────────────────
+function BracketTicker({ matches }: { matches: ScheduleMatch[] }) {
+  if (!matches.length) return null;
+  return (
+    <div className="mb-4 flex flex-wrap gap-2 items-center">
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+        <span className="text-[10px] font-bold text-red-400 uppercase tracking-wider">Live</span>
+      </div>
+      {matches.map((m) => (
+        <div
+          key={m.id}
+          className="flex items-center gap-1 text-[11px] bg-slate-900 border border-red-500/20 rounded px-2 py-1"
+        >
+          {m.homeTeamCrest && (
+            <img src={m.homeTeamCrest} alt="" className="w-3.5 h-3.5 object-contain shrink-0" />
+          )}
+          <span className="text-slate-300">{shortName(m.homeTeam)}</span>
+          <span className="font-bold text-white tabular-nums bg-slate-800 px-1.5 py-0.5 rounded mx-0.5">
+            {m.scoreHome ?? 0}–{m.scoreAway ?? 0}
+          </span>
+          <span className="text-slate-300">{shortName(m.awayTeam)}</span>
+          {m.awayTeamCrest && (
+            <img src={m.awayTeamCrest} alt="" className="w-3.5 h-3.5 object-contain shrink-0" />
+          )}
+          {m.status === "PAUSED" && (
+            <span className="text-[9px] text-yellow-400 font-semibold ml-1">HT</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── TeamRow ────────────────────────────────────────────────────────────────────
 function TeamRow({
   team,
   isWinner,
   score,
+  isLive = false,
 }: {
   team: { name: string; shortName: string; crest: string };
   isWinner: boolean;
   score: number | null;
+  isLive?: boolean;
 }) {
   return (
     <div className="flex items-center gap-1.5 py-[3px]">
@@ -30,7 +93,7 @@ function TeamRow({
       )}
       <span
         className={`text-[11px] truncate flex-1 min-w-0 ${
-          isWinner ? "text-white font-semibold" : "text-slate-400"
+          isWinner ? "text-white font-semibold" : isLive ? "text-slate-200" : "text-slate-400"
         }`}
       >
         {team.shortName || team.name}
@@ -40,6 +103,8 @@ function TeamRow({
           score !== null
             ? isWinner
               ? "text-white"
+              : isLive
+              ? "text-green-400"
               : "text-slate-500"
             : "text-slate-700"
         }`}
@@ -50,6 +115,7 @@ function TeamRow({
   );
 }
 
+// ── SingleLegCard ─────────────────────────────────────────────────────────────
 function SingleLegCard({
   match,
   winner,
@@ -58,20 +124,31 @@ function SingleLegCard({
   winner: "home" | "away" | null;
 }) {
   const done = match.status === "FINISHED";
+  const live = match.status === "IN_PLAY" || match.status === "PAUSED";
+  const showScore = done || live;
+
   return (
     <div className="px-2.5 py-2">
       <TeamRow
         team={match.homeTeam}
         isWinner={done && winner === "home"}
-        score={done ? match.scoreHome : null}
+        score={showScore ? match.scoreHome : null}
+        isLive={live}
       />
       <TeamRow
         team={match.awayTeam}
         isWinner={done && winner === "away"}
-        score={done ? match.scoreAway : null}
+        score={showScore ? match.scoreAway : null}
+        isLive={live}
       />
-      {!done && (
+      {!done && !live && (
         <p className="text-[10px] text-slate-600 text-center mt-1">{fmt(match.utcDate)}</p>
+      )}
+      {live && (
+        <p className="flex items-center justify-center gap-1 text-[10px] text-red-400 mt-1">
+          <span className="w-1 h-1 rounded-full bg-red-500 animate-pulse inline-block" />
+          {match.status === "PAUSED" ? "Half Time" : "Live"}
+        </p>
       )}
       {match.penScoreHome !== null && (
         <p className="text-[10px] text-slate-600 text-center">
@@ -87,6 +164,7 @@ function SingleLegCard({
   );
 }
 
+// ── TwoLeggedCard ─────────────────────────────────────────────────────────────
 function TwoLeggedCard({ tie }: { tie: BracketTie }) {
   const { leg1, leg2, aggHome, aggAway, winner } = tie;
   const pending = aggHome === null;
@@ -132,6 +210,7 @@ function TwoLeggedCard({ tie }: { tie: BracketTie }) {
   );
 }
 
+// ── TieCard ───────────────────────────────────────────────────────────────────
 function TieCard({ tie, onClick }: { tie: BracketTie; onClick: () => void }) {
   const isLive = (["IN_PLAY", "PAUSED"] as string[]).some(
     (s) => tie.leg1.status === s || tie.leg2?.status === s
@@ -153,10 +232,24 @@ function TieCard({ tie, onClick }: { tie: BracketTie; onClick: () => void }) {
   );
 }
 
+// ── BracketView ───────────────────────────────────────────────────────────────
 export default function BracketView({ compCode, season }: Props) {
   const url = `/api/competitions/${compCode}/bracket${season ? `?season=${season}` : ""}`;
-  const { data, loading, error } = useApi<BracketData>(url);
+  const { data, loading, error, retry } = useApi<BracketData>(url);
   const [selectedTie, setSelectedTie] = useState<BracketTie | null>(null);
+  const { liveMatches, liveById } = useLiveMatches();
+
+  // Live matches in this specific competition
+  const compLive = liveMatches.filter((m) => m.competitionCode === compCode);
+  const hasLive = compLive.length > 0;
+
+  // Auto-refresh bracket while matches are live so winner advancement appears promptly.
+  // Live scores are overlaid instantly via liveById; the re-fetch picks up next-round team slots.
+  useEffect(() => {
+    if (!hasLive) return;
+    const id = setInterval(retry, 60_000);
+    return () => clearInterval(id);
+  }, [hasLive, retry]);
 
   if (loading) {
     return (
@@ -183,19 +276,33 @@ export default function BracketView({ compCode, season }: Props) {
     );
   }
 
-  const rounds = data.rounds;
+  // Apply live score overlays so bracket cards always show current scores.
+  // Winner recomputation for single-leg matches handles the case where the
+  // server cache hasn't refreshed yet but liveById already has FINISHED status.
+  const rounds = data.rounds.map((round) => ({
+    ...round,
+    ties: round.ties.map((tie) => {
+      const leg1 = withLive(tie.leg1, liveById);
+      const leg2 = tie.leg2 ? withLive(tie.leg2, liveById) : null;
+      // Recompute winner for single-leg ties that finished while cache was stale
+      let winner = tie.winner;
+      if (!leg2 && leg1.status === "FINISHED" && winner === null) {
+        winner = leg1.winner === "HOME_TEAM" ? "home" : leg1.winner === "AWAY_TEAM" ? "away" : null;
+      }
+      return { ...tie, leg1, leg2, winner };
+    }),
+  }));
 
   // Proportional slot heights: every column shares the same total height.
-  // A round with N ties gets totalH / N px per slot so ties visually
-  // "double in size" as you advance through the bracket.
   const maxTies = Math.max(...rounds.map((r) => r.ties.length));
   const twoLegged = rounds.some((r) => r.ties.some((t) => t.leg2 !== null));
-  // Min px needed for a single tie card (two-legged cards are taller)
   const SLOT_PX = twoLegged ? 108 : 82;
   const totalH = maxTies * SLOT_PX;
 
   return (
     <>
+      <BracketTicker matches={compLive} />
+
       <div className="overflow-x-auto pb-4">
         <div className="flex gap-2 min-w-max">
           {rounds.map((round) => {

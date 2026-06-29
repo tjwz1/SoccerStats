@@ -600,12 +600,79 @@ function mapBracketMatch(m: any): BracketMatchData {
   };
 }
 
+// Propagate winners through the bracket without waiting for fd.org to populate
+// next-round team slots (which it does lazily, sometimes days later).
+//
+// Algorithm: sort each round's ties by kickoff date, then pair sequentially —
+// ties [0,1] feed next-round slot 0, [2,3] feed slot 1, etc. This matches the
+// standard single-elimination bracket structure used by WC, CL, EC, and similar.
+// Semi-final LOSERS are additionally routed to the THIRD_PLACE match when present.
+function propagateWinners(rounds: BracketRound[]): BracketRound[] {
+  // Deep-clone team objects so we can safely replace TBD slots.
+  const result: BracketRound[] = rounds.map((r) => ({
+    ...r,
+    ties: r.ties.map((t) => ({
+      ...t,
+      leg1: { ...t.leg1, homeTeam: { ...t.leg1.homeTeam }, awayTeam: { ...t.leg1.awayTeam } },
+      leg2: t.leg2
+        ? { ...t.leg2, homeTeam: { ...t.leg2.homeTeam }, awayTeam: { ...t.leg2.awayTeam } }
+        : null,
+    })),
+  }));
+
+  const winnerOf = (t: BracketTie) =>
+    t.winner === "home" ? t.leg1.homeTeam : t.winner === "away" ? t.leg1.awayTeam : null;
+  const loserOf = (t: BracketTie) =>
+    t.winner === "home" ? t.leg1.awayTeam : t.winner === "away" ? t.leg1.homeTeam : null;
+
+  // Sort a round's ties by first-leg kickoff, using match id as tiebreaker.
+  const byDate = (ties: BracketTie[]) =>
+    [...ties].sort((a, b) => {
+      const da = new Date(a.leg1.utcDate).getTime();
+      const db = new Date(b.leg1.utcDate).getTime();
+      return da !== db ? da - db : a.leg1.id - b.leg1.id;
+    });
+
+  // Main bracket: each consecutive pair of ties in round N feeds one tie in round N+1.
+  const mainRounds = result.filter((r) => r.stage !== "THIRD_PLACE");
+  for (let ri = 0; ri < mainRounds.length - 1; ri++) {
+    const src = byDate(mainRounds[ri].ties);
+    const next = mainRounds[ri + 1].ties;
+    for (let ti = 0; ti < next.length; ti++) {
+      const feedHome = src[ti * 2];
+      const feedAway = src[ti * 2 + 1];
+      if (feedHome?.winner && next[ti].leg1.homeTeam.id === 0) {
+        next[ti].leg1.homeTeam = { ...winnerOf(feedHome)! };
+      }
+      if (feedAway?.winner && next[ti].leg1.awayTeam.id === 0) {
+        next[ti].leg1.awayTeam = { ...winnerOf(feedAway)! };
+      }
+    }
+  }
+
+  // 3rd-place branch: losers of the two semi-final ties.
+  const sfRound  = result.find((r) => r.stage === "SEMI_FINALS");
+  const tpRound  = result.find((r) => r.stage === "THIRD_PLACE");
+  if (sfRound && tpRound && tpRound.ties.length >= 1) {
+    const sfSorted = byDate(sfRound.ties);
+    const tp = tpRound.ties[0];
+    const loser0 = sfSorted[0] ? loserOf(sfSorted[0]) : null;
+    const loser1 = sfSorted[1] ? loserOf(sfSorted[1]) : null;
+    if (loser0 && tp.leg1.homeTeam.id === 0) tp.leg1.homeTeam = { ...loser0 };
+    if (loser1 && tp.leg1.awayTeam.id === 0) tp.leg1.awayTeam = { ...loser1 };
+  }
+
+  return result;
+}
+
 export async function getBracketMatches(competitionCode: string, season?: number): Promise<BracketData | null> {
   if (useMock()) return null;
 
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
   const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
-  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : 30 * 60_000;
+  // Historical seasons are immutable → cache forever.
+  // Current season uses a short TTL so winner advancement propagates quickly after knockout matches finish.
+  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : 2 * 60_000;
 
   let raw: any;
   try {
@@ -711,7 +778,7 @@ export async function getBracketMatches(competitionCode: string, season?: number
     return { name: STAGE_DISPLAY[stage] ?? stage, stage, ties };
   });
 
-  return { rounds };
+  return { rounds: propagateWinners(rounds) };
 }
 
 // ── Schedule ──────────────────────────────────────────────────────────────
