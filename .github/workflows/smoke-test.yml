@@ -1,0 +1,98 @@
+name: Daily Smoke Test
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # 14:00 UTC = 8:00 AM Mountain
+  workflow_dispatch:        # allow manual runs from the Actions tab
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run smoke test
+        env:
+          BYPASS: ${{ secrets.VERCEL_BYPASS_TOKEN }}
+        run: |
+          BASE="https://soccer-stats-flame.vercel.app/api"
+          PASS=0; FAIL=0; SKIP=0
+
+          check() {
+            local label="$1" url="$2"
+            local out code
+            out=$(curl -s -w "\n__STATUS__%{http_code}" \
+              -H "x-vercel-protection-bypass: $BYPASS" \
+              --max-time 25 \
+              "$url" 2>/dev/null)
+            code=$(printf '%s' "$out" | tail -n1 | sed 's/__STATUS__//')
+            case "$code" in
+              200) printf 'PASS -- %s (%s)\n' "$label" "$code"; PASS=$((PASS+1)) ;;
+              403) printf 'SKIP -- %s (%s, paid tier)\n' "$label" "$code"; SKIP=$((SKIP+1)) ;;
+              404) printf 'PASS -- %s (%s, not yet available)\n' "$label" "$code"; PASS=$((PASS+1)) ;;
+              "")  printf 'FAIL -- %s (no response / timeout)\n' "$label"; FAIL=$((FAIL+1)) ;;
+              *)   printf 'FAIL -- %s (HTTP %s)\n' "$label" "$code"; FAIL=$((FAIL+1)) ;;
+            esac
+          }
+
+          # CORE
+          check "1. Health"             "$BASE/health"
+          HB=$(curl -s --max-time 25 -H "x-vercel-protection-bypass: $BYPASS" "$BASE/health" 2>/dev/null)
+          if printf '%s' "$HB" | grep -q '"mock":false'; then
+            echo "PASS - 1b. mock:false"
+            PASS=$((PASS+1))
+          else
+            echo "FAIL - 1b. mock is true or missing: $HB"
+            FAIL=$((FAIL+1))
+          fi
+
+          check "2. Competitions list"  "$BASE/competitions"
+          check "3. Live matches"       "$BASE/live-matches"
+
+          # STANDINGS
+          check "4.  PL standings"     "$BASE/competitions/PL/standings"
+          check "5.  ELC standings"    "$BASE/competitions/ELC/standings"
+          check "6.  BL1 standings"    "$BASE/competitions/BL1/standings"
+          check "7.  SA standings"     "$BASE/competitions/SA/standings"
+          check "8.  FL1 standings"    "$BASE/competitions/FL1/standings"
+          check "9.  PD standings"     "$BASE/competitions/PD/standings"
+          check "10. DED standings"    "$BASE/competitions/DED/standings"
+          check "11. PPL standings"    "$BASE/competitions/PPL/standings"
+          check "12. BSA standings"    "$BASE/competitions/BSA/standings"
+          check "13. CL standings"     "$BASE/competitions/CL/standings"
+          check "14. WC standings"     "$BASE/competitions/WC/standings"
+          check "15. CLI standings"    "$BASE/competitions/CLI/standings"
+
+          # BRACKETS
+          check "16. CL bracket"       "$BASE/competitions/CL/bracket"
+          check "17. WC bracket"       "$BASE/competitions/WC/bracket"
+
+          # TEAMS
+          check "18. PL teams"         "$BASE/competitions/PL/teams"
+          check "19. WC teams"         "$BASE/competitions/WC/teams"
+          check "20. CL teams"         "$BASE/competitions/CL/teams"
+
+          # SCORERS
+          check "21. WC scorers"       "$BASE/competitions/WC/scorers"
+          check "22. CL scorers"       "$BASE/competitions/CL/scorers"
+          check "23. PL scorers"       "$BASE/competitions/PL/scorers"
+          check "24. BL1 scorers"      "$BASE/competitions/BL1/scorers"
+          check "25. SA scorers"       "$BASE/competitions/SA/scorers"
+
+          # TEAM SCHEDULES
+          check "26. England WC schedule"   "$BASE/teams/770/schedule?competition=WC&name=England"
+          check "27. Arsenal PL schedule"   "$BASE/teams/57/schedule?competition=PL&name=Arsenal"
+          check "28. Bayern BL1 schedule"   "$BASE/teams/5/schedule?competition=BL1&name=Bayern%20Munich"
+          check "29. Juventus SA schedule"  "$BASE/teams/109/schedule?competition=SA&name=Juventus"
+          check "30. PSG FL1 schedule"      "$BASE/teams/524/schedule?competition=FL1&name=PSG"
+
+          # LINEUPS
+          check "31. Arsenal PL lineup"     "$BASE/teams/57/lineup?competition=PL"
+          check "32. Bayern BL1 lineup"     "$BASE/teams/5/lineup?competition=BL1"
+          check "33. England WC lineup"     "$BASE/teams/770/lineup?competition=WC"
+
+          echo ""
+          echo "=== SMOKE TEST COMPLETE: PASS=$PASS SKIP=$SKIP FAIL=$FAIL ==="
+
+          if [ "$FAIL" -gt 0 ]; then
+            echo "ACTION NEEDED: Review FAIL lines above."
+            exit 1
+          fi
