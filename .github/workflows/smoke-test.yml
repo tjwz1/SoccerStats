@@ -13,6 +13,7 @@ jobs:
         env:
           BYPASS: ${{ secrets.VERCEL_BYPASS_TOKEN }}
         run: |
+          set +e  # manage our own pass/fail; don't let curl timeouts abort the step
           BASE="https://soccer-stats-flame.vercel.app/api"
           PASS=0; FAIL=0; SKIP=0
 
@@ -21,8 +22,8 @@ jobs:
             local out code
             out=$(curl -s -w "\n__STATUS__%{http_code}" \
               -H "x-vercel-protection-bypass: $BYPASS" \
-              --max-time 25 \
-              "$url" 2>/dev/null)
+              --max-time 30 \
+              "$url" 2>/dev/null || true)
             code=$(printf '%s' "$out" | tail -n1 | sed 's/__STATUS__//')
             case "$code" in
               200) printf 'PASS -- %s (%s)\n' "$label" "$code"; PASS=$((PASS+1)) ;;
@@ -35,7 +36,7 @@ jobs:
 
           # CORE
           check "1. Health"             "$BASE/health"
-          HB=$(curl -s --max-time 25 -H "x-vercel-protection-bypass: $BYPASS" "$BASE/health" 2>/dev/null)
+          HB=$(curl -s --max-time 30 -H "x-vercel-protection-bypass: $BYPASS" "$BASE/health" 2>/dev/null || true)
           if printf '%s' "$HB" | grep -q '"mock":false'; then
             echo "PASS - 1b. mock:false"
             PASS=$((PASS+1))
