@@ -128,13 +128,12 @@ jobs:
             --jq '.[0].number' 2>/dev/null)
 
           if [ -z "$ISSUE_NUMBER" ]; then
-            ISSUE_NUMBER=$(gh issue create \
+            ISSUE_URL=$(gh issue create \
               --repo "$GITHUB_REPOSITORY" \
               --title "Daily Smoke Test Tracking" \
               --label smoke-test \
-              --body "Automated daily smoke test results — one comment per run." \
-              --json number \
-              --jq '.number' 2>/dev/null)
+              --body "Automated daily smoke test results — one comment per run." 2>/dev/null)
+            ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
           fi
 
           if [ -n "$ISSUE_NUMBER" ]; then
