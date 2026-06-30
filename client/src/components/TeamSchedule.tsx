@@ -100,10 +100,9 @@ function computeTieInfos(
       const getGoals = (e: { match: ScheduleMatch; side: "home" | "away" }) => {
         const { scoreHome: sh, scoreAway: sa, etScoreHome: eth, etScoreAway: eta } = e.match;
         if (sh === null || sa === null) return null;
-        // score.extraTime is incremental (goals scored *during* ET only, not cumulative).
-        // Include ET goals in the aggregate — they count just like regular goals.
-        const home = sh + (eth ?? 0);
-        const away = sa + (eta ?? 0);
+        // score.extraTime is cumulative (total score at 120 min), so use it directly.
+        const home = eth !== null ? eth : sh;
+        const away = eta !== null ? eta : sa;
         return {
           ours: e.side === "home" ? home : away,
           theirs: e.side === "home" ? away : home,
@@ -1009,13 +1008,9 @@ function ScoreDisplay({ match, isLive }: { match: ScheduleMatch; isLive: boolean
     && match.penScoreAway !== null
     && match.penScoreHome !== match.penScoreAway;
 
-  // etScoreHome is incremental (ET goals only), so AET total = fullTime + ET
-  const displayHome = isAET && match.etScoreHome !== null
-    ? (match.scoreHome ?? 0) + match.etScoreHome
-    : match.scoreHome;
-  const displayAway = isAET && match.etScoreAway !== null
-    ? (match.scoreAway ?? 0) + match.etScoreAway
-    : match.scoreAway;
+  // etScoreHome is the cumulative score at end of extra time (120 min), per fd.org API.
+  const displayHome = isAET && match.etScoreHome !== null ? match.etScoreHome : match.scoreHome;
+  const displayAway = isAET && match.etScoreAway !== null ? match.etScoreAway : match.scoreAway;
 
   return (
     <div className="flex flex-col items-center gap-0.5">

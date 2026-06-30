@@ -128,17 +128,13 @@ function SingleLegCard({
   const showScore = done || live;
   const hasPens = match.penScoreHome !== null;
 
-  // For PK games show AET total (fullTime + incremental ET goals) as the main score.
-  // etScoreHome is incremental (goals scored during ET only), so AET = scoreHome + etScoreHome.
+  // etScoreHome is the cumulative score at end of extra time (120 min), per fd.org API.
+  // For PK games use it directly as the AET display score.
   const displayHome = showScore
-    ? (hasPens && match.etScoreHome !== null
-        ? (match.scoreHome ?? 0) + match.etScoreHome
-        : match.scoreHome)
+    ? (hasPens && match.etScoreHome !== null ? match.etScoreHome : match.scoreHome)
     : null;
   const displayAway = showScore
-    ? (hasPens && match.etScoreAway !== null
-        ? (match.scoreAway ?? 0) + match.etScoreAway
-        : match.scoreAway)
+    ? (hasPens && match.etScoreAway !== null ? match.etScoreAway : match.scoreAway)
     : null;
 
   return (

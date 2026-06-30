@@ -620,10 +620,21 @@ function propagateWinners(rounds: BracketRound[]): BracketRound[] {
     })),
   }));
 
-  const winnerOf = (t: BracketTie) =>
-    t.winner === "home" ? t.leg1.homeTeam : t.winner === "away" ? t.leg1.awayTeam : null;
-  const loserOf = (t: BracketTie) =>
-    t.winner === "home" ? t.leg1.awayTeam : t.winner === "away" ? t.leg1.homeTeam : null;
+  // Determine effective winner, falling back to pen scores when score.winner is missing.
+  const effectiveWinner = (t: BracketTie): "home" | "away" | null => {
+    if (t.winner) return t.winner;
+    const { penScoreHome: ph, penScoreAway: pa } = t.leg1;
+    if (ph !== null && pa !== null && ph !== pa) return ph > pa ? "home" : "away";
+    return null;
+  };
+  const winnerOf = (t: BracketTie) => {
+    const w = effectiveWinner(t);
+    return w === "home" ? t.leg1.homeTeam : w === "away" ? t.leg1.awayTeam : null;
+  };
+  const loserOf = (t: BracketTie) => {
+    const w = effectiveWinner(t);
+    return w === "home" ? t.leg1.awayTeam : w === "away" ? t.leg1.homeTeam : null;
+  };
 
   // Sort a round's ties by first-leg kickoff, using match id as tiebreaker.
   const byDate = (ties: BracketTie[]) =>
@@ -641,11 +652,13 @@ function propagateWinners(rounds: BracketRound[]): BracketRound[] {
     for (let ti = 0; ti < next.length; ti++) {
       const feedHome = src[ti * 2];
       const feedAway = src[ti * 2 + 1];
-      if (feedHome?.winner && next[ti].leg1.homeTeam.id === 0) {
-        next[ti].leg1.homeTeam = { ...winnerOf(feedHome)! };
+      const homeWinner = feedHome ? winnerOf(feedHome) : null;
+      const awayWinner = feedAway ? winnerOf(feedAway) : null;
+      if (homeWinner && next[ti].leg1.homeTeam.id === 0) {
+        next[ti].leg1.homeTeam = { ...homeWinner };
       }
-      if (feedAway?.winner && next[ti].leg1.awayTeam.id === 0) {
-        next[ti].leg1.awayTeam = { ...winnerOf(feedAway)! };
+      if (awayWinner && next[ti].leg1.awayTeam.id === 0) {
+        next[ti].leg1.awayTeam = { ...awayWinner };
       }
     }
   }
