@@ -81,7 +81,7 @@ function LegDetail({ match, label }: { match: BracketMatchData; label?: string }
           )}
           {match.penScoreHome !== null && (
             <div className="text-[10px] text-slate-500">
-              AET · Pens {match.penScoreHome}–{match.penScoreAway}
+              AET · Pens {match.scoreHome}–{match.scoreAway}
             </div>
           )}
         </div>

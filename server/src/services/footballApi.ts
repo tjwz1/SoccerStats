@@ -620,10 +620,14 @@ function propagateWinners(rounds: BracketRound[]): BracketRound[] {
     })),
   }));
 
-  // Determine effective winner, falling back to pen scores when score.winner is missing.
+  // Determine effective winner, falling back when score.winner is missing.
+  // For PK games fd.org stores the final pen result in score.fullTime (scoreHome/scoreAway).
   const effectiveWinner = (t: BracketTie): "home" | "away" | null => {
     if (t.winner) return t.winner;
-    const { penScoreHome: ph, penScoreAway: pa } = t.leg1;
+    const { scoreHome: sh, scoreAway: sa, etScoreHome: eth, penScoreHome: ph, penScoreAway: pa } = t.leg1;
+    // PK game: fd.org encodes final pen result in score.fullTime when etScore is present
+    if (eth !== null && sh !== null && sa !== null && sh !== sa) return sh > sa ? "home" : "away";
+    // Fallback: score.penalties if decisive
     if (ph !== null && pa !== null && ph !== pa) return ph > pa ? "home" : "away";
     return null;
   };
@@ -760,7 +764,15 @@ export async function getBracketMatches(competitionCode: string, season?: number
         // Single leg
         if (first.status === "FINISHED") {
           winner = first.winner === "HOME_TEAM" ? "home" : first.winner === "AWAY_TEAM" ? "away" : null;
-          // fd.org sometimes omits score.winner for PK games — infer from pen scores
+          // fd.org sometimes omits score.winner for PK games.
+          // For PK games fd.org stores the final pen result in score.fullTime (scoreHome/scoreAway).
+          // score.penalties only has the initial-rounds tally (can be equal even after sudden death).
+          if (winner === null && first.etScoreHome !== null
+              && first.scoreHome !== null && first.scoreAway !== null
+              && first.scoreHome !== first.scoreAway) {
+            winner = first.scoreHome > first.scoreAway ? "home" : "away";
+          }
+          // Fallback: infer from score.penalties if score.fullTime doesn't help
           if (winner === null && first.penScoreHome !== null && first.penScoreAway !== null
               && first.penScoreHome !== first.penScoreAway) {
             winner = first.penScoreHome > first.penScoreAway ? "home" : "away";

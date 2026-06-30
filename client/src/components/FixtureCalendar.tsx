@@ -311,6 +311,11 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
                     const hasScore  = scoreHome !== null && scoreAway !== null;
                     const homeWon   = m.winner === "HOME_TEAM";
                     const awayWon   = m.winner === "AWAY_TEAM";
+                    const isPen     = m.duration === "PENALTY_SHOOTOUT";
+                    const isAET     = m.duration === "EXTRA_TIME" || isPen;
+                    // etScoreHome is cumulative AET score; scoreHome is pen result for PK games
+                    const displayHome = isAET && m.etScoreHome !== null ? m.etScoreHome : scoreHome;
+                    const displayAway = isAET && m.etScoreAway !== null ? m.etScoreAway : scoreAway;
 
                     return (
                       <div key={m.id}>
@@ -364,9 +369,13 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
                           {/* Score */}
                           <div className="w-14 shrink-0 text-center mx-1">
                             {hasScore ? (
-                              <span className="text-sm font-bold tabular-nums text-white">
-                                {scoreHome} – {scoreAway}
-                              </span>
+                              <div className="flex flex-col items-center leading-tight">
+                                <span className={`text-sm font-bold tabular-nums ${isLive ? "text-green-400" : "text-white"}`}>
+                                  {displayHome} – {displayAway}
+                                </span>
+                                {isAET && <span className="text-[9px] text-slate-500">AET</span>}
+                                {isPen && <span className="text-[9px] text-slate-400">{scoreHome}–{scoreAway} pens</span>}
+                              </div>
                             ) : (
                               <span className="text-xs text-slate-600">vs</span>
                             )}

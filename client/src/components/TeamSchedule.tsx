@@ -189,8 +189,14 @@ function getResult(match: ScheduleMatch, teamId: number): Result | null {
     return (isHome ? match.winner === "HOME_TEAM" : match.winner === "AWAY_TEAM") ? "W" : "L";
   }
   if (match.scoreHome === null || match.scoreAway === null) return null;
-  // For penalty matches with missing winner field, try penalty score then additive total
+  // fd.org stores final pen result in score.fullTime for PK games (etScore present = PK indicator)
   if (match.duration === "PENALTY_SHOOTOUT") {
+    if (match.etScoreHome !== null && match.scoreHome !== null && match.scoreAway !== null
+        && match.scoreHome !== match.scoreAway) {
+      const isHome = match.homeTeamId === teamId;
+      return (isHome ? match.scoreHome > match.scoreAway : match.scoreAway > match.scoreHome) ? "W" : "L";
+    }
+    // Fallback: score.penalties if decisive
     const ph = match.penScoreHome, pa = match.penScoreAway;
     if (ph !== null && pa !== null && ph !== pa) {
       const isHome = match.homeTeamId === teamId;
@@ -1001,12 +1007,8 @@ function ScoreDisplay({ match, isLive }: { match: ScheduleMatch; isLive: boolean
   const isPen = match.duration === "PENALTY_SHOOTOUT";
   const isAET = match.duration === "EXTRA_TIME" || isPen;
 
-  // Only display pen scores when valid: non-null and non-equal
-  // (equal pens is impossible for a decided match — guard against bad API data)
-  const hasPens = isPen
-    && match.penScoreHome !== null
-    && match.penScoreAway !== null
-    && match.penScoreHome !== match.penScoreAway;
+  // isPen already implies a decided match, so no additional null/equality guard needed
+  const hasPens = isPen;
 
   // etScoreHome is the cumulative score at end of extra time (120 min), per fd.org API.
   const displayHome = isAET && match.etScoreHome !== null ? match.etScoreHome : match.scoreHome;
@@ -1022,7 +1024,7 @@ function ScoreDisplay({ match, isLive }: { match: ScheduleMatch; isLive: boolean
       )}
       {hasPens && (
         <span className="text-[9px] tabular-nums text-slate-400 leading-tight">
-          ({match.penScoreHome}–{match.penScoreAway} pens)
+          ({match.scoreHome}–{match.scoreAway} pens)
         </span>
       )}
     </div>

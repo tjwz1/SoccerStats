@@ -162,7 +162,7 @@ function SingleLegCard({
       )}
       {hasPens && (
         <p className="text-[10px] text-slate-600 text-center">
-          AET · Pens {match.penScoreHome}–{match.penScoreAway}
+          AET · Pens {match.scoreHome}–{match.scoreAway}
         </p>
       )}
       {match.etScoreHome !== null && !hasPens && (
@@ -299,7 +299,13 @@ export default function BracketView({ compCode, season }: Props) {
       if (!leg2 && leg1.status === "FINISHED" && winner === null) {
         winner = leg1.winner === "HOME_TEAM" ? "home" : leg1.winner === "AWAY_TEAM" ? "away" : null;
       }
-      // fd.org sometimes omits score.winner for PK games — infer from pen scores
+      // fd.org stores final pen result in score.fullTime for PK games (etScore present = PK indicator)
+      if (winner === null && leg1.etScoreHome !== null
+          && leg1.scoreHome !== null && leg1.scoreAway !== null
+          && leg1.scoreHome !== leg1.scoreAway) {
+        winner = leg1.scoreHome > leg1.scoreAway ? "home" : "away";
+      }
+      // Fallback: score.penalties if decisive
       if (winner === null && leg1.penScoreHome !== null && leg1.penScoreAway !== null
           && leg1.penScoreHome !== leg1.penScoreAway) {
         winner = leg1.penScoreHome > leg1.penScoreAway ? "home" : "away";
