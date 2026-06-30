@@ -126,19 +126,29 @@ function SingleLegCard({
   const done = match.status === "FINISHED";
   const live = match.status === "IN_PLAY" || match.status === "PAUSED";
   const showScore = done || live;
+  const hasPens = match.penScoreHome !== null;
+
+  // For PK games show the AET score (cumulative after 120 min) as the main score,
+  // not the 90-min fullTime score. Fall back to fullTime if ET data is missing.
+  const displayHome = showScore
+    ? (hasPens && match.etScoreHome !== null ? match.etScoreHome : match.scoreHome)
+    : null;
+  const displayAway = showScore
+    ? (hasPens && match.etScoreAway !== null ? match.etScoreAway : match.scoreAway)
+    : null;
 
   return (
     <div className="px-2.5 py-2">
       <TeamRow
         team={match.homeTeam}
         isWinner={done && winner === "home"}
-        score={showScore ? match.scoreHome : null}
+        score={displayHome}
         isLive={live}
       />
       <TeamRow
         team={match.awayTeam}
         isWinner={done && winner === "away"}
-        score={showScore ? match.scoreAway : null}
+        score={displayAway}
         isLive={live}
       />
       {!done && !live && (
@@ -150,12 +160,12 @@ function SingleLegCard({
           {match.status === "PAUSED" ? "Half Time" : "Live"}
         </p>
       )}
-      {match.penScoreHome !== null && (
+      {hasPens && (
         <p className="text-[10px] text-slate-600 text-center">
-          Pens {match.penScoreHome}–{match.penScoreAway}
+          AET · Pens {match.penScoreHome}–{match.penScoreAway}
         </p>
       )}
-      {match.etScoreHome !== null && match.penScoreHome === null && (
+      {match.etScoreHome !== null && !hasPens && (
         <p className="text-[10px] text-slate-600 text-center">
           AET {match.etScoreHome}–{match.etScoreAway}
         </p>
