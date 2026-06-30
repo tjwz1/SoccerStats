@@ -128,13 +128,17 @@ function SingleLegCard({
   const showScore = done || live;
   const hasPens = match.penScoreHome !== null;
 
-  // For PK games show the AET score (cumulative after 120 min) as the main score,
-  // not the 90-min fullTime score. Fall back to fullTime if ET data is missing.
+  // For PK games show AET total (fullTime + incremental ET goals) as the main score.
+  // etScoreHome is incremental (goals scored during ET only), so AET = scoreHome + etScoreHome.
   const displayHome = showScore
-    ? (hasPens && match.etScoreHome !== null ? match.etScoreHome : match.scoreHome)
+    ? (hasPens && match.etScoreHome !== null
+        ? (match.scoreHome ?? 0) + match.etScoreHome
+        : match.scoreHome)
     : null;
   const displayAway = showScore
-    ? (hasPens && match.etScoreAway !== null ? match.etScoreAway : match.scoreAway)
+    ? (hasPens && match.etScoreAway !== null
+        ? (match.scoreAway ?? 0) + match.etScoreAway
+        : match.scoreAway)
     : null;
 
   return (
@@ -298,6 +302,11 @@ export default function BracketView({ compCode, season }: Props) {
       let winner = tie.winner;
       if (!leg2 && leg1.status === "FINISHED" && winner === null) {
         winner = leg1.winner === "HOME_TEAM" ? "home" : leg1.winner === "AWAY_TEAM" ? "away" : null;
+      }
+      // fd.org sometimes omits score.winner for PK games — infer from pen scores
+      if (winner === null && leg1.penScoreHome !== null && leg1.penScoreAway !== null
+          && leg1.penScoreHome !== leg1.penScoreAway) {
+        winner = leg1.penScoreHome > leg1.penScoreAway ? "home" : "away";
       }
       return { ...tie, leg1, leg2, winner };
     }),

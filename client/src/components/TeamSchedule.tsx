@@ -1009,10 +1009,18 @@ function ScoreDisplay({ match, isLive }: { match: ScheduleMatch; isLive: boolean
     && match.penScoreAway !== null
     && match.penScoreHome !== match.penScoreAway;
 
+  // etScoreHome is incremental (ET goals only), so AET total = fullTime + ET
+  const displayHome = isAET && match.etScoreHome !== null
+    ? (match.scoreHome ?? 0) + match.etScoreHome
+    : match.scoreHome;
+  const displayAway = isAET && match.etScoreAway !== null
+    ? (match.scoreAway ?? 0) + match.etScoreAway
+    : match.scoreAway;
+
   return (
     <div className="flex flex-col items-center gap-0.5">
       <span className={`text-sm font-bold tabular-nums leading-tight ${isLive ? "text-red-300" : "text-white"}`}>
-        {match.scoreHome} – {match.scoreAway}
+        {displayHome} – {displayAway}
       </span>
       {isAET && (
         <span className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider leading-tight">AET</span>

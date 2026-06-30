@@ -69,16 +69,24 @@ function LegDetail({ match, label }: { match: BracketMatchData; label?: string }
         <div className="text-center shrink-0">
           {done ? (
             <span className="text-2xl font-bold text-white tabular-nums">
-              {match.scoreHome} – {match.scoreAway}
+              {match.etScoreHome !== null
+                ? (match.scoreHome ?? 0) + match.etScoreHome
+                : match.scoreHome}
+              {" – "}
+              {match.etScoreAway !== null
+                ? (match.scoreAway ?? 0) + match.etScoreAway
+                : match.scoreAway}
             </span>
           ) : (
             <span className="text-sm text-slate-500">{fmtDate(match.utcDate)}</span>
           )}
           {match.etScoreHome !== null && match.penScoreHome === null && (
-            <div className="text-[10px] text-slate-500">AET {match.etScoreHome}–{match.etScoreAway}</div>
+            <div className="text-[10px] text-slate-500">AET</div>
           )}
           {match.penScoreHome !== null && (
-            <div className="text-[10px] text-slate-500">Pens {match.penScoreHome}–{match.penScoreAway}</div>
+            <div className="text-[10px] text-slate-500">
+              AET · Pens {match.penScoreHome}–{match.penScoreAway}
+            </div>
           )}
         </div>
 

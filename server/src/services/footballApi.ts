@@ -747,6 +747,11 @@ export async function getBracketMatches(competitionCode: string, season?: number
         // Single leg
         if (first.status === "FINISHED") {
           winner = first.winner === "HOME_TEAM" ? "home" : first.winner === "AWAY_TEAM" ? "away" : null;
+          // fd.org sometimes omits score.winner for PK games — infer from pen scores
+          if (winner === null && first.penScoreHome !== null && first.penScoreAway !== null
+              && first.penScoreHome !== first.penScoreAway) {
+            winner = first.penScoreHome > first.penScoreAway ? "home" : "away";
+          }
         }
       } else if (agg1Done && agg2Done && aggHome !== null && aggAway !== null) {
         if (aggHome > aggAway) winner = "home";
