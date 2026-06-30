@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useApi } from "../hooks/useApi";
 import { useLiveMatches } from "../contexts/LiveMatchesContext";
 import type { ScheduleMatch, Competition, Team } from "../types";
 
