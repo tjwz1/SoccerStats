@@ -7,7 +7,7 @@ import { fetchSofaScorePhotos } from "./sofaScorePhotos";
 import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
 import { getWikiStats, getWikiStatsBatch, setWikiStats } from "../db/wikiCareerCache";
 import { getWikiTrophies, setWikiTrophies } from "../db/wikiTrophyCache";
-import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus } from "./wikiStats";
+import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus, getWcR16Pairings } from "./wikiStats";
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
 import type { ClubTrophy as TmClubTrophy } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
@@ -883,6 +883,50 @@ export async function getBracketMatches(competitionCode: string, season?: number
 
     return { name: STAGE_DISPLAY[stage] ?? stage, stage, ties };
   });
+
+  // For WC tournaments, correct R16 team assignments using Wikipedia's authoritative
+  // bracket draw (section titles like "Paraguay vs France"). fd.org sometimes has teams
+  // in wrong R16 slots; Wikipedia reflects the official draw order.
+  if (competitionCode === "WC") {
+    try {
+      const r16Pairings = await getWcR16Pairings(seasonYear);
+      const r16Round = rounds.find(r => r.stage === "LAST_16");
+      const r32Round = rounds.find(r => r.stage === "LAST_32");
+      if (r16Round && r32Round && r16Pairings.some(p => p !== null)) {
+        const norm = (s: string) =>
+          s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, "").trim();
+
+        const teamByNorm = new Map<string, BracketMatchData["homeTeam"]>();
+        for (const tie of r32Round.ties) {
+          for (const team of [tie.leg1.homeTeam, tie.leg1.awayTeam]) {
+            if (team.id !== 0) {
+              teamByNorm.set(norm(team.name), team);
+              if (team.shortName) teamByNorm.set(norm(team.shortName), team);
+            }
+          }
+        }
+
+        const r16Sorted = [...r16Round.ties].sort((a, b) => {
+          const da = new Date(a.leg1.utcDate).getTime();
+          const db = new Date(b.leg1.utcDate).getTime();
+          return da !== db ? da - db : a.leg1.id - b.leg1.id;
+        });
+
+        for (let i = 0; i < Math.min(r16Pairings.length, r16Sorted.length); i++) {
+          const pairing = r16Pairings[i];
+          if (!pairing) continue;
+          const homeTeam = teamByNorm.get(norm(pairing.home));
+          const awayTeam = teamByNorm.get(norm(pairing.away));
+          if (homeTeam && awayTeam) {
+            r16Sorted[i].leg1.homeTeam = { ...homeTeam };
+            r16Sorted[i].leg1.awayTeam = { ...awayTeam };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[getBracketMatches] Wikipedia R16 correction failed:", (e as Error).message);
+    }
+  }
 
   return { rounds: propagateWinners(rounds) };
 }

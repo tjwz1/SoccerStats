@@ -1035,3 +1035,44 @@ export async function getWcKnockoutStatus(season: number): Promise<Map<string, K
   }
   return result;
 }
+
+// Fetches the ordered R16 matchups from the Wikipedia WC knockout stage article.
+// Returns an 8-element array; entries are null for TBD ("Winner Match X") slots.
+// Wikipedia's section titles (e.g. "Paraguay vs France") are authoritative for
+// the bracket draw and override fd.org when fd.org has teams in wrong slots.
+export async function getWcR16Pairings(season: number): Promise<Array<{ home: string; away: string } | null>> {
+  const cacheKey = `/wiki/wc-r16-pairings/${season}`;
+  const cached = await getCached(cacheKey);
+  if (cached) return cached as Array<{ home: string; away: string } | null>;
+
+  const article = `${season}_FIFA_World_Cup_knockout_stage`;
+  const url =
+    `https://en.wikipedia.org/w/api.php?action=parse` +
+    `&page=${encodeURIComponent(article)}&prop=sections&format=json&redirects=1`;
+
+  const text = await wikiFetch(url, 10000);
+  if (!text) return new Array(8).fill(null);
+
+  let sections: Array<{ number: string; line: string }>;
+  try {
+    sections = JSON.parse(text)?.parse?.sections ?? [];
+  } catch {
+    return new Array(8).fill(null);
+  }
+
+  const r16Parent = sections.find(s => /round of 16/i.test(s.line));
+  if (!r16Parent) return new Array(8).fill(null);
+
+  const r16Subs = sections.filter(s => s.number.startsWith(r16Parent.number + "."));
+  const pairings: Array<{ home: string; away: string } | null> = r16Subs.map(sub => {
+    const parts = sub.line.split(/\s+vs\s+/i);
+    if (parts.length !== 2) return null;
+    const [home, away] = parts.map(p => p.trim());
+    if (/winner/i.test(home) || /winner/i.test(away)) return null;
+    return { home, away };
+  });
+
+  while (pairings.length < 8) pairings.push(null);
+  await setCached(cacheKey, pairings, 5 * 60_000);
+  return pairings;
+}
