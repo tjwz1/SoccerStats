@@ -653,30 +653,79 @@ function propagateWinners(rounds: BracketRound[]): BracketRound[] {
   // (critical for WC/tournament brackets where the draw pairs non-consecutive matches,
   // e.g. R32[0] & R32[3] → R16[0] rather than R32[0] & R32[1] → R16[0]).
   // Falls back to sequential order for fully-TBD (id=0) slots.
+  const EMPTY_TEAM = { id: 0, name: "", shortName: "", crest: "" };
   const mainRounds = result.filter((r) => r.stage !== "THIRD_PLACE");
+
+  // Deduplication pre-pass: fd.org occasionally pre-populates the same team in
+  // two different next-round slots (e.g. Brazil in both R16[1] away and R16[2] home
+  // after a bracket draw correction). Clear earlier occurrences; the LAST occurrence
+  // is treated as authoritative because fd.org settles on the correct slot last.
+  for (let ri = 1; ri < mainRounds.length; ri++) {
+    const round = mainRounds[ri];
+    const lastSeen = new Map<number, { ti: number; side: "home" | "away" }>();
+    for (let ti = 0; ti < round.ties.length; ti++) {
+      const leg = round.ties[ti].leg1;
+      for (const side of ["home", "away"] as const) {
+        const team = side === "home" ? leg.homeTeam : leg.awayTeam;
+        if (team.id === 0) continue;
+        if (lastSeen.has(team.id)) {
+          const prev = lastSeen.get(team.id)!;
+          const prevLeg = round.ties[prev.ti].leg1;
+          if (prev.side === "home") prevLeg.homeTeam = { ...EMPTY_TEAM };
+          else prevLeg.awayTeam = { ...EMPTY_TEAM };
+        }
+        lastSeen.set(team.id, { ti, side });
+      }
+    }
+  }
+
   for (let ri = 0; ri < mainRounds.length - 1; ri++) {
     const srcSorted = byDate(mainRounds[ri].ties);
     const next = mainRounds[ri + 1].ties;
     const usedSrcIds = new Set<number>();
+
+    // Collect teams already named in this next round. Sequential fallback will
+    // skip source matches that contain any of these teams — preventing a TBD slot
+    // from claiming the feeder match that belongs to a named slot.
+    const allocatedNextTeams = new Set<number>();
+    for (const t of next) {
+      if (t.leg1.homeTeam.id !== 0) allocatedNextTeams.add(t.leg1.homeTeam.id);
+      if (t.leg1.awayTeam.id !== 0) allocatedNextTeams.add(t.leg1.awayTeam.id);
+    }
 
     for (let ti = 0; ti < next.length; ti++) {
       const nextTie = next[ti];
       const homeId = nextTie.leg1.homeTeam.id;
       const awayId = nextTie.leg1.awayTeam.id;
 
-      // Find the src tie by team presence (pre-populated) or next-unclaimed (TBD)
       const findByTeam = (teamId: number) =>
         srcSorted.find(
           (s) => !usedSrcIds.has(s.leg1.id) &&
             (s.leg1.homeTeam.id === teamId || s.leg1.awayTeam.id === teamId)
         ) ?? null;
-      const findSequential = () =>
-        srcSorted.find((s) => !usedSrcIds.has(s.leg1.id)) ?? null;
 
-      const feedHome = homeId !== 0 ? findByTeam(homeId) : findSequential();
+      // Sequential fallback: skip source matches containing teams pre-allocated
+      // to other next-round slots (delete this slot's own teams from the skip set
+      // so we don't accidentally refuse their feeder matches).
+      const findSequential = (slotHomeId: number, slotAwayId: number) => {
+        const skip = new Set(allocatedNextTeams);
+        skip.delete(slotHomeId);
+        skip.delete(slotAwayId);
+        return srcSorted.find(
+          (s) => !usedSrcIds.has(s.leg1.id) &&
+            !skip.has(s.leg1.homeTeam.id) &&
+            !skip.has(s.leg1.awayTeam.id)
+        ) ?? null;
+      };
+
+      const feedHome = homeId !== 0 ? findByTeam(homeId) : findSequential(homeId, awayId);
       if (feedHome) usedSrcIds.add(feedHome.leg1.id);
 
-      const feedAway = awayId !== 0 ? findByTeam(awayId) : findSequential();
+      // Only attempt away fill if home was resolved (or home slot was named).
+      // Prevents filling an away TBD against a home TBD that had no valid source.
+      const canFillAway = homeId !== 0 || feedHome !== null;
+      const feedAway = !canFillAway ? null :
+        awayId !== 0 ? findByTeam(awayId) : findSequential(homeId, awayId);
       if (feedAway) usedSrcIds.add(feedAway.leg1.id);
 
       if (feedHome) {
