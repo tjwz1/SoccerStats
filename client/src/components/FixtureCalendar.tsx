@@ -24,8 +24,13 @@ function isoDate(year: number, month: number, day: number): string {
 }
 
 function monthRange(year: number, month: number) {
-  const last = new Date(year, month + 1, 0).getDate();
-  return { dateFrom: isoDate(year, month, 1), dateTo: isoDate(year, month, last) };
+  // Extend one day past month end to catch UTC-midnight games that land in this
+  // month in local time (e.g. Jul 1 01:00 UTC = Jun 30 19:00 in America/Denver).
+  const nextDay = new Date(year, month + 1, 1);
+  return {
+    dateFrom: isoDate(year, month, 1),
+    dateTo: `${nextDay.getFullYear()}-${pad(nextDay.getMonth() + 1)}-${pad(nextDay.getDate())}`,
+  };
 }
 
 function fmtSelectedDate(iso: string): string {

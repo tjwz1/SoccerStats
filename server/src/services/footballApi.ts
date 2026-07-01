@@ -648,21 +648,48 @@ function propagateWinners(rounds: BracketRound[]): BracketRound[] {
       return da !== db ? da - db : a.leg1.id - b.leg1.id;
     });
 
-  // Main bracket: each consecutive pair of ties in round N feeds one tie in round N+1.
+  // Main bracket: propagate winners from round N to round N+1.
+  // Use pre-populated team IDs in next-round slots to find the correct source match
+  // (critical for WC/tournament brackets where the draw pairs non-consecutive matches,
+  // e.g. R32[0] & R32[3] → R16[0] rather than R32[0] & R32[1] → R16[0]).
+  // Falls back to sequential order for fully-TBD (id=0) slots.
   const mainRounds = result.filter((r) => r.stage !== "THIRD_PLACE");
   for (let ri = 0; ri < mainRounds.length - 1; ri++) {
-    const src = byDate(mainRounds[ri].ties);
+    const srcSorted = byDate(mainRounds[ri].ties);
     const next = mainRounds[ri + 1].ties;
+    const usedSrcIds = new Set<number>();
+
     for (let ti = 0; ti < next.length; ti++) {
-      const feedHome = src[ti * 2];
-      const feedAway = src[ti * 2 + 1];
-      const homeWinner = feedHome ? winnerOf(feedHome) : null;
-      const awayWinner = feedAway ? winnerOf(feedAway) : null;
-      if (homeWinner && next[ti].leg1.homeTeam.id === 0) {
-        next[ti].leg1.homeTeam = { ...homeWinner };
+      const nextTie = next[ti];
+      const homeId = nextTie.leg1.homeTeam.id;
+      const awayId = nextTie.leg1.awayTeam.id;
+
+      // Find the src tie by team presence (pre-populated) or next-unclaimed (TBD)
+      const findByTeam = (teamId: number) =>
+        srcSorted.find(
+          (s) => !usedSrcIds.has(s.leg1.id) &&
+            (s.leg1.homeTeam.id === teamId || s.leg1.awayTeam.id === teamId)
+        ) ?? null;
+      const findSequential = () =>
+        srcSorted.find((s) => !usedSrcIds.has(s.leg1.id)) ?? null;
+
+      const feedHome = homeId !== 0 ? findByTeam(homeId) : findSequential();
+      if (feedHome) usedSrcIds.add(feedHome.leg1.id);
+
+      const feedAway = awayId !== 0 ? findByTeam(awayId) : findSequential();
+      if (feedAway) usedSrcIds.add(feedAway.leg1.id);
+
+      if (feedHome) {
+        const homeWinner = winnerOf(feedHome);
+        if (homeWinner && nextTie.leg1.homeTeam.id === 0) {
+          nextTie.leg1.homeTeam = { ...homeWinner };
+        }
       }
-      if (awayWinner && next[ti].leg1.awayTeam.id === 0) {
-        next[ti].leg1.awayTeam = { ...awayWinner };
+      if (feedAway) {
+        const awayWinner = winnerOf(feedAway);
+        if (awayWinner && nextTie.leg1.awayTeam.id === 0) {
+          nextTie.leg1.awayTeam = { ...awayWinner };
+        }
       }
     }
   }
