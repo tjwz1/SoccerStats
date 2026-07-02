@@ -318,9 +318,21 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
                     const awayWon   = m.winner === "AWAY_TEAM";
                     const isPen     = m.duration === "PENALTY_SHOOTOUT";
                     const isAET     = m.duration === "EXTRA_TIME" || isPen;
-                    // etScoreHome is cumulative AET score; scoreHome is pen result for PK games
-                    const displayHome = isAET && m.etScoreHome !== null ? m.etScoreHome : scoreHome;
-                    const displayAway = isAET && m.etScoreAway !== null ? m.etScoreAway : scoreAway;
+                    // fd.org encodes PK games as fullTime = FT_goals + pen_goals, extraTime = ET-only goals.
+                    // True AET tied score = (scoreHome - penScoreHome) + etScoreHome.
+                    // For EXTRA_TIME (non-PK) games, fullTime is already the AET final.
+                    const penH = m.penScoreHome;
+                    const penA = m.penScoreAway;
+                    const displayHome = hasScore
+                      ? (isPen && penH !== null && m.etScoreHome !== null
+                          ? (scoreHome! - penH) + m.etScoreHome
+                          : scoreHome)
+                      : null;
+                    const displayAway = hasScore
+                      ? (isPen && penA !== null && m.etScoreAway !== null
+                          ? (scoreAway! - penA) + m.etScoreAway
+                          : scoreAway)
+                      : null;
 
                     return (
                       <div key={m.id}>
@@ -379,7 +391,7 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
                                   {displayHome} – {displayAway}
                                 </span>
                                 {isAET && <span className="text-[9px] text-slate-500">AET</span>}
-                                {isPen && <span className="text-[9px] text-slate-400">{scoreHome}–{scoreAway} pens</span>}
+                                {isPen && penH !== null && <span className="text-[9px] text-slate-400">{penH}–{penA} pens</span>}
                               </div>
                             ) : (
                               <span className="text-xs text-slate-600">vs</span>

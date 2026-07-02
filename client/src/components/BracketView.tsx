@@ -128,13 +128,19 @@ function SingleLegCard({
   const showScore = done || live;
   const hasPens = match.penScoreHome !== null;
 
-  // etScoreHome is the cumulative score at end of extra time (120 min), per fd.org API.
-  // For PK games use it directly as the AET display score.
+  // fd.org PK encoding: fullTime = FT_goals + pen_goals, extraTime = ET-only goals.
+  // True AET tied score = (scoreHome - penScoreHome) + etScoreHome.
+  const penH = match.penScoreHome;
+  const penA = match.penScoreAway;
   const displayHome = showScore
-    ? (hasPens && match.etScoreHome !== null ? match.etScoreHome : match.scoreHome)
+    ? (hasPens && penH !== null && match.etScoreHome !== null
+        ? (match.scoreHome! - penH) + match.etScoreHome
+        : match.scoreHome)
     : null;
   const displayAway = showScore
-    ? (hasPens && match.etScoreAway !== null ? match.etScoreAway : match.scoreAway)
+    ? (hasPens && penA !== null && match.etScoreAway !== null
+        ? (match.scoreAway! - penA) + match.etScoreAway
+        : match.scoreAway)
     : null;
 
   return (
@@ -160,9 +166,9 @@ function SingleLegCard({
           {match.status === "PAUSED" ? "Half Time" : "Live"}
         </p>
       )}
-      {hasPens && (
+      {hasPens && penH !== null && (
         <p className="text-[10px] text-slate-600 text-center">
-          AET · Pens {match.scoreHome}–{match.scoreAway}
+          AET · Pens {penH}–{penA}
         </p>
       )}
       {match.etScoreHome !== null && !hasPens && (

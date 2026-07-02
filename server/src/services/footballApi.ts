@@ -928,7 +928,23 @@ export async function getBracketMatches(competitionCode: string, season?: number
     }
   }
 
-  return { rounds: propagateWinners(rounds) };
+  const resultRounds = propagateWinners(rounds);
+
+  if (competitionCode === "WC" && seasonYear === 2026) {
+    // R32 IDs 537415-537430 are assigned in bracket visual order → sort ascending
+    const r32 = resultRounds.find(r => r.stage === "LAST_32");
+    if (r32) r32.ties.sort((a, b) => a.leg1.id - b.leg1.id);
+
+    // R16 IDs are NOT in bracket visual order → hardcoded position map
+    const R16_BRACKET = [537375, 537376, 537379, 537378, 537377, 537380, 537381, 537382];
+    const r16 = resultRounds.find(r => r.stage === "LAST_16");
+    if (r16) {
+      const rank = new Map(R16_BRACKET.map((id, i) => [id, i]));
+      r16.ties.sort((a, b) => (rank.get(a.leg1.id) ?? 99) - (rank.get(b.leg1.id) ?? 99));
+    }
+  }
+
+  return { rounds: resultRounds };
 }
 
 // ── Schedule ──────────────────────────────────────────────────────────────
