@@ -72,13 +72,23 @@ export default function MainView() {
     }
   }, [urlCode, competitions?.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // URL → state: restore team from sessionStorage when navigating to /competitions/:code/teams/:id
+  // URL → state: restore team when navigating to /competitions/:code/teams/:id.
+  // Tries sessionStorage first; falls back to fetching the competition's teams so
+  // direct links and browser refreshes work even with a cold session.
   useEffect(() => {
-    if (!urlTeamId) return;
+    if (!urlTeamId || !selectedComp) return;
     const id = parseInt(urlTeamId, 10);
+    if (selectedTeam?.id === id) return;
     const saved = readSession<Team>("ss_team");
-    if (saved?.id === id && !selectedTeam) setSelectedTeam(saved);
-  }, [urlTeamId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (saved?.id === id) { setSelectedTeam(saved); return; }
+    fetch(`/api/competitions/${selectedComp.code}/teams`)
+      .then((r) => r.json())
+      .then((teams: Team[]) => {
+        const team = Array.isArray(teams) ? teams.find((t) => t.id === id) : null;
+        if (team) setSelectedTeam(team);
+      })
+      .catch(() => {});
+  }, [urlTeamId, selectedComp?.code]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // State → URL: keep address bar in sync so links are shareable.
   // Only blocked during an active URL→state transition (while state hasn't caught up yet).
