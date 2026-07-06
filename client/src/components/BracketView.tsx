@@ -172,9 +172,7 @@ function SingleLegCard({
         </p>
       )}
       {match.etScoreHome !== null && !hasPens && (
-        <p className="text-[10px] text-slate-600 text-center">
-          AET {match.etScoreHome}–{match.etScoreAway}
-        </p>
+        <p className="text-[10px] text-slate-600 text-center">AET</p>
       )}
     </div>
   );
