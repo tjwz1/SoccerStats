@@ -451,6 +451,15 @@ router.get("/matches/:id", async (req, res) => {
     const competition = safeStr(req.query.competition as string | undefined, 10);
 
     const isLive = ["IN_PLAY", "PAUSED"].includes(status);
+    const isFinished = status === "FINISHED";
+
+    // Return cached assembled response for finished matches (ESPN scrapes included)
+    const assembledKey = `match-assembled:${matchId}`;
+    if (isFinished) {
+      const hit = await getCached(assembledKey);
+      if (hit) return res.json(hit);
+    }
+
     const detail = await getMatchDetail(matchId, status);
     let goals = detail.goals;
     let bookings = detail.bookings;
@@ -496,7 +505,13 @@ router.get("/matches/:id", async (req, res) => {
       }
     }
 
-    res.json({ ...detail, goals, bookings, substitutions });
+    const assembled = { ...detail, goals, bookings, substitutions };
+    // Cache finished matches forever; only skip caching when goals were expected but missing
+    // (allows ESPN data to be picked up on the next request if the scrape initially failed).
+    if (isFinished && (goals.length > 0 || bookings.length > 0 || substitutions.length > 0)) {
+      setCached(assembledKey, assembled, FOREVER_TTL_MS);
+    }
+    res.json(assembled);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -513,8 +528,12 @@ router.get("/matches/:id/team-stats", async (req, res) => {
     if (!homeTeam || !awayTeam || !utcDate) {
       return res.status(400).json({ error: "homeTeam, awayTeam, utcDate required" });
     }
+    const cacheKey = `match-team-stats:${matchId}`;
+    const cached = await getCached(cacheKey);
+    if (cached) return res.json(cached);
     const stats = await getMatchTeamStats(matchId, homeTeam, awayTeam, utcDate, competition);
     if (!stats) return res.status(404).json({ error: "team stats not available" });
+    setCached(cacheKey, stats, FOREVER_TTL_MS);
     res.json(stats);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -534,7 +553,15 @@ router.get("/matches/:id/player-stats", async (req, res) => {
     if (!homeTeam || !awayTeam || !utcDate) {
       return res.status(400).json({ error: "homeTeam, awayTeam, utcDate required" });
     }
+    const cacheKey = `match-player-stats:${matchId}`;
+    if (!isLive) {
+      const cached = await getCached(cacheKey);
+      if (cached) return res.json(cached);
+    }
     const stats = await getMatchPlayerStats(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
+    if (!isLive && Array.isArray(stats) && stats.length > 0) {
+      setCached(cacheKey, stats, FOREVER_TTL_MS);
+    }
     res.json(stats);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -563,6 +590,14 @@ router.get("/matches/:id/actual-lineup", async (req, res) => {
     const competition = safeStr(req.query.competition as string | undefined, 10) || "PL";
 
     const status = safeStr(req.query.status as string | undefined, 20) || "FINISHED";
+    const isLive = ["IN_PLAY", "PAUSED"].includes(status);
+    const isFinished = status === "FINISHED";
+
+    const cacheKey = `match-actual-lineup:${matchId}`;
+    if (isFinished) {
+      const cached = await getCached(cacheKey);
+      if (cached) return res.json(cached);
+    }
 
     // Try football-data.org first (has player IDs for photo lookup)
     let lineups = await getMatchLineups(matchId, status);
@@ -590,6 +625,9 @@ router.get("/matches/:id/actual-lineup", async (req, res) => {
       }
     }
 
+    if (isFinished && lineups.hasData) {
+      setCached(cacheKey, lineups, FOREVER_TTL_MS);
+    }
     res.json(lineups);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -601,7 +639,13 @@ router.get("/teams/:id/news", async (req, res) => {
   try {
     const teamName = (req.query.name as string | undefined)?.trim();
     if (!teamName) return res.status(400).json({ error: "?name= query param required" });
+    const cacheKey = `team-news:${req.params.id}`;
+    const cached = await getCached(cacheKey);
+    if (cached) return res.json(cached);
     const articles = await fetchTeamNews(teamName);
+    if (Array.isArray(articles) && articles.length > 0) {
+      setCached(cacheKey, articles, 15 * 60 * 1000);
+    }
     res.json(articles);
   } catch (e: any) {
     res.status(500).json({ error: e.message });

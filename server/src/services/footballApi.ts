@@ -1952,19 +1952,23 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
 
   // Background Wikipedia pre-warm: fetch career + trophy data for starters/bench
   // not yet cached so that clicking a player is instant rather than 3-7s cold.
+  // Uses batches of 3 concurrent scrapes with 200ms between batches to avoid
+  // hammering Wikipedia while still being ~3x faster than the old serial approach.
   (async () => {
     const displayed = [
       ...xi.map(({ player: p }) => ({ id: p.id as number, name: p.name as string })),
       ...bench.map((p: any) => ({ id: p.id as number, name: p.name as string })),
-    ];
-    for (const p of displayed) {
-      if (careerApps.has(p.id)) continue;
-      try {
-        const wikiData = await fetchPlayerWikiData(p.name, true, true);
-        if (wikiData.career.length > 0) setWikiStats(p.id, p.name, wikiData.career);
-        if (wikiData.trophies.length > 0) setWikiTrophies(p.id, wikiData.trophies);
-      } catch {}
-      await sleep(800);
+    ].filter((p) => !careerApps.has(p.id));
+    const BATCH = 3;
+    for (let i = 0; i < displayed.length; i += BATCH) {
+      await Promise.all(displayed.slice(i, i + BATCH).map(async (p) => {
+        try {
+          const wikiData = await fetchPlayerWikiData(p.name, true, true);
+          if (wikiData.career.length > 0) setWikiStats(p.id, p.name, wikiData.career);
+          if (wikiData.trophies.length > 0) setWikiTrophies(p.id, wikiData.trophies);
+        } catch {}
+      }));
+      if (i + BATCH < displayed.length) await sleep(200);
     }
   })().catch(() => {});
 
