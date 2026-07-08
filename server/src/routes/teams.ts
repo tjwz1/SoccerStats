@@ -667,6 +667,20 @@ router.get("/teams/:id/schedule", async (req, res) => {
       return res.json(cached ?? []);
     }
 
+    // International tournaments (WC, EC): skip the assembled Supabase cache and always
+    // rebuild synchronously. The Vercel SWR pattern fires a background refresh after sending
+    // the response, but Vercel kills that background task — so stale assembled data persists
+    // indefinitely. For intl comps we must serve fresh data so bracket propagation (which fills
+    // in TBD team names after each round) is always reflected. The cost is negligible because
+    // the underlying fd.org data is already cached in apiFetch at a 2-min TTL.
+    if (isInternationalComp(domestic)) {
+      const fdMatches = await getTeamSchedule(req.params.id, domestic, season);
+      fdMatches.sort((a, b) => +new Date(b.utcDate) - +new Date(a.utcDate));
+      const finished = fdMatches.filter((m) => m.status === "FINISHED");
+      if (finished.length > 0) setCached(pastKey, finished, FOREVER_TTL_MS);
+      return res.json(fdMatches);
+    }
+
     // SWR: serve stale assembled schedule immediately on cache expiry (background refresh).
     // Prevents Vercel timeouts caused by blocking on 4 parallel fd.org fetches + cup scraping.
     const assembledKey = `/team-schedule-full/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
