@@ -1074,12 +1074,49 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
             ? `/competitions/${code}/matches?season=${season}`
             : `/competitions/${code}/matches?season=${season}&limit=500`;
           const data = await apiFetch(matchesPath, matchesTtl) as any;
-          for (const m of (data?.matches ?? [])) {
+          const rawMatches: any[] = data?.matches ?? [];
+          for (const m of rawMatches) {
             if (["CANCELLED", "SUSPENDED"].includes(m.status)) continue;
             if (m.homeTeam?.id !== teamIdNum && m.awayTeam?.id !== teamIdNum) continue;
             if (seen.has(m.id)) continue;
             seen.add(m.id);
             all.push(mapMatch(m));
+          }
+
+          // Secondary pass for international comps: fd.org returns homeTeam/awayTeam as
+          // null for upcoming knockout matches until it manually updates the bracket draw.
+          // The bracket endpoint already runs propagateWinners() to fill in winners from
+          // previous rounds. Reuse that to surface the match in this team's schedule.
+          if (isIntl) {
+            const nowMs = Date.now();
+            const tbdUpcoming = rawMatches.filter((m: any) =>
+              !["CANCELLED", "SUSPENDED"].includes(m.status) &&
+              !seen.has(m.id) &&
+              (m.homeTeam?.id ?? 0) === 0 && (m.awayTeam?.id ?? 0) === 0 &&
+              new Date(m.utcDate).getTime() > nowMs
+            );
+            if (tbdUpcoming.length > 0) {
+              const bracket = await getBracketMatches(code, season);
+              if (bracket) {
+                const bById = new Map<number, BracketMatchData>();
+                for (const r of bracket.rounds)
+                  for (const t of r.ties) bById.set(t.leg1.id, t.leg1);
+                for (const m of tbdUpcoming) {
+                  const bm = bById.get(m.id);
+                  if (!bm || (bm.homeTeam.id !== teamIdNum && bm.awayTeam.id !== teamIdNum)) continue;
+                  seen.add(m.id);
+                  all.push({
+                    ...mapMatch(m),
+                    homeTeam: bm.homeTeam.shortName || bm.homeTeam.name,
+                    homeTeamId: bm.homeTeam.id,
+                    homeTeamCrest: bm.homeTeam.crest,
+                    awayTeam: bm.awayTeam.shortName || bm.awayTeam.name,
+                    awayTeamId: bm.awayTeam.id,
+                    awayTeamCrest: bm.awayTeam.crest,
+                  });
+                }
+              }
+            }
           }
         } catch {
           // Team not in this competition/season — silently skip.
@@ -1227,12 +1264,65 @@ async function fetchFixtureChunk(dateFrom: string, dateTo: string): Promise<Sche
 
 // fd.org global /matches endpoint has a maximum date range of ~10 days.
 // Requests spanning a longer period are split into 10-day chunks and fetched in parallel.
+// Patch upcoming TBD knockout matches using bracket propagation.
+// fd.org's global /matches endpoint lags the competition endpoint when teams advance.
+// The bracket already runs propagateWinners() — reuse that data to fill in team names.
+async function patchTBDFixtures(fixtures: ScheduleMatch[]): Promise<ScheduleMatch[]> {
+  const nowMs = Date.now();
+  const tbdFuture = fixtures.filter(
+    (m) => (m.homeTeamId === 0 || m.awayTeamId === 0) &&
+            new Date(m.utcDate).getTime() > nowMs &&
+            INTERNATIONAL_COMP_CODES.has(m.competitionCode)
+  );
+  if (tbdFuture.length === 0) return fixtures;
+
+  type TeamPatch = { homeTeam: string; homeTeamId: number; homeTeamCrest: string; awayTeam: string; awayTeamId: number; awayTeamCrest: string };
+  const codeSet = new Set(tbdFuture.map((m) => m.competitionCode));
+  const bracketByCode = new Map<string, Map<number, TeamPatch>>();
+  await Promise.all([...codeSet].map(async (code) => {
+    const b = await getBracketMatches(code);
+    if (!b) return;
+    const map = new Map<number, TeamPatch>();
+    for (const r of b.rounds) {
+      for (const t of r.ties) {
+        const bm = t.leg1;
+        if (bm.homeTeam.id !== 0 || bm.awayTeam.id !== 0) {
+          map.set(bm.id, {
+            homeTeam: bm.homeTeam.shortName || bm.homeTeam.name,
+            homeTeamId: bm.homeTeam.id,
+            homeTeamCrest: bm.homeTeam.crest,
+            awayTeam: bm.awayTeam.shortName || bm.awayTeam.name,
+            awayTeamId: bm.awayTeam.id,
+            awayTeamCrest: bm.awayTeam.crest,
+          });
+        }
+      }
+    }
+    bracketByCode.set(code, map);
+  }));
+
+  return fixtures.map((m) => {
+    if ((m.homeTeamId !== 0 && m.awayTeamId !== 0) || new Date(m.utcDate).getTime() <= nowMs) return m;
+    const bt = bracketByCode.get(m.competitionCode)?.get(m.id);
+    if (!bt) return m;
+    return {
+      ...m,
+      homeTeam: m.homeTeamId === 0 && bt.homeTeamId !== 0 ? bt.homeTeam : m.homeTeam,
+      homeTeamId: m.homeTeamId === 0 && bt.homeTeamId !== 0 ? bt.homeTeamId : m.homeTeamId,
+      homeTeamCrest: m.homeTeamId === 0 && bt.homeTeamId !== 0 ? bt.homeTeamCrest : m.homeTeamCrest,
+      awayTeam: m.awayTeamId === 0 && bt.awayTeamId !== 0 ? bt.awayTeam : m.awayTeam,
+      awayTeamId: m.awayTeamId === 0 && bt.awayTeamId !== 0 ? bt.awayTeamId : m.awayTeamId,
+      awayTeamCrest: m.awayTeamId === 0 && bt.awayTeamId !== 0 ? bt.awayTeamCrest : m.awayTeamCrest,
+    };
+  });
+}
+
 export async function getUpcomingFixtures(dateFrom: string, dateTo: string): Promise<ScheduleMatch[]> {
   if (useMock()) return [];
   const start = new Date(dateFrom);
   const end   = new Date(dateTo);
   const diffDays = Math.round((end.getTime() - start.getTime()) / 86_400_000);
-  if (diffDays <= 10) return fetchFixtureChunk(dateFrom, dateTo);
+  if (diffDays <= 10) return patchTBDFixtures(await fetchFixtureChunk(dateFrom, dateTo));
 
   // Build 10-day chunks
   const chunks: Array<[string, string]> = [];
@@ -1253,7 +1343,7 @@ export async function getUpcomingFixtures(dateFrom: string, dateTo: string): Pro
       if (!seen.has(m.id)) { seen.add(m.id); all.push(m); }
     }
   }
-  return all;
+  return patchTBDFixtures(all);
 }
 
 export interface PositionPoint {
