@@ -75,7 +75,14 @@ async function doFetch(path: string, ttlMs?: number): Promise<unknown> {
       }
       if (!res.ok) throw new Error(`API error ${res.status}: ${res.statusText}`);
       const data = await res.json();
-      await setCached(path, data, ttlMs);
+      // If the response contains upcoming matches with TBD teams, cap the cache TTL at
+      // 1 minute so they expire quickly and get resolved on the next request.
+      const now = Date.now();
+      const hasTBDUpcoming = Array.isArray((data as any)?.matches) &&
+        (data as any).matches.some((m: any) =>
+          new Date(m.utcDate).getTime() > now && (!m.homeTeam?.name || !m.awayTeam?.name)
+        );
+      await setCached(path, data, hasTBDUpcoming ? Math.min(ttlMs ?? 60_000, 60_000) : ttlMs);
       return data;
     }
     throw new Error("API error 429: Too Many Requests");
@@ -84,20 +91,31 @@ async function doFetch(path: string, ttlMs?: number): Promise<unknown> {
   }
 }
 
-// Stale-while-revalidate: if a cached entry exists (even if expired), return it
-// immediately and kick off a background refresh so the next caller gets fresh data.
-// Only when there is NO cached entry at all do we block on the fd.org call.
+// Fetch with conditional stale-while-revalidate.
+// SWR (serve stale + background refresh) is ONLY used for FOREVER_TTL_MS data (past seasons),
+// where the data is immutable and stale serving is safe. For all shorter TTLs we wait for
+// fresh data — serverless background refreshes are unreliable (the function is killed once the
+// response is sent), so SWR on short-TTL data causes stale TBD teams / missing results to
+// persist indefinitely in Supabase.
 async function apiFetch(path: string, ttlMs?: number): Promise<unknown> {
   const hit = await getAnyCached(path);
 
   if (hit !== null) {
-    // Stale — start a background refresh if one isn't already running.
-    if (hit.stale && !inflight.has(path)) {
+    if (!hit.stale) return hit.data; // always serve fresh immediately
+
+    const isImmutable = ttlMs !== undefined && ttlMs >= FOREVER_TTL_MS;
+    if (!inflight.has(path)) {
       const p = doFetch(path, ttlMs);
       inflight.set(path, p);
-      p.catch((e) => console.error(`[footballApi] background refresh failed for ${path}:`, e.message));
+      if (isImmutable) {
+        // Safe to fire-and-forget for immutable past-season data.
+        p.catch((e) => console.error(`[footballApi] background refresh failed for ${path}:`, e.message));
+      }
     }
-    return hit.data; // serve immediately (fresh or stale)
+    // Immutable data: serve stale immediately while the refresh runs in background.
+    // Current-season data: wait for fresh so TBD teams / new results are visible immediately.
+    if (isImmutable) return hit.data;
+    return inflight.get(path)!;
   }
 
   // No cached entry at all — must wait for a live fetch.
@@ -1047,13 +1065,15 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
       seasons.map(async (season) => {
         try {
           // The ?teams= filter is not supported in the free tier — we fetch the full
-          // competition schedule (limit=500 covers a full season) and filter by team ID.
-          // Past seasons are immutable so cache them permanently; current season uses short TTL.
-          const matchesTtl = season < CURRENT_SEASON ? FOREVER_TTL_MS : SCHEDULE_TTL_MS;
-          const data = await apiFetch(
-            `/competitions/${code}/matches?season=${season}&limit=500`,
-            matchesTtl
-          ) as any;
+          // competition schedule and filter by team ID.
+          // International comps (WC, EC, Copa…) use the same URL and 2-min TTL as the bracket
+          // endpoint so they share the same Supabase cache key and stay in sync when teams advance.
+          // Domestic leagues add &limit=500 (up to 380 matches) and use the normal 30-min TTL.
+          const matchesTtl = season < CURRENT_SEASON ? FOREVER_TTL_MS : (isIntl ? 2 * 60_000 : SCHEDULE_TTL_MS);
+          const matchesPath = isIntl
+            ? `/competitions/${code}/matches?season=${season}`
+            : `/competitions/${code}/matches?season=${season}&limit=500`;
+          const data = await apiFetch(matchesPath, matchesTtl) as any;
           for (const m of (data?.matches ?? [])) {
             if (["CANCELLED", "SUSPENDED"].includes(m.status)) continue;
             if (m.homeTeam?.id !== teamIdNum && m.awayTeam?.id !== teamIdNum) continue;
