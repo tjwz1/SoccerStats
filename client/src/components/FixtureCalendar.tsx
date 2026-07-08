@@ -318,21 +318,22 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
                     const awayWon   = m.winner === "AWAY_TEAM";
                     const isPen     = m.duration === "PENALTY_SHOOTOUT";
                     const isAET     = m.duration === "EXTRA_TIME" || isPen;
-                    // fd.org encodes PK games as fullTime = FT_goals + pen_goals, extraTime = ET-only goals.
-                    // True AET tied score = (scoreHome - penScoreHome) + etScoreHome.
+                    // fd.org PK encoding: fullTime = regularTime + ET + all pen goals (incl. sudden death).
+                    // score.penalties only stores initial rounds and can tie even when there's a winner.
+                    // True AET score = regularTime + ET. True pen result = fullTime - regularTime - ET.
                     // For EXTRA_TIME (non-PK) games, fullTime is already the AET final.
-                    const penH = m.penScoreHome;
-                    const penA = m.penScoreAway;
+                    const rtH = m.regularTimeHome ?? 0;
+                    const rtA = m.regularTimeAway ?? 0;
+                    const etH = m.etScoreHome ?? 0;
+                    const etA = m.etScoreAway ?? 0;
                     const displayHome = hasScore
-                      ? (isPen && penH !== null && m.etScoreHome !== null
-                          ? (scoreHome! - penH) + m.etScoreHome
-                          : scoreHome)
+                      ? (isPen ? rtH + etH : scoreHome)
                       : null;
                     const displayAway = hasScore
-                      ? (isPen && penA !== null && m.etScoreAway !== null
-                          ? (scoreAway! - penA) + m.etScoreAway
-                          : scoreAway)
+                      ? (isPen ? rtA + etA : scoreAway)
                       : null;
+                    const penH = isPen && scoreHome !== null ? scoreHome - rtH - etH : null;
+                    const penA = isPen && scoreAway !== null ? scoreAway - rtA - etA : null;
 
                     return (
                       <div key={m.id}>

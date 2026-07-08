@@ -69,12 +69,12 @@ function LegDetail({ match, label }: { match: BracketMatchData; label?: string }
         <div className="text-center shrink-0">
           {done ? (
             <span className="text-2xl font-bold text-white tabular-nums">
-              {match.penScoreHome !== null && match.etScoreHome !== null
-                ? (match.scoreHome! - match.penScoreHome) + match.etScoreHome
+              {match.penScoreHome !== null
+                ? (match.regularTimeHome ?? 0) + (match.etScoreHome ?? 0)
                 : match.scoreHome}
               {" – "}
-              {match.penScoreAway !== null && match.etScoreAway !== null
-                ? (match.scoreAway! - match.penScoreAway) + match.etScoreAway
+              {match.penScoreAway !== null
+                ? (match.regularTimeAway ?? 0) + (match.etScoreAway ?? 0)
                 : match.scoreAway}
             </span>
           ) : (
@@ -85,7 +85,7 @@ function LegDetail({ match, label }: { match: BracketMatchData; label?: string }
           )}
           {match.penScoreHome !== null && (
             <div className="text-[10px] text-slate-500">
-              AET · Pens {match.penScoreHome}–{match.penScoreAway}
+              AET · Pens {match.scoreHome! - (match.regularTimeHome ?? 0) - (match.etScoreHome ?? 0)}–{match.scoreAway! - (match.regularTimeAway ?? 0) - (match.etScoreAway ?? 0)}
             </div>
           )}
         </div>

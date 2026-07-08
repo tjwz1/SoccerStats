@@ -132,6 +132,8 @@ export interface ScheduleMatch {
   winner: "HOME_TEAM" | "AWAY_TEAM" | "DRAW" | null;
   etScoreHome: number | null;
   etScoreAway: number | null;
+  regularTimeHome: number | null;
+  regularTimeAway: number | null;
   penScoreHome: number | null;
   penScoreAway: number | null;
 }
@@ -251,6 +253,8 @@ export interface BracketMatchData {
   winner: string | null;
   etScoreHome: number | null;
   etScoreAway: number | null;
+  regularTimeHome: number | null;
+  regularTimeAway: number | null;
   penScoreHome: number | null;
   penScoreAway: number | null;
 }

@@ -1007,12 +1007,18 @@ function ScoreDisplay({ match, isLive }: { match: ScheduleMatch; isLive: boolean
   const isPen = match.duration === "PENALTY_SHOOTOUT";
   const isAET = match.duration === "EXTRA_TIME" || isPen;
 
-  // isPen already implies a decided match, so no additional null/equality guard needed
-  const hasPens = isPen;
+  const rtH = match.regularTimeHome ?? 0;
+  const rtA = match.regularTimeAway ?? 0;
+  const etH = match.etScoreHome ?? 0;
+  const etA = match.etScoreAway ?? 0;
 
-  // etScoreHome is the cumulative score at end of extra time (120 min), per fd.org API.
-  const displayHome = isAET && match.etScoreHome !== null ? match.etScoreHome : match.scoreHome;
-  const displayAway = isAET && match.etScoreAway !== null ? match.etScoreAway : match.scoreAway;
+  // For PK: show pre-pen AET score (regularTime + ET). For all others: show final (fullTime).
+  const displayHome = isPen ? rtH + etH : match.scoreHome;
+  const displayAway = isPen ? rtA + etA : match.scoreAway;
+
+  // True pen result = fullTime − regularTime − ET (captures sudden-death goals score.penalties misses).
+  const penH = isPen && match.scoreHome !== null ? match.scoreHome - rtH - etH : null;
+  const penA = isPen && match.scoreAway !== null ? match.scoreAway - rtA - etA : null;
 
   return (
     <div className="flex flex-col items-center gap-0.5">
@@ -1022,9 +1028,9 @@ function ScoreDisplay({ match, isLive }: { match: ScheduleMatch; isLive: boolean
       {isAET && (
         <span className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider leading-tight">AET</span>
       )}
-      {hasPens && (
+      {isPen && penH !== null && (
         <span className="text-[9px] tabular-nums text-slate-400 leading-tight">
-          ({match.scoreHome}–{match.scoreAway} pens)
+          ({penH}–{penA} pens)
         </span>
       )}
     </div>

@@ -211,6 +211,8 @@ export async function fetchEspnCupMatches(
       winner,
       etScoreHome: null,
       etScoreAway: null,
+      regularTimeHome: null,
+      regularTimeAway: null,
       penScoreHome: null,
       penScoreAway: null,
     });
@@ -422,6 +424,8 @@ function parseTmMatchRows(
       winner: hasScore ? winner : null,
       etScoreHome: null,
       etScoreAway: null,
+      regularTimeHome: null,
+      regularTimeAway: null,
       penScoreHome: null,
       penScoreAway: null,
     });

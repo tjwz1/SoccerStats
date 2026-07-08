@@ -548,6 +548,8 @@ export interface BracketMatchData {
   winner: string | null;
   etScoreHome: number | null;
   etScoreAway: number | null;
+  regularTimeHome: number | null;
+  regularTimeAway: number | null;
   penScoreHome: number | null;
   penScoreAway: number | null;
 }
@@ -571,9 +573,10 @@ export interface BracketData {
 }
 
 function mapBracketMatch(m: any): BracketMatchData {
-  const ft  = m.score?.fullTime  ?? {};
-  const et  = m.score?.extraTime ?? {};
-  const pen = m.score?.penalties ?? {};
+  const ft  = m.score?.fullTime    ?? {};
+  const rt  = m.score?.regularTime ?? {};
+  const et  = m.score?.extraTime   ?? {};
+  const pen = m.score?.penalties   ?? {};
   return {
     id:          m.id,
     status:      m.status ?? "SCHEDULED",
@@ -590,13 +593,15 @@ function mapBracketMatch(m: any): BracketMatchData {
       shortName: m.awayTeam?.shortName ?? m.awayTeam?.name ?? "",
       crest:     m.awayTeam?.crest ?? "",
     },
-    scoreHome:    ft.home   ?? null,
-    scoreAway:    ft.away   ?? null,
-    winner:       m.score?.winner ?? null,
-    etScoreHome:  et.home   ?? null,
-    etScoreAway:  et.away   ?? null,
-    penScoreHome: pen.home  ?? null,
-    penScoreAway: pen.away  ?? null,
+    scoreHome:        ft.home  ?? null,
+    scoreAway:        ft.away  ?? null,
+    winner:           m.score?.winner ?? null,
+    etScoreHome:      et.home  ?? null,
+    etScoreAway:      et.away  ?? null,
+    regularTimeHome:  rt.home  ?? null,
+    regularTimeAway:  rt.away  ?? null,
+    penScoreHome:     pen.home ?? null,
+    penScoreAway:     pen.away ?? null,
   };
 }
 
@@ -973,6 +978,8 @@ export interface ScheduleMatch {
   winner: "HOME_TEAM" | "AWAY_TEAM" | "DRAW" | null;
   etScoreHome: number | null;
   etScoreAway: number | null;
+  regularTimeHome: number | null;
+  regularTimeAway: number | null;
   penScoreHome: number | null;
   penScoreAway: number | null;
 }
@@ -1025,6 +1032,8 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
     winner: m.score?.winner ?? null,
     etScoreHome: m.score?.extraTime?.home ?? null,
     etScoreAway: m.score?.extraTime?.away ?? null,
+    regularTimeHome: m.score?.regularTime?.home ?? null,
+    regularTimeAway: m.score?.regularTime?.away ?? null,
     penScoreHome: m.score?.penalties?.home ?? null,
     penScoreAway: m.score?.penalties?.away ?? null,
   });
@@ -1136,6 +1145,8 @@ export async function getLiveMatches(): Promise<ScheduleMatch[]> {
       winner: m.score?.winner ?? null,
       etScoreHome: m.score?.extraTime?.home ?? null,
       etScoreAway: m.score?.extraTime?.away ?? null,
+      regularTimeHome: m.score?.regularTime?.home ?? null,
+      regularTimeAway: m.score?.regularTime?.away ?? null,
       penScoreHome: m.score?.penalties?.home ?? null,
       penScoreAway: m.score?.penalties?.away ?? null,
     });
@@ -1177,6 +1188,8 @@ function mapFixtureMatch(m: any): ScheduleMatch {
     winner: m.score?.winner ?? null,
     etScoreHome: m.score?.extraTime?.home ?? null,
     etScoreAway: m.score?.extraTime?.away ?? null,
+    regularTimeHome: m.score?.regularTime?.home ?? null,
+    regularTimeAway: m.score?.regularTime?.away ?? null,
     penScoreHome: m.score?.penalties?.home ?? null,
     penScoreAway: m.score?.penalties?.away ?? null,
   };

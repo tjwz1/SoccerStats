@@ -128,20 +128,21 @@ function SingleLegCard({
   const showScore = done || live;
   const hasPens = match.penScoreHome !== null;
 
-  // fd.org PK encoding: fullTime = FT_goals + pen_goals, extraTime = ET-only goals.
-  // True AET tied score = (scoreHome - penScoreHome) + etScoreHome.
-  const penH = match.penScoreHome;
-  const penA = match.penScoreAway;
+  // fd.org PK encoding: fullTime = regularTime + ET + all pen goals (incl. sudden death).
+  // score.penalties only has the initial-rounds tally and can tie even when there's a winner.
+  // True AET score = regularTime + ET. True pen result = fullTime - regularTime - ET.
+  const rtH = match.regularTimeHome ?? 0;
+  const rtA = match.regularTimeAway ?? 0;
+  const etH = match.etScoreHome ?? 0;
+  const etA = match.etScoreAway ?? 0;
   const displayHome = showScore
-    ? (hasPens && penH !== null && match.etScoreHome !== null
-        ? (match.scoreHome! - penH) + match.etScoreHome
-        : match.scoreHome)
+    ? (hasPens ? rtH + etH : match.scoreHome)
     : null;
   const displayAway = showScore
-    ? (hasPens && penA !== null && match.etScoreAway !== null
-        ? (match.scoreAway! - penA) + match.etScoreAway
-        : match.scoreAway)
+    ? (hasPens ? rtA + etA : match.scoreAway)
     : null;
+  const penH = hasPens && match.scoreHome !== null ? match.scoreHome - rtH - etH : null;
+  const penA = hasPens && match.scoreAway !== null ? match.scoreAway - rtA - etA : null;
 
   return (
     <div className="px-2.5 py-2">
