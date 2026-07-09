@@ -15,7 +15,7 @@ const router = Router();
 router.get("/:id", async (req, res) => {
   try {
     const competition = (req.query.competition as string) || "PL";
-    const cacheKey = `player_response:${req.params.id}:${competition}`;
+    const cacheKey = `player_response:${req.params.id}`;
 
     const cached = await getCached(cacheKey);
     // Treat a cached empty-career response as a miss — allows retries after a first-run scrape failure.

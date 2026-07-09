@@ -6,7 +6,7 @@ import { fetchFplPhotos } from "./fplPhotos";
 import { fetchSofaScorePhotos } from "./sofaScorePhotos";
 import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
 import { getWikiStats, getWikiStatsBatch, setWikiStats } from "../db/wikiCareerCache";
-import { getWikiTrophies, setWikiTrophies } from "../db/wikiTrophyCache";
+import { getWikiTrophies, setWikiTrophies, getTmCupChecked, setTmCupChecked } from "../db/wikiTrophyCache";
 import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus, getWcR16Pairings } from "./wikiStats";
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
 import type { ClubTrophy as TmClubTrophy } from "./wikiStats";
@@ -2088,7 +2088,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
         try {
           const wikiData = await fetchPlayerWikiData(p.name, true, true);
           if (wikiData.career.length > 0) setWikiStats(p.id, p.name, wikiData.career);
-          if (wikiData.trophies.length > 0) setWikiTrophies(p.id, wikiData.trophies);
+          if (wikiData.trophies.length > 0) setWikiTrophies(p.id, p.name, wikiData.trophies);
         } catch {}
       }));
       if (i + BATCH < displayed.length) await sleep(200);
@@ -2286,12 +2286,12 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   const probeComps = [...new Set([competitionCode, "CL", "EL"])];
 
   // Phase 1: bio + both DB caches in parallel — saves 2 sequential round-trips.
-  const TM_CUP_CHECK_TTL_MS = 24 * 60 * 60 * 1000; // re-check TM for cup rows at most once per day
+
   const [personData, cachedStats, cachedTrophies, tmCupChecked] = await Promise.all([
     apiFetch(`/persons/${id}`, 24 * 60 * 60 * 1000) as Promise<any>,
     getWikiStats(id),
     getWikiTrophies(id),
-    getCached(`tm_cup_checked:${id}`),
+    getTmCupChecked(id),
   ]);
 
   // Current season string e.g. "2025/26"
@@ -2349,11 +2349,11 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer);
   // Mark that TM cup check has run so we don't re-scrape on every request for
   // players who have no cup appearances this season.
-  if (needsCurrentSeasonCups) setCached(`tm_cup_checked:${id}`, true, TM_CUP_CHECK_TTL_MS);
+  if (needsCurrentSeasonCups) setTmCupChecked(id);
 
   // Merge TM player honours with Wikipedia trophies; TM fills entries wiki missed.
   const mergedTrophies = mergePlayerTrophies(freshWiki?.trophies ?? [], tmHonours);
-  if (needsTrophies && mergedTrophies.length > 0) setWikiTrophies(id, mergedTrophies);
+  if (needsTrophies && mergedTrophies.length > 0) setWikiTrophies(id, personData.name, mergedTrophies);
 
   // Filter out junk: year-only names and "participant" entries (not real honours).
   const validtrophy = (t: Trophy) =>

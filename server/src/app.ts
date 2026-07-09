@@ -221,7 +221,7 @@ app.post("/api/admin/populate-wiki-stats", adminLimiter, requireAdmin, async (re
             const { career, trophies } = await fetchPlayerWikiData(player.name, needsCareer, needsHonours);
             await Promise.all([
               needsCareer ? setWikiStats(player.id, player.name, career) : Promise.resolve(),
-              needsHonours ? setWikiTrophies(player.id, trophies) : Promise.resolve(),
+              needsHonours ? setWikiTrophies(player.id, player.name, trophies) : Promise.resolve(),
             ]);
             done++;
           } catch (e: any) {
