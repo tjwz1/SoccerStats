@@ -2,6 +2,7 @@ import { safeFetch as fetch } from "../utils/httpClient";
 import * as cheerio from "cheerio";
 import type { ClubTrophy } from "./wikiStats";
 import { getCached, setCached } from "../db/apiCache";
+import { getClient } from "../db/supabase";
 
 // TM slugs/IDs are stable for years — persist to avoid re-scraping on every restart
 const TM_SEARCH_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -118,6 +119,38 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
 const CLUB_HREF  = /^\/([^/]+)\/startseite\/verein\/(\d+)/;
 // Player links: /{slug}/profil/spieler/{id}
 const PLAYER_HREF = /^\/([^/]+)\/profil\/spieler\/(\d+)/;
+
+// Resolves a player's TM EntityRef, checking players.tm_ref before falling
+// through to the generic tmSearch. Stores the result permanently in players.tm_ref
+// so subsequent lookups skip TM entirely (slugs and IDs are stable for years).
+async function resolvePlayerRef(playerId: number | undefined, playerName: string): Promise<EntityRef | null> {
+  if (playerId) {
+    try {
+      const { data } = await getClient()
+        .from("players")
+        .select("tm_ref")
+        .eq("id", playerId)
+        .maybeSingle();
+      if (data?.tm_ref) {
+        const ref = data.tm_ref as EntityRef;
+        tmSearchCache.set(`${PLAYER_HREF.source}:${playerName}`, ref);
+        return ref;
+      }
+    } catch {}
+  }
+
+  const ref = await tmSearch(playerName, PLAYER_HREF);
+
+  if (ref && playerId) {
+    getClient()
+      .from("players")
+      .update({ tm_ref: ref })
+      .eq("id", playerId)
+      .then(({ error }) => { if (error) console.error("[playerCache] tm_ref write failed:", error.message); });
+  }
+
+  return ref;
+}
 
 // ── Honours page scraper ──────────────────────────────────────────────────────
 
@@ -290,9 +323,10 @@ export async function getTmClubRef(clubName: string): Promise<{ slug: string; id
 
 export async function scrapeTransfermarktPlayerStats(
   playerName: string,
-  currentTeam = ""
+  currentTeam = "",
+  playerId?: number
 ): Promise<TmCareerRow[]> {
-  const player = await tmSearch(playerName, PLAYER_HREF);
+  const player = await resolvePlayerRef(playerId, playerName);
   if (!player) {
     console.log(`[transfermarkt] Player not found for "${playerName}"`);
     return [];
@@ -327,8 +361,8 @@ export async function scrapeTransfermarktHonours(teamName: string): Promise<Club
   return trophies;
 }
 
-export async function scrapeTransfermarktPlayerHonours(playerName: string): Promise<ClubTrophy[]> {
-  const player = await tmSearch(playerName, PLAYER_HREF);
+export async function scrapeTransfermarktPlayerHonours(playerName: string, playerId?: number): Promise<ClubTrophy[]> {
+  const player = await resolvePlayerRef(playerId, playerName);
   if (!player) {
     console.log(`[transfermarkt] Player not found for honours "${playerName}"`);
     return [];

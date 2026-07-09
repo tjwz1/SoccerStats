@@ -2331,11 +2331,11 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
       ? fetchPlayerWikiData(personData.name, needsCareer, needsTrophies)
       : Promise.resolve(null),
     needsCareer || needsCurrentSeasonCups
-      ? scrapeTransfermarktPlayerStats(personData.name, personData.currentTeam?.name ?? "").catch(() => [] as TmCareerRow[])
+      ? scrapeTransfermarktPlayerStats(personData.name, personData.currentTeam?.name ?? "", id).catch(() => [] as TmCareerRow[])
       : Promise.resolve([] as TmCareerRow[]),
     // TM player honours run in parallel with career stats on a trophy cache miss
     needsTrophies
-      ? scrapeTransfermarktPlayerHonours(personData.name).catch(() => [] as TmClubTrophy[])
+      ? scrapeTransfermarktPlayerHonours(personData.name, id).catch(() => [] as TmClubTrophy[])
       : Promise.resolve([] as TmClubTrophy[]),
   ]);
 
