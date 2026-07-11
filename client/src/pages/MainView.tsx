@@ -151,11 +151,13 @@ export default function MainView() {
       .catch(() => {});
   }, [selectedTeam?.id, selectedComp?.code]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const activeViewDef = VIEW_REGISTRY.find((v) => v.id === view) ?? VIEW_REGISTRY[0];
 
   function handleSelectTeam(team: Team) {
     setSelectedTeam(team);
     setHoveredPlayer(null);
+    setSidebarOpen(false);
   }
 
   function handlePlayerClick(player: Player) {
@@ -190,17 +192,26 @@ export default function MainView() {
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
       {/* Header */}
-      <header className="border-b border-slate-800 px-6 py-4 flex items-center gap-3">
+      <header className="border-b border-slate-800 px-4 py-4 flex items-center gap-3">
         <button
-          onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); }}
+          onClick={() => setSidebarOpen((o) => !o)}
+          aria-label="Toggle navigation"
+          className="md:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <button
+          onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); setSidebarOpen(false); }}
           title="Home"
           className="w-8 h-8 bg-green-600 rounded-lg flex items-center justify-center text-white font-bold text-sm hover:bg-green-500 transition-colors shrink-0"
         >
           SS
         </button>
-        <h1 className="text-lg font-bold text-white">Soccer Stats</h1>
+        <h1 className="text-lg font-bold text-white hidden sm:block">Soccer Stats</h1>
         {(selectedTeam || selectedComp) && (
-          <span className="ml-2 text-sm flex items-center gap-1.5">
+          <span className="ml-1 text-sm flex items-center gap-1 min-w-0 overflow-hidden">
             <button
               onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); }}
               className="text-slate-500 hover:text-green-400 transition-colors"
@@ -221,7 +232,7 @@ export default function MainView() {
             {selectedTeam && (
               <>
                 <span className="text-slate-700">›</span>
-                <span className="text-white font-medium">{selectedTeam.name}</span>
+                <span className="text-white font-medium truncate max-w-[120px] sm:max-w-none">{selectedTeam.name}</span>
                 {selectedSeason && (
                   <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">
                     {selectedSeason}
@@ -246,14 +257,37 @@ export default function MainView() {
         </button>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="w-72 border-r border-slate-800 px-4 py-5 flex flex-col overflow-y-auto shrink-0">
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Mobile overlay backdrop */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 bg-black/60 z-30 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+
+        {/* Sidebar — drawer on mobile, static on md+ */}
+        <aside className={`
+          fixed top-0 left-0 h-full z-40 w-72 bg-slate-950 border-r border-slate-800 px-4 py-5 flex flex-col overflow-y-auto shrink-0
+          transform transition-transform duration-200 ease-in-out
+          ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}
+          md:relative md:top-auto md:left-auto md:z-auto md:translate-x-0 md:transition-none
+        `}>
+          {/* Mobile close button */}
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="md:hidden self-end mb-3 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            aria-label="Close navigation"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
           <TeamSearch
             onSelectTeam={handleSelectTeam}
             selectedTeam={selectedTeam}
             selectedComp={selectedComp}
-            onSelectComp={(c) => { setSelectedComp(c); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); }}
+            onSelectComp={(c) => { setSelectedComp(c); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); setSidebarOpen(false); }}
             selectedSeason={selectedSeason}
             onSelectSeason={setSelectedSeason}
             favourites={favourites}
@@ -263,7 +297,7 @@ export default function MainView() {
         </aside>
 
         {/* Main content */}
-        <main className="flex-1 flex items-start justify-center p-6 overflow-auto">
+        <main className="flex-1 flex items-start justify-center p-3 sm:p-6 overflow-auto min-w-0">
           {!selectedTeam && !selectedComp && (
             <div className="w-full max-w-2xl">
               <FixtureCalendar
