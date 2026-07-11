@@ -1083,25 +1083,50 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
             all.push(mapMatch(m));
           }
 
-          // Secondary pass for international comps: fd.org returns homeTeam/awayTeam as
-          // null for upcoming knockout matches until it manually updates the bracket draw.
-          // The bracket endpoint already runs propagateWinners() to fill in winners from
-          // previous rounds. Reuse that to surface the match in this team's schedule.
+          // Secondary pass for international comps: fd.org updates knockout slots
+          // gradually after each match — sometimes one side is already set while the
+          // other is still null/0. Handle two cases with one bracket lookup:
+          //   (a) Match missed by primary pass: this team's slot is TBD (id=0) even
+          //       though the opponent slot may already be filled. Use propagateWinners()
+          //       to resolve which team occupies the TBD slot.
+          //   (b) Match found by primary pass but opponent is TBD — fill in opponent
+          //       name/id/crest from the bracket.
           if (isIntl) {
             const nowMs = Date.now();
-            const tbdUpcoming = rawMatches.filter((m: any) =>
+            const hasPartialTbd = rawMatches.some((m: any) =>
               !["CANCELLED", "SUSPENDED"].includes(m.status) &&
-              !seen.has(m.id) &&
-              (m.homeTeam?.id ?? 0) === 0 && (m.awayTeam?.id ?? 0) === 0 &&
-              new Date(m.utcDate).getTime() > nowMs
+              new Date(m.utcDate).getTime() > nowMs &&
+              ((m.homeTeam?.id ?? 0) === 0 || (m.awayTeam?.id ?? 0) === 0)
             );
-            if (tbdUpcoming.length > 0) {
+            const hasFoundTbd = all.some(m => m.homeTeamId === 0 || m.awayTeamId === 0);
+            if (hasPartialTbd || hasFoundTbd) {
               const bracket = await getBracketMatches(code, season);
               if (bracket) {
                 const bById = new Map<number, BracketMatchData>();
                 for (const r of bracket.rounds)
                   for (const t of r.ties) bById.set(t.leg1.id, t.leg1);
-                for (const m of tbdUpcoming) {
+                // (b) Fix TBD opponents in matches already found by the primary pass.
+                for (const m of all) {
+                  if (m.homeTeamId !== 0 && m.awayTeamId !== 0) continue;
+                  const bm = bById.get(m.id);
+                  if (!bm) continue;
+                  if (m.homeTeamId === 0 && bm.homeTeam.id !== 0) {
+                    m.homeTeam = bm.homeTeam.shortName || bm.homeTeam.name;
+                    m.homeTeamId = bm.homeTeam.id;
+                    m.homeTeamCrest = bm.homeTeam.crest;
+                  }
+                  if (m.awayTeamId === 0 && bm.awayTeam.id !== 0) {
+                    m.awayTeam = bm.awayTeam.shortName || bm.awayTeam.name;
+                    m.awayTeamId = bm.awayTeam.id;
+                    m.awayTeamCrest = bm.awayTeam.crest;
+                  }
+                }
+                // (a) Surface upcoming matches this team is in that the primary pass
+                // missed because this team's slot is still TBD in fd.org raw data.
+                for (const m of rawMatches) {
+                  if (seen.has(m.id) || ["CANCELLED", "SUSPENDED"].includes(m.status)) continue;
+                  if (new Date(m.utcDate).getTime() <= nowMs) continue;
+                  if ((m.homeTeam?.id ?? 0) !== 0 && (m.awayTeam?.id ?? 0) !== 0) continue;
                   const bm = bById.get(m.id);
                   if (!bm || (bm.homeTeam.id !== teamIdNum && bm.awayTeam.id !== teamIdNum)) continue;
                   seen.add(m.id);
