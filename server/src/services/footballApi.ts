@@ -1030,9 +1030,24 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
     seasons = [CURRENT_SEASON];
   }
 
+  // fd.org occasionally returns corrupt status values (e.g. the utcDate string
+  // instead of a code like "FINISHED"). Normalise to a known status so that the
+  // FINISHED filter used for pastKey Supabase caching works correctly.
+  const VALID_STATUSES = new Set([
+    "SCHEDULED", "TIMED", "IN_PLAY", "PAUSED", "HALF_TIME",
+    "EXTRA_TIME", "PENALTY_SHOOTOUT", "FINISHED",
+    "SUSPENDED", "POSTPONED", "CANCELLED",
+  ]);
+  const normaliseStatus = (m: any): string => {
+    if (VALID_STATUSES.has(m.status)) return m.status;
+    const hasScore = m.score?.fullTime?.home != null;
+    const inPast = new Date(m.utcDate).getTime() < Date.now();
+    return (hasScore || inPast) ? "FINISHED" : "SCHEDULED";
+  };
+
   const mapMatch = (m: any): ScheduleMatch => ({
     id: m.id,
-    status: m.status,
+    status: normaliseStatus(m),
     utcDate: m.utcDate,
     matchday: m.matchday ?? null,
     competition: COMP_DISPLAY_NAMES[m.competition?.name] ?? m.competition?.name ?? "",
@@ -1093,9 +1108,10 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
           //       name/id/crest from the bracket.
           if (isIntl) {
             const nowMs = Date.now();
+            // Trigger bracket lookup if ANY match (past or future) has a TBD team slot —
+            // fd.org sometimes lags filling in team IDs even after the match is played.
             const hasPartialTbd = rawMatches.some((m: any) =>
               !["CANCELLED", "SUSPENDED"].includes(m.status) &&
-              new Date(m.utcDate).getTime() > nowMs &&
               ((m.homeTeam?.id ?? 0) === 0 || (m.awayTeam?.id ?? 0) === 0)
             );
             const hasFoundTbd = all.some(m => m.homeTeamId === 0 || m.awayTeamId === 0);
@@ -1121,15 +1137,16 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
                     m.awayTeamCrest = bm.awayTeam.crest;
                   }
                 }
-                // (a) Surface upcoming matches this team is in that the primary pass
-                // missed because this team's slot is still TBD in fd.org raw data.
+                // (a) Surface matches this team is in that the primary pass missed because
+                // this team's slot is still TBD (id=0) in fd.org raw data. Covers both
+                // future fixtures AND past matches where fd.org hasn't backfilled IDs yet.
                 for (const m of rawMatches) {
                   if (seen.has(m.id) || ["CANCELLED", "SUSPENDED"].includes(m.status)) continue;
-                  if (new Date(m.utcDate).getTime() <= nowMs) continue;
                   if ((m.homeTeam?.id ?? 0) !== 0 && (m.awayTeam?.id ?? 0) !== 0) continue;
                   const bm = bById.get(m.id);
                   if (!bm || (bm.homeTeam.id !== teamIdNum && bm.awayTeam.id !== teamIdNum)) continue;
                   seen.add(m.id);
+                  const isPast = new Date(m.utcDate).getTime() <= nowMs;
                   all.push({
                     ...mapMatch(m),
                     homeTeam: bm.homeTeam.shortName || bm.homeTeam.name,
@@ -1138,6 +1155,22 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
                     awayTeam: bm.awayTeam.shortName || bm.awayTeam.name,
                     awayTeamId: bm.awayTeam.id,
                     awayTeamCrest: bm.awayTeam.crest,
+                    // For past matches the raw data is stale (still shows "SCHEDULED").
+                    // Use the bracket's actual result instead.
+                    ...(isPast && {
+                      status: bm.scoreHome != null ? "FINISHED" : bm.status,
+                      scoreHome: bm.scoreHome,
+                      scoreAway: bm.scoreAway,
+                      // BracketMatchData.winner stores the fd.org value ("HOME_TEAM"/"AWAY_TEAM"/"DRAW")
+                      // at runtime even though the TS type says "home"/"away" — cast accordingly.
+                      winner: bm.winner as unknown as "HOME_TEAM" | "AWAY_TEAM" | "DRAW" | null,
+                      etScoreHome: bm.etScoreHome,
+                      etScoreAway: bm.etScoreAway,
+                      regularTimeHome: bm.regularTimeHome,
+                      regularTimeAway: bm.regularTimeAway,
+                      penScoreHome: bm.penScoreHome,
+                      penScoreAway: bm.penScoreAway,
+                    }),
                   });
                 }
               }
