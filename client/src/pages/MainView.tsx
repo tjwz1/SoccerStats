@@ -152,12 +152,40 @@ export default function MainView() {
   }, [selectedTeam?.id, selectedComp?.code]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [headerSearchOpen, setHeaderSearchOpen] = useState(false);
+  const [headerSearchQuery, setHeaderSearchQuery] = useState("");
+  const [headerSearchResults, setHeaderSearchResults] = useState<Team[] | null>(null);
+  const [headerSearchLoading, setHeaderSearchLoading] = useState(false);
   const activeViewDef = VIEW_REGISTRY.find((v) => v.id === view) ?? VIEW_REGISTRY[0];
+
+  useEffect(() => {
+    const q = headerSearchQuery.trim();
+    if (q.length < 2) { setHeaderSearchResults(null); return; }
+    const timer = setTimeout(async () => {
+      setHeaderSearchLoading(true);
+      try {
+        const res = await fetch(`/api/teams/search?q=${encodeURIComponent(q)}`);
+        setHeaderSearchResults(await res.json());
+      } catch {
+        setHeaderSearchResults([]);
+      } finally {
+        setHeaderSearchLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [headerSearchQuery]);
+
+  function closeHeaderSearch() {
+    setHeaderSearchOpen(false);
+    setHeaderSearchQuery("");
+    setHeaderSearchResults(null);
+  }
 
   function handleSelectTeam(team: Team) {
     setSelectedTeam(team);
     setHoveredPlayer(null);
     setSidebarOpen(false);
+    closeHeaderSearch();
   }
 
   function handlePlayerClick(player: Player) {
@@ -192,7 +220,7 @@ export default function MainView() {
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
       {/* Header */}
-      <header className="border-b border-slate-800 px-4 py-4 flex items-center gap-3">
+      <header className="border-b border-slate-800 px-4 py-4 flex items-center gap-3 relative">
         <button
           onClick={() => setSidebarOpen((o) => !o)}
           aria-label="Toggle navigation"
@@ -203,58 +231,138 @@ export default function MainView() {
           </svg>
         </button>
         <button
-          onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); setSidebarOpen(false); }}
+          onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); setSidebarOpen(false); closeHeaderSearch(); }}
           title="Home"
           className="w-8 h-8 bg-green-600 rounded-lg flex items-center justify-center text-white font-bold text-sm hover:bg-green-500 transition-colors shrink-0"
         >
           SS
         </button>
         <h1 className="text-lg font-bold text-white hidden sm:block">Soccer Stats</h1>
-        {(selectedTeam || selectedComp) && (
-          <span className="ml-1 text-sm flex items-center gap-1 min-w-0 overflow-hidden">
+
+        {/* Header search — shown when open */}
+        {headerSearchOpen ? (
+          <div className="flex-1 flex items-center gap-2 min-w-0">
+            <input
+              autoFocus
+              type="text"
+              value={headerSearchQuery}
+              onChange={(e) => setHeaderSearchQuery(e.target.value)}
+              placeholder="Search any team…"
+              className="flex-1 min-w-0 bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-green-500"
+            />
             <button
-              onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); }}
-              className="text-slate-500 hover:text-green-400 transition-colors"
+              onClick={closeHeaderSearch}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+              aria-label="Close search"
             >
-              Fixtures
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
-            {selectedComp && (
-              <>
-                <span className="text-slate-700">›</span>
+          </div>
+        ) : (
+          <>
+            {(selectedTeam || selectedComp) && (
+              <span className="ml-1 text-sm flex items-center gap-1 min-w-0 overflow-hidden">
                 <button
-                  onClick={() => { setSelectedTeam(null); setHoveredPlayer(null); }}
-                  className={selectedTeam ? "text-slate-400 hover:text-green-400 transition-colors" : "text-slate-400 cursor-default"}
+                  onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); }}
+                  className="text-slate-500 hover:text-green-400 transition-colors"
                 >
-                  {selectedComp.name}
+                  Fixtures
                 </button>
-              </>
-            )}
-            {selectedTeam && (
-              <>
-                <span className="text-slate-700">›</span>
-                <span className="text-white font-medium truncate max-w-[120px] sm:max-w-none">{selectedTeam.name}</span>
-                {selectedSeason && (
-                  <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">
-                    {selectedSeason}
-                  </span>
+                {selectedComp && (
+                  <>
+                    <span className="text-slate-700">›</span>
+                    <button
+                      onClick={() => { setSelectedTeam(null); setHoveredPlayer(null); }}
+                      className={selectedTeam ? "text-slate-400 hover:text-green-400 transition-colors" : "text-slate-400 cursor-default"}
+                    >
+                      {selectedComp.name}
+                    </button>
+                  </>
                 )}
-                {lineup?.formation && view === "squad" && !selectedSeason && (
-                  <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">
-                    {lineup.formation}
-                  </span>
+                {selectedTeam && (
+                  <>
+                    <span className="text-slate-700">›</span>
+                    <span className="text-white font-medium truncate max-w-[120px] sm:max-w-none">{selectedTeam.name}</span>
+                    {selectedSeason && (
+                      <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">
+                        {selectedSeason}
+                      </span>
+                    )}
+                    {lineup?.formation && view === "squad" && !selectedSeason && (
+                      <span className="bg-slate-800 px-2 py-0.5 rounded text-xs font-mono text-slate-300">
+                        {lineup.formation}
+                      </span>
+                    )}
+                  </>
                 )}
-              </>
+              </span>
             )}
-          </span>
+          </>
         )}
-        {/* Theme toggle */}
-        <button
-          onClick={toggleTheme}
-          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-          className="ml-auto p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors text-base leading-none"
-        >
-          {theme === "dark" ? "☀️" : "🌙"}
-        </button>
+
+        {/* Right-side controls: search icon (mobile) + theme toggle */}
+        <div className={`flex items-center gap-1 shrink-0 ${headerSearchOpen ? "" : "ml-auto"}`}>
+          {!headerSearchOpen && (
+            <button
+              onClick={() => setHeaderSearchOpen(true)}
+              aria-label="Search teams"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors md:hidden"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </button>
+          )}
+          <button
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors text-base leading-none"
+          >
+            {theme === "dark" ? "☀️" : "🌙"}
+          </button>
+        </div>
+
+        {/* Search results dropdown */}
+        {headerSearchOpen && (headerSearchLoading || (headerSearchResults !== null)) && (
+          <div className="absolute top-full left-0 right-0 z-50 bg-slate-950 border-b border-slate-800 shadow-xl max-h-80 overflow-y-auto">
+            {headerSearchLoading && (
+              <div className="space-y-1 p-3">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="h-10 bg-slate-800 rounded animate-pulse" />
+                ))}
+              </div>
+            )}
+            {!headerSearchLoading && headerSearchQuery.trim().length < 2 && (
+              <p className="text-xs text-slate-500 text-center py-4">Type at least 2 characters</p>
+            )}
+            {!headerSearchLoading && headerSearchResults?.length === 0 && (
+              <p className="text-xs text-slate-500 text-center py-4">
+                No teams found for &ldquo;{headerSearchQuery}&rdquo;
+              </p>
+            )}
+            {!headerSearchLoading && (headerSearchResults ?? []).map((team) => (
+              <button
+                key={team.id}
+                onClick={() => handleSelectTeam(team)}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-left text-sm transition-colors hover:bg-slate-800 border-b border-slate-800/60 last:border-0"
+              >
+                {team.crest ? (
+                  <img src={team.crest} alt="" className="w-6 h-6 object-contain shrink-0" />
+                ) : (
+                  <div className="w-6 h-6 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold shrink-0 text-slate-300">
+                    {team.tla?.slice(0, 2)}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="text-white font-medium truncate">{team.shortName || team.name}</p>
+                  <p className="text-slate-500 text-xs truncate">{team.name}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <div className="flex flex-1 overflow-hidden relative">
@@ -306,6 +414,7 @@ export default function MainView() {
                   setSelectedTeam(team);
                   setSelectedSeason(null);
                   setHoveredPlayer(null);
+                  setView("schedule");
                 }}
                 favouriteTeamIds={favourites.map((f) => f.id)}
               />
