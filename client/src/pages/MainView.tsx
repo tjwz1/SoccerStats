@@ -40,7 +40,7 @@ export default function MainView() {
   const VALID_VIEWS = VIEW_REGISTRY.map((v) => v.id);
   const [view, setView] = useState<ViewId>(() => {
     const saved = sessionStorage.getItem("ss_view");
-    return (VALID_VIEWS.includes(saved as ViewId) ? saved : "squad") as ViewId;
+    return (VALID_VIEWS.includes(saved as ViewId) ? saved : "schedule") as ViewId;
   });
 
   useEffect(() => {
@@ -112,7 +112,7 @@ export default function MainView() {
     if (!s?.navTeam) return;
     setSelectedTeam(s.navTeam);
     if (s.navComp) setSelectedComp(s.navComp);
-    setView((s.navView as ViewId | undefined) ?? "squad");
+    setView((s.navView as ViewId | undefined) ?? "schedule");
     setHoveredPlayer(null);
     navigate("/", { replace: true, state: null });
   }, [location.key]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -183,9 +183,14 @@ export default function MainView() {
 
   function handleSelectTeam(team: Team) {
     setSelectedTeam(team);
+    setView("schedule");
     setHoveredPlayer(null);
     setSidebarOpen(false);
     closeHeaderSearch();
+    if (team.competitionCode) {
+      const comp = competitions?.find((c) => c.code === team.competitionCode);
+      if (comp) setSelectedComp(comp);
+    }
   }
 
   function handlePlayerClick(player: Player) {

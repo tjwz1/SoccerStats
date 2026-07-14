@@ -14,6 +14,7 @@ export interface Team {
   shortName: string;
   crest: string;
   tla: string;
+  competitionCode?: string;
 }
 
 export interface StandingRow {

@@ -158,9 +158,11 @@ router.get("/competitions/:code/scorers", async (req, res) => {
 });
 
 router.get("/competitions/:code/live-scorers", async (req, res) => {
+  const code = req.params.code;
+  const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+  const cacheKey = `/live-scorers/v1/${code}/${season ?? "current"}`;
   try {
-    const code = req.params.code;
-    const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+    await serveWithSWR(res, cacheKey, 5 * 60 * 1000, async () => {
     const intl = isInternationalComp(code);
 
     const [fdDataRaw, csData, allLive, finishedList] = await Promise.all([
@@ -238,7 +240,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
       : fdData.assists;
 
     if (!liveMatches.length) {
-      return res.json({ goals: fdData.goals, assists: baseAssists, cleanSheets: csData, hasLive: false });
+      return { goals: fdData.goals, assists: baseAssists, cleanSheets: csData, hasLive: false };
     }
 
     // Aggregate live goals/assists — key is normalized name, value stores original for display
@@ -301,12 +303,13 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
       return merged;
     }
 
-    res.json({
+    return {
       goals: mergeLive(fdData.goals, "goals"),
       assists: mergeLive(baseAssists, "assists"),
       cleanSheets: csData,
       hasLive: true,
-    });
+    };
+    }); // end serveWithSWR
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -369,12 +372,25 @@ router.get("/teams/search", async (req, res) => {
   if (q.length < 2) return res.json([]);
   try {
     const competitions = await getCompetitions();
+    // Domestic leagues first so e.g. "barcelona" gets PD (La Liga) not CL
+    const DOMESTIC_PRIORITY = ["PL", "PD", "BL1", "SA", "FL1", "DED", "PPL", "BSA", "ELC"];
+    const sorted = [...competitions].sort((a: any, b: any) => {
+      const ai = DOMESTIC_PRIORITY.indexOf(a.code);
+      const bi = DOMESTIC_PRIORITY.indexOf(b.code);
+      if (ai === -1 && bi === -1) return 0;
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
     const teamArrays = await Promise.all(
-      competitions.map((c: { code: string }) => getTeams(c.code).catch(() => []))
+      sorted.map(async (c: { code: string }) => ({
+        code: c.code,
+        teams: await getTeams(c.code).catch(() => []),
+      }))
     );
     const seen = new Set<number>();
     const results: unknown[] = [];
-    for (const teams of teamArrays) {
+    for (const { code: compCode, teams } of teamArrays) {
       for (const team of teams as any[]) {
         if (seen.has(team.id)) continue;
         const name = (team.name ?? "").toLowerCase();
@@ -382,7 +398,7 @@ router.get("/teams/search", async (req, res) => {
         const tla = (team.tla ?? "").toLowerCase();
         if (name.includes(q) || short.includes(q) || tla.includes(q)) {
           seen.add(team.id);
-          results.push(team);
+          results.push({ ...team, competitionCode: compCode });
         }
       }
     }
