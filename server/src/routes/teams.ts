@@ -62,7 +62,11 @@ router.get("/fixtures", async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
       return res.status(400).json({ error: "invalid date format" });
     }
-    res.json(await getUpcomingFixtures(dateFrom, dateTo));
+    const cacheKey = `/fixtures/v1/${dateFrom}/${dateTo}`;
+    await serveWithSWR(res, cacheKey, 5 * 60 * 1000,
+      () => getUpcomingFixtures(dateFrom, dateTo),
+      (d) => Array.isArray(d)
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -70,7 +74,10 @@ router.get("/fixtures", async (req, res) => {
 
 router.get("/competitions", async (_req, res) => {
   try {
-    res.json(await getCompetitions());
+    await serveWithSWR(res, "/competitions/v1", 60 * 60 * 1000,
+      () => getCompetitions(),
+      (d: any[]) => d.length > 0
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -78,7 +85,11 @@ router.get("/competitions", async (_req, res) => {
 
 router.get("/competitions/:code/teams", async (req, res) => {
   try {
-    res.json(await getTeams(req.params.code));
+    const cacheKey = `/teams/v1/${req.params.code}`;
+    await serveWithSWR(res, cacheKey, 60 * 60 * 1000,
+      () => getTeams(req.params.code),
+      (d: any[]) => d.length > 0
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -87,20 +98,33 @@ router.get("/competitions/:code/teams", async (req, res) => {
 router.get("/competitions/:code/seasons", async (req, res) => {
   try {
     const cacheKey = `/competition-seasons/v2/${req.params.code}`;
-    const cached = await getCached(cacheKey);
-    if (cached) return res.json(cached);
-    const seasons = await getCompetitionSeasons(req.params.code);
-    if (seasons.length > 0) setCached(cacheKey, seasons, 24 * 60 * 60 * 1000); // 24 hours
-    res.json(seasons);
+    await serveWithSWR(res, cacheKey, 24 * 60 * 60 * 1000,
+      () => getCompetitionSeasons(req.params.code),
+      (d: any[]) => d.length > 0
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
 router.get("/competitions/:code/bracket", async (req, res) => {
+  const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+  const cacheKey = `/bracket/v2/${req.params.code}${season ? `/${season}` : ""}`;
   try {
-    const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+    // Manual SWR so null (bracket not yet available) maps to 404 rather than 200.
+    const hit = await getAnyCached(cacheKey);
+    if (hit) {
+      if (hit.data === null) return res.status(404).json({ error: "bracket not available" });
+      res.json(hit.data);
+      if (hit.stale) {
+        getBracketMatches(req.params.code, season)
+          .then((d) => setCached(cacheKey, d ?? null, 30 * 60 * 1000))
+          .catch(() => {});
+      }
+      return;
+    }
     const data = await getBracketMatches(req.params.code, season);
+    await setCached(cacheKey, data ?? null, 30 * 60 * 1000);
     if (!data) return res.status(404).json({ error: "bracket not available" });
     res.json(data);
   } catch (e: any) {
@@ -128,10 +152,13 @@ router.get("/competitions/:code/standings", async (req, res) => {
         (d) => d.groups.length > 0
       );
     } else {
-      // Current season: skip route-level cache so there is only ONE SWR layer
-      // (inside apiFetch). Avoids stale assembled standings being served while
-      // fresh raw fd.org data has already landed in the background.
-      res.json(await getStandings(req.params.code, season));
+      // Current season: 5-min route-level SWR so cold/expired requests return
+      // stale standings instantly instead of blocking 8-17s on fd.org.
+      const cacheKey = `/standings/v5/${req.params.code}/current`;
+      await serveWithSWR(res, cacheKey, 5 * 60 * 1000,
+        () => getStandings(req.params.code, season),
+        (d) => d.groups.length > 0
+      );
     }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
