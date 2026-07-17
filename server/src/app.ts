@@ -12,8 +12,10 @@ import { fetchPlayerWikiData } from "./services/wikiStats";
 import { setWikiStats, getWikiStats } from "./db/wikiCareerCache";
 import { setWikiTrophies, getWikiTrophies } from "./db/wikiTrophyCache";
 import { requireAdmin } from "./utils/auth";
+import { warmL1Cache } from "./utils/warmup";
 
 dotenv.config();
+warmL1Cache();
 
 const app = express();
 

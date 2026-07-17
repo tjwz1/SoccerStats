@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import type { Competition, StandingsData, CompetitionSeason, Team, ScheduleMatch, StandingRow } from "../types";
 import { useApi } from "../hooks/useApi";
 import { useLiveMatches } from "../contexts/LiveMatchesContext";
@@ -146,6 +146,16 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
       fetch(`/api/competitions/${comp.code}/scorers?season=${s.year}`).catch(() => {});
     }
   }, [seasons, comp.code]);
+
+  // Prefetch a team's lineup when the user hovers a standings row. 150ms debounce
+  // prevents firing on accidental hover-throughs while scrolling.
+  const prefetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefetchTeam = useCallback((teamId: number) => {
+    if (prefetchTimer.current) clearTimeout(prefetchTimer.current);
+    prefetchTimer.current = setTimeout(() => {
+      fetch(`/api/teams/${teamId}/lineup?competition=${comp.code}`).catch(() => {});
+    }, 150);
+  }, [comp.code]);
 
   useEffect(() => {
     setSelectedGroupType(null);
@@ -392,6 +402,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
           return (
           <div
             key={row.team.id}
+            onMouseEnter={() => prefetchTeam(row.team.id)}
             className={`relative w-full grid items-center gap-x-4 px-5 py-3 transition-colors border-b border-slate-800/40 last:border-0 hover:bg-green-900/10 group ${
               isLive ? "bg-green-950/20" : i % 2 === 1 ? "bg-slate-900/30" : ""
             }`}
