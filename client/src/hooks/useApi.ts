@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 
-async function fetchWithRetry(url: string, retries = 2, delayMs = 1500): Promise<Response> {
+async function fetchWithRetry(url: string, signal: AbortSignal, retries = 2, delayMs = 1500): Promise<Response> {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal });
     if (res.ok || attempt === retries) return res;
     // Retry on 429 (rate limit) or 500 (transient server error)
     if (res.status === 429 || res.status === 500) {
-      await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
+      await new Promise<void>((resolve, reject) => {
+        if (signal.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
+        const t = setTimeout(resolve, delayMs * (attempt + 1));
+        signal.addEventListener("abort", () => { clearTimeout(t); reject(new DOMException("Aborted", "AbortError")); }, { once: true });
+      });
     } else {
       return res; // non-retryable error
     }
@@ -17,12 +21,18 @@ async function fetchWithRetry(url: string, retries = 2, delayMs = 1500): Promise
 // In-memory cache keyed by URL; survives React re-renders within the same session.
 // Entries expire after SESSION_CACHE_TTL_MS so live scores/standings refresh automatically.
 const SESSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const SESSION_CACHE_MAX = 150; // evict oldest when over this limit
+const SESSION_CACHE_MAX = 300; // evict oldest when over this limit
 const SESSION_CACHE = new Map<string, { data: unknown; at: number }>();
 
 // In-flight deduplication: if two useApi calls request the same URL concurrently,
 // the second attaches to the first's promise rather than making a duplicate HTTP request.
-const INFLIGHT = new Map<string, Promise<unknown>>();
+// Ref-counted so an in-flight request is aborted only when ALL its listeners have unmounted.
+interface InflightEntry {
+  promise: Promise<unknown>;
+  controller: AbortController;
+  refs: number;
+}
+const INFLIGHT = new Map<string, InflightEntry>();
 
 export function sessionGet(url: string): unknown | undefined {
   const entry = SESSION_CACHE.get(url);
@@ -43,6 +53,15 @@ export function clearSessionCache() {
   SESSION_CACHE.clear();
 }
 
+// Release one listener's hold on an in-flight entry, aborting when the last one detaches.
+function releaseInflight(targetUrl: string, entry: InflightEntry) {
+  entry.refs--;
+  if (entry.refs <= 0 && INFLIGHT.get(targetUrl) === entry) {
+    entry.controller.abort();
+    INFLIGHT.delete(targetUrl);
+  }
+}
+
 export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
   const noCache = options?.noCache ?? false;
   const [data, setData] = useState<T | null>(() => {
@@ -61,17 +80,17 @@ export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
       return () => {};
     }
 
-    // If a request for this URL is already in-flight, attach to it instead of making a new one
+    // If a request for this URL is already in-flight, attach to it
     if (!skipCache && INFLIGHT.has(targetUrl)) {
+      const entry = INFLIGHT.get(targetUrl)!;
+      entry.refs++;
       let cancelled = false;
       setLoading(true);
       setError(null);
-      INFLIGHT.get(targetUrl)!.then((d) => {
-        if (!cancelled) { setData(d as T); setLoading(false); }
-      }).catch((e) => {
-        if (!cancelled) { setError((e as Error).message); setLoading(false); }
-      });
-      return () => { cancelled = true; };
+      entry.promise
+        .then((d) => { if (!cancelled) { setData(d as T); setLoading(false); } })
+        .catch((e) => { if (!cancelled && (e as Error)?.name !== "AbortError") { setError((e as Error).message); setLoading(false); } });
+      return () => { cancelled = true; releaseInflight(targetUrl, entry); };
     }
 
     let cancelled = false;
@@ -79,7 +98,9 @@ export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
     setError(null);
     setData(null);
 
-    const promise = fetchWithRetry(targetUrl)
+    const controller = new AbortController();
+
+    const promise = fetchWithRetry(targetUrl, controller.signal)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -88,15 +109,19 @@ export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
         if (!skipCache) sessionSet(targetUrl, d);
         return d;
       })
-      .finally(() => INFLIGHT.delete(targetUrl));
+      .finally(() => {
+        // Only remove if this entry is still the active one for this URL
+        if (INFLIGHT.get(targetUrl)?.controller === controller) INFLIGHT.delete(targetUrl);
+      });
 
-    INFLIGHT.set(targetUrl, promise);
+    const entry: InflightEntry = { promise, controller, refs: 1 };
+    INFLIGHT.set(targetUrl, entry);
 
     promise
       .then((d) => { if (!cancelled) { setData(d as T); setLoading(false); } })
-      .catch((e) => { if (!cancelled) { setError((e as Error).message); setLoading(false); } });
+      .catch((e) => { if (!cancelled && (e as Error)?.name !== "AbortError") { setError((e as Error).message); setLoading(false); } });
 
-    return () => { cancelled = true; };
+    return () => { cancelled = true; releaseInflight(targetUrl, entry); };
   }, []);
 
   useEffect(() => {

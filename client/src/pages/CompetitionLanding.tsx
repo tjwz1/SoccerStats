@@ -137,6 +137,16 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
   const groups = standings?.groups ?? [];
   const isMultiGroup = groups.length > 1;
 
+  // Silently prime past-season standings + scorers so the season switcher feels instant.
+  // Past seasons are cached FOREVER on the server, so each URL is only fetched once ever.
+  useEffect(() => {
+    if (!seasons || seasons.length <= 1) return;
+    for (const s of seasons.slice(1)) {
+      fetch(`/api/competitions/${comp.code}/standings?season=${s.year}`).catch(() => {});
+      fetch(`/api/competitions/${comp.code}/scorers?season=${s.year}`).catch(() => {});
+    }
+  }, [seasons, comp.code]);
+
   useEffect(() => {
     setSelectedGroupType(null);
     setCompView("standings");

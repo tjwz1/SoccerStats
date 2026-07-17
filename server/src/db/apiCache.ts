@@ -68,6 +68,15 @@ export function clearMemCache(): void {
   memCache.clear();
 }
 
+export async function clearAllCache(): Promise<void> {
+  memCache.clear();
+  try {
+    await getClient().from("api_cache").delete().neq("path", "");
+  } catch (e: unknown) {
+    console.error("[apiCache] clearAll failed:", (e as Error).message);
+  }
+}
+
 export async function setCached(path: string, value: unknown, ttlMs = DEFAULT_TTL_MS): Promise<void> {
   // Always write to memory cache first — this works even when Supabase is down
   memCache.set(path, { value, expiresAt: Date.now() + ttlMs });

@@ -5,6 +5,14 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { LiveMatchesProvider } from "./contexts/LiveMatchesContext";
 import { useServerWatchdog } from "./hooks/useServerWatchdog";
 
+function NotFound() {
+  return (
+    <div className="flex items-center justify-center min-h-screen text-slate-400 dark:text-slate-500 text-sm">
+      Page not found
+    </div>
+  );
+}
+
 function AppInner() {
   useServerWatchdog();
   return (
@@ -13,6 +21,7 @@ function AppInner() {
       <Route path="/competitions/:code" element={<MainView />} />
       <Route path="/competitions/:code/teams/:teamId" element={<MainView />} />
       <Route path="/player/:id" element={<PlayerPage />} />
+      <Route path="*" element={<NotFound />} />
     </Routes>
   );
 }

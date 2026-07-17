@@ -1972,33 +1972,22 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
   }
 
   if (compCode === "PL") {
-    // FPL (official PL source) → SofaScore fallback → TheSportsDB last resort
-    const [fplPhotos, wikiAppMap] = await Promise.all([
+    // Fire all three photo sources + career totals concurrently; merge by priority FPL > SS > TSDB
+    const [fplPhotos, ssPhotos, tsdbPhotos, wikiAppMap] = await Promise.all([
       fetchFplPhotos(squadForPhotos),
+      fetchSofaScorePhotos(squadForPhotos, data.name, teamId),
+      fetchPhotos(squadForPhotos),
       fetchCareerAppTotals(squad),
     ]);
-    const fplMisses = squad.filter((p: any) => !fplPhotos[p.id]);
-    const ssPhotos = fplMisses.length > 0
-      ? await fetchSofaScorePhotos(fplMisses.map((p: any) => ({ id: p.id, name: p.name })), data.name, teamId)
-      : {};
-    const ssMisses = fplMisses.filter((p: any) => !ssPhotos[p.id]);
-    const tsdbPhotos = ssMisses.length > 0
-      ? await fetchPhotos(ssMisses.map((p: any) => ({ id: p.id, name: p.name })))
-      : {};
-    // Priority: FPL > SofaScore > TheSportsDB (nulls from higher source never overwrite real URLs)
     allSquadPhotos = mergePhotos(tsdbPhotos, ssPhotos, fplPhotos);
     careerApps = wikiAppMap;
   } else {
-    // SofaScore (comprehensive for all leagues) → TheSportsDB fallback
-    const [ssPhotos, wikiAppMap] = await Promise.all([
+    // Fire both photo sources + career totals concurrently; merge by priority SS > TSDB
+    const [ssPhotos, tsdbPhotos, wikiAppMap] = await Promise.all([
       fetchSofaScorePhotos(squadForPhotos, data.name, teamId),
+      fetchPhotos(squadForPhotos),
       fetchCareerAppTotals(squad),
     ]);
-    const ssMisses = squad.filter((p: any) => !ssPhotos[p.id]);
-    const tsdbPhotos = ssMisses.length > 0
-      ? await fetchPhotos(ssMisses.map((p: any) => ({ id: p.id, name: p.name })))
-      : {};
-    // Priority: SofaScore > TheSportsDB (nulls from SofaScore never overwrite real TheSportsDB URLs)
     allSquadPhotos = mergePhotos(tsdbPhotos, ssPhotos);
     careerApps = wikiAppMap;
   }

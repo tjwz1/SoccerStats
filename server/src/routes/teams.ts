@@ -5,7 +5,8 @@ import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transferma
 import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoalEvents, getMatchBookingsAndSubs, teamsMatch, type EspnLineupPlayer } from "../services/matchStatsScraper";
 import { fetchEspnCupMatches, fetchTmCupMatches, DOMESTIC_CUP_MAP, TM_CUP_LEAGUES } from "../services/cupSchedule";
 import { fetchTeamNews } from "../services/newsService";
-import { getCached, getAnyCached, setCached, clearMemCache, FOREVER_TTL_MS } from "../db/apiCache";
+import { getCached, getAnyCached, setCached, clearMemCache, clearAllCache, FOREVER_TTL_MS } from "../db/apiCache";
+import { requireAdmin } from "../utils/auth";
 import type { Response } from "express";
 
 // Stale-while-revalidate helper: if a cached entry exists (even expired) return it
@@ -389,8 +390,8 @@ router.get("/live-matches", async (_req, res) => {
   }
 });
 
-router.post("/admin/cache/clear", (_req, res) => {
-  clearMemCache();
+router.post("/admin/cache/clear", requireAdmin, async (_req, res) => {
+  await clearAllCache();
   res.status(204).send();
 });
 

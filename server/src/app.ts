@@ -11,6 +11,7 @@ import { getTeamSquadPlayers } from "./services/footballApi";
 import { fetchPlayerWikiData } from "./services/wikiStats";
 import { setWikiStats, getWikiStats } from "./db/wikiCareerCache";
 import { setWikiTrophies, getWikiTrophies } from "./db/wikiTrophyCache";
+import { requireAdmin } from "./utils/auth";
 
 dotenv.config();
 
@@ -43,6 +44,13 @@ const adminLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many requests." },
 });
+
+if (process.env.LOG_REQUESTS === "true") {
+  app.use((req, _res, next) => {
+    console.log(`[req] ${req.method} ${req.path}`);
+    next();
+  });
+}
 
 app.use("/api", apiLimiter);
 app.use(express.json({ limit: "100kb" }));
@@ -175,16 +183,6 @@ const TEAM_IDS: Record<string, string> = {
   fk_kairat: "10601",
   paphos: "11034",
 };
-
-// Guard for admin endpoints: require a matching X-Admin-Secret header or localhost origin.
-// If ADMIN_SECRET is unset, only localhost requests are allowed.
-function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const secret = process.env.ADMIN_SECRET;
-  const provided = req.headers["x-admin-secret"] as string | undefined;
-  const isLocalhost = req.ip === "127.0.0.1" || req.ip === "::1" || req.ip === "::ffff:127.0.0.1";
-  if ((secret && provided === secret) || (!secret && isLocalhost)) return next();
-  res.status(403).json({ error: "Forbidden" });
-}
 
 // Populate Wikipedia career stats for all players on a given team.
 // Runs sequentially (1 player at a time) to be polite to Wikipedia.
