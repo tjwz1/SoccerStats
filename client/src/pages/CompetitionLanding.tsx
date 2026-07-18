@@ -3,6 +3,22 @@ import type { Competition, StandingsData, CompetitionSeason, Team, ScheduleMatch
 import { useApi } from "../hooks/useApi";
 import { useLiveMatches } from "../contexts/LiveMatchesContext";
 import BracketView from "../components/BracketView";
+import StatLeaders from "../components/StatLeaders";
+
+// ── Fixture types ─────────────────────────────────────────────────────────────
+
+interface FixtureMatch {
+  id: number;
+  utcDate: string;
+  status: string;
+  matchday: number | null;
+  stage: string;
+  homeTeam: { id: number; name: string; crest: string };
+  awayTeam: { id: number; name: string; crest: string };
+  scoreHome: number | null;
+  scoreAway: number | null;
+  winner: string | null;
+}
 
 // ── Qualification zone config ─────────────────────────────────────────────────
 
@@ -65,7 +81,202 @@ function getZone(compCode: string, position: number, totalTeams: number): Zone |
 // Competitions that have a knockout bracket in addition to standings
 const KNOCKOUT_COMP_CODES = new Set(["CL", "EL", "ECL", "EC", "WC", "CLI"]);
 
-type CompView = "standings" | "bracket";
+type CompView = "standings" | "bracket" | "fixtures" | "scorers";
+
+// ── Fixture helpers ───────────────────────────────────────────────────────────
+
+const STAGE_LABELS: Record<string, string> = {
+  REGULAR_SEASON: "Regular Season",
+  GROUP_STAGE: "Group Stage",
+  ROUND_OF_16: "Round of 16",
+  QUARTER_FINALS: "Quarter-Finals",
+  SEMI_FINALS: "Semi-Finals",
+  FINAL: "Final",
+  PRELIMINARY_ROUND: "Preliminary Round",
+  QUALIFICATION: "Qualification",
+  PLAYOFF_ROUND_ONE: "Playoff Round 1",
+  PLAYOFF_ROUND_TWO: "Playoff Round 2",
+  "3RD_PLACE": "3rd Place",
+  KNOCKOUT_ROUND_PLAY_OFFS: "Knockout Round Play-Offs",
+  LEAGUE_PHASE: "League Phase",
+  FIRST_ROUND: "Round 1",
+  SECOND_ROUND: "Round 2",
+  THIRD_ROUND: "Round 3",
+  FOURTH_ROUND: "Round 4",
+};
+
+function stageLabel(stage: string): string {
+  return STAGE_LABELS[stage] ?? stage.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function fmtFixtureDate(utcDate: string): string {
+  const d = new Date(utcDate);
+  const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `${day}, ${time}`;
+}
+
+function shortTeamName(name: string): string {
+  return name
+    .replace(/\s+(FC|F\.C\.|CF|C\.F\.|AFC|A\.F\.C\.|SC|S\.C\.|SV|CD|UD|SD)$/i, "")
+    .replace(/^(FC|F\.C\.|AFC|A\.F\.C\.)\s+/i, "")
+    .replace(/\s+Football Club$/i, "")
+    .trim();
+}
+
+// ── FixturesView component ────────────────────────────────────────────────────
+
+function buildTeam(t: { id: number; name: string; crest: string }): Team {
+  return { id: t.id, name: t.name, shortName: t.name, crest: t.crest, tla: "" };
+}
+
+function FixtureMatchRow({ m, onSelectTeam }: { m: FixtureMatch; onSelectTeam: (t: Team) => void }) {
+  const [homeErr, setHomeErr] = useState(false);
+  const [awayErr, setAwayErr] = useState(false);
+  const isFinished = m.status === "FINISHED";
+  const isLive = m.status === "IN_PLAY" || m.status === "PAUSED";
+  const hasScore = m.scoreHome !== null && m.scoreAway !== null;
+  return (
+    <div className={`flex items-center px-4 py-2.5 gap-2 ${isLive ? "bg-green-950/20" : ""}`}>
+      {/* Home team */}
+      <div className="flex items-center gap-1.5 flex-1 min-w-0 justify-end">
+        <button
+          onClick={() => onSelectTeam(buildTeam(m.homeTeam))}
+          className="text-xs font-medium text-slate-200 hover:text-green-400 transition-colors truncate text-right"
+        >
+          {shortTeamName(m.homeTeam.name)}
+        </button>
+        {m.homeTeam.crest && !homeErr ? (
+          <img src={m.homeTeam.crest} alt="" onError={() => setHomeErr(true)} className="w-5 h-5 object-contain shrink-0" />
+        ) : null}
+      </div>
+
+      {/* Score or time */}
+      <div className="w-20 shrink-0 text-center">
+        {isFinished && hasScore ? (
+          <span className="text-sm font-bold text-white tabular-nums">{m.scoreHome}–{m.scoreAway}</span>
+        ) : isLive && hasScore ? (
+          <span className="text-sm font-bold text-red-300 tabular-nums">{m.scoreHome}–{m.scoreAway}</span>
+        ) : m.status === "POSTPONED" ? (
+          <span className="text-[10px] font-semibold text-amber-400">POSTP.</span>
+        ) : (
+          <span className="text-[10px] text-slate-500 leading-tight">{fmtFixtureDate(m.utcDate)}</span>
+        )}
+      </div>
+
+      {/* Away team */}
+      <div className="flex items-center gap-1.5 flex-1 min-w-0">
+        {m.awayTeam.crest && !awayErr ? (
+          <img src={m.awayTeam.crest} alt="" onError={() => setAwayErr(true)} className="w-5 h-5 object-contain shrink-0" />
+        ) : null}
+        <button
+          onClick={() => onSelectTeam(buildTeam(m.awayTeam))}
+          className="text-xs font-medium text-slate-200 hover:text-green-400 transition-colors truncate"
+        >
+          {shortTeamName(m.awayTeam.name)}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FixturesView({
+  comp,
+  selectedSeason,
+  onSelectTeam,
+}: {
+  comp: Competition;
+  selectedSeason: number | null;
+  onSelectTeam: (team: Team) => void;
+}) {
+  const fixturesUrl = `/api/competitions/${comp.code}/fixtures${selectedSeason ? `?season=${selectedSeason}` : ""}`;
+  const { data: fixtures, loading, error } = useApi<FixtureMatch[]>(fixturesUrl);
+
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  function toggleGroup(key: string) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-20 text-slate-500">
+        <div className="w-6 h-6 border-2 border-slate-600 border-t-white rounded-full animate-spin" />
+        <p className="text-sm">Loading fixtures…</p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <p className="text-sm text-red-400 text-center py-14">
+        {error.includes("403") ? "This competition requires a paid API tier." : "Failed to load fixtures."}
+      </p>
+    );
+  }
+  if (!fixtures || fixtures.length === 0) {
+    return <p className="text-sm text-slate-500 text-center py-14">No fixtures available.</p>;
+  }
+
+  // Determine grouping key: matchday if present, else stage
+  const hasMatchdays = fixtures.some((m) => m.matchday !== null);
+
+  type Group = { key: string; label: string; matches: FixtureMatch[] };
+  const groupMap = new Map<string, Group>();
+
+  for (const m of fixtures) {
+    let key: string;
+    let label: string;
+    if (hasMatchdays && m.matchday !== null) {
+      key = `md-${m.matchday}`;
+      label = `Matchday ${m.matchday}`;
+    } else {
+      key = `stage-${m.stage}`;
+      label = stageLabel(m.stage || "Other");
+    }
+    if (!groupMap.has(key)) groupMap.set(key, { key, label, matches: [] });
+    groupMap.get(key)!.matches.push(m);
+  }
+
+  const groups = Array.from(groupMap.values());
+
+  return (
+    <div className="space-y-4">
+      {groups.map(({ key, label, matches }) => {
+        const collapsed = collapsedGroups.has(key);
+        return (
+          <div key={key} className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+            {/* Group header */}
+            <button
+              onClick={() => toggleGroup(key)}
+              className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-800/40 transition-colors"
+            >
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{label}</span>
+              <svg
+                className={`w-4 h-4 text-slate-600 transition-transform ${collapsed ? "" : "rotate-180"}`}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {!collapsed && (
+              <div className="divide-y divide-slate-800/50">
+                {matches.map((m) => (
+                  <FixtureMatchRow key={m.id} m={m} onSelectTeam={onSelectTeam} />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 interface Props {
   comp: Competition;
@@ -288,28 +499,67 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         </div>
       </div>
 
-      {/* Standings / Bracket tab strip */}
-      {hasKnockout && (
-        <div className="flex gap-1 mb-4 border-b border-slate-800">
-          {(["standings", "bracket"] as CompView[]).map((v) => (
-            <button
-              key={v}
-              onClick={() => setCompView(v)}
-              className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
-                compView === v
-                  ? "border-green-500 text-white"
-                  : "border-transparent text-slate-500 hover:text-slate-300"
-              }`}
-            >
-              {v === "standings" ? (isMultiGroup ? "Groups" : "Standings") : "Bracket"}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Tab strip — always shown since Matches and Scorers are always available */}
+      <div className="flex gap-1 mb-4 border-b border-slate-800">
+        <button
+          onClick={() => setCompView("standings")}
+          className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
+            compView === "standings"
+              ? "border-green-500 text-white"
+              : "border-transparent text-slate-500 hover:text-slate-300"
+          }`}
+        >
+          {isMultiGroup ? "Groups" : "Standings"}
+        </button>
+        {hasKnockout && (
+          <button
+            onClick={() => setCompView("bracket")}
+            className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
+              compView === "bracket"
+                ? "border-green-500 text-white"
+                : "border-transparent text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            Bracket
+          </button>
+        )}
+        <button
+          onClick={() => setCompView("fixtures")}
+          className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
+            compView === "fixtures"
+              ? "border-green-500 text-white"
+              : "border-transparent text-slate-500 hover:text-slate-300"
+          }`}
+        >
+          Matches
+        </button>
+        <button
+          onClick={() => setCompView("scorers")}
+          className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
+            compView === "scorers"
+              ? "border-green-500 text-white"
+              : "border-transparent text-slate-500 hover:text-slate-300"
+          }`}
+        >
+          Scorers
+        </button>
+      </div>
 
       {/* Bracket view */}
       {compView === "bracket" && (
         <BracketView compCode={comp.code} season={selectedSeason} />
+      )}
+
+      {/* Fixtures view */}
+      {compView === "fixtures" && (
+        <FixturesView comp={comp} selectedSeason={selectedSeason} onSelectTeam={onSelectTeam} />
+      )}
+
+      {/* Scorers view */}
+      {compView === "scorers" && (
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+          <StatLeaders compCode={comp.code} season={selectedSeason} onSelectTeam={onSelectTeam} />
+        </div>
       )}
 
       {/* Standings table */}

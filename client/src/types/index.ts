@@ -26,6 +26,8 @@ export interface StandingRow {
   lost: number;
   points: number;
   goalDifference: number;
+  goalsFor?: number;
+  goalsAgainst?: number;
   form: string | null;
   knockoutStatus?: "Q" | "E" | "3rd" | null;
 }
