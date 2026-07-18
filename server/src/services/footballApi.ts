@@ -1513,6 +1513,8 @@ export interface StandingRow {
   lost: number;
   points: number;
   goalDifference: number;
+  goalsFor?: number;
+  goalsAgainst?: number;
   form: string | null;
   knockoutStatus?: "Q" | "E" | "3rd" | null;
 }
@@ -1543,6 +1545,8 @@ function mapStandingRow(e: any): StandingRow {
     lost: e.lost,
     points: e.points,
     goalDifference: e.goalDifference,
+    goalsFor: e.goalsFor ?? undefined,
+    goalsAgainst: e.goalsAgainst ?? undefined,
     form: e.form ?? null,
   };
 }
@@ -1897,6 +1901,56 @@ export async function getFinishedMatchList(
     awayTeamCrest: m.awayTeam?.crest ?? "",
     utcDate: m.utcDate ?? "",
   }));
+}
+
+export interface CompetitionFixture {
+  id: number;
+  utcDate: string;
+  status: string;
+  matchday: number | null;
+  stage: string;
+  homeTeam: { id: number; name: string; crest: string };
+  awayTeam: { id: number; name: string; crest: string };
+  scoreHome: number | null;
+  scoreAway: number | null;
+  winner: string | null;
+}
+
+export async function getCompetitionFixtures(
+  competitionCode: string,
+  season?: number
+): Promise<CompetitionFixture[]> {
+  if (useMock()) return [];
+  const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
+  const isPast = season !== undefined && season < CURRENT_SEASON;
+  const ttl = isPast ? FOREVER_TTL_MS : 5 * 60 * 1000;
+  const data = await apiFetch(
+    `/competitions/${competitionCode}/matches?season=${seasonYear}`,
+    ttl
+  ) as any;
+  const matches: CompetitionFixture[] = (data?.matches ?? [])
+    .filter((m: any) => !["CANCELLED", "SUSPENDED"].includes(m.status))
+    .map((m: any): CompetitionFixture => ({
+      id: m.id,
+      utcDate: m.utcDate ?? "",
+      status: m.status ?? "SCHEDULED",
+      matchday: m.matchday ?? null,
+      stage: m.stage ?? "",
+      homeTeam: { id: m.homeTeam?.id ?? 0, name: m.homeTeam?.name ?? "", crest: m.homeTeam?.crest ?? "" },
+      awayTeam: { id: m.awayTeam?.id ?? 0, name: m.awayTeam?.name ?? "", crest: m.awayTeam?.crest ?? "" },
+      scoreHome: m.score?.fullTime?.home ?? null,
+      scoreAway: m.score?.fullTime?.away ?? null,
+      winner: m.score?.winner ?? null,
+    }));
+  // Sort by matchday ascending, then by date
+  matches.sort((a, b) => {
+    const mdA = a.matchday ?? 9999;
+    const mdB = b.matchday ?? 9999;
+    if (mdA !== mdB) return mdA - mdB;
+    return a.utcDate.localeCompare(b.utcDate);
+  });
+  return matches;
 }
 
 export async function getTeamLineup(teamId: string, competitionCode?: string) {

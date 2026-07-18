@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import type { ScheduleMatch, LineupData, Player, MatchDetailData, MatchGoalEvent, MatchBookingEvent, MatchSubstitutionEvent, PlayerGameStats, MatchLineups, MatchLineupPlayer, MatchTeamStats } from "../types";
+import type { ScheduleMatch, LineupData, Player, MatchDetailData, MatchGoalEvent, MatchBookingEvent, MatchSubstitutionEvent, PlayerGameStats, MatchLineups, MatchLineupPlayer, MatchTeamStats, StandingsData } from "../types";
 import { useApi } from "../hooks/useApi";
 import Pitch from "./Pitch";
 import Bench from "./Bench";
@@ -168,6 +168,7 @@ interface Props {
   error: string | null;
   teamId: number;
   teamName: string;
+  competitionCode?: string;
   onRetry?: () => void;
   upcomingLoading?: boolean;
 }
@@ -331,16 +332,23 @@ function MatchTimelinePanel({
     );
   }
 
-  const goals = detail?.goals ?? [];
+  const allGoals = detail?.goals ?? [];
   const bookings = detail?.bookings ?? [];
   const substitutions = detail?.substitutions ?? [];
-  const hasAnyEvents = goals.length > 0 || bookings.length > 0 || substitutions.length > 0;
+
+  // Separate shootout kicks (minute > 120, type PENALTY) from regular match events.
+  // Note: miss detection is not available from the current ESPN scraper — all takers
+  // are shown as scored. This still provides useful context of who took the kicks.
+  const shootoutGoals = allGoals.filter((g) => g.minute > 120 && g.type === "PENALTY");
+  const goals = allGoals.filter((g) => !(g.minute > 120 && g.type === "PENALTY"));
+
+  const hasAnyEvents = allGoals.length > 0 || bookings.length > 0 || substitutions.length > 0;
 
   if (!detail || !hasAnyEvents) {
     return <p className="text-xs text-slate-500 text-center py-6">No events recorded.</p>;
   }
 
-  // Build chronological event list
+  // Build chronological event list (regular events only)
   const events: TlEvent[] = [
     ...goals.map((g): TlEvent => ({ kind: "goal", min: g.minute, extra: g.extraTime, team: g.team, data: g })),
     ...bookings.map((b): TlEvent => ({ kind: "card", min: b.minute, extra: b.extraTime, team: b.team, data: b })),
@@ -455,6 +463,39 @@ function MatchTimelinePanel({
           </div>
         ))}
       </div>
+
+      {/* Penalty Shootout section */}
+      {shootoutGoals.length > 0 && (
+        <div className="border-t border-slate-700/50 pt-3">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider text-center mb-2 font-semibold">
+            Penalty Shootout
+          </p>
+          <div className="flex gap-4">
+            {/* Home column */}
+            <div className="flex-1 space-y-1">
+              <p className="text-[9px] text-green-500/70 uppercase tracking-wider mb-1 text-center">
+                {shortName(match.homeTeam)}
+              </p>
+              {shootoutGoals.filter((g) => g.team === "home").map((g, i) => (
+                <p key={i} className="text-[11px] text-slate-300 text-center">
+                  ✓ {g.scorer.split(" ").pop()}
+                </p>
+              ))}
+            </div>
+            {/* Away column */}
+            <div className="flex-1 space-y-1">
+              <p className="text-[9px] text-blue-400/70 uppercase tracking-wider mb-1 text-center">
+                {shortName(match.awayTeam)}
+              </p>
+              {shootoutGoals.filter((g) => g.team === "away").map((g, i) => (
+                <p key={i} className="text-[11px] text-slate-300 text-center">
+                  ✓ {g.scorer.split(" ").pop()}
+                </p>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1259,11 +1300,25 @@ function Section({ title, color, dot, children }: { title: string; color: string
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export default function TeamSchedule({ matches, loading, error, teamId, teamName, onRetry, upcomingLoading }: Props) {
+export default function TeamSchedule({ matches, loading, error, teamId, teamName, competitionCode, onRetry, upcomingLoading }: Props) {
   const tieInfos = useMemo(
     () => computeTieInfos(matches, teamId, teamName),
     [matches, teamId, teamName]
   );
+
+  // ── Season stats strip ───────────────────────────────────────────────────────
+  // Fetch standings only when we have a competition code, then find this team's row.
+  const { data: standingsData } = useApi<StandingsData>(
+    competitionCode ? `/api/competitions/${competitionCode}/standings` : null
+  );
+  const standingRow = useMemo(() => {
+    if (!standingsData) return null;
+    for (const group of standingsData.groups) {
+      const row = group.rows.find((r) => r.team.id === teamId);
+      if (row) return row;
+    }
+    return null;
+  }, [standingsData, teamId]);
 
   if (loading) {
     return (
@@ -1304,6 +1359,25 @@ export default function TeamSchedule({ matches, loading, error, teamId, teamName
 
   return (
     <div className="space-y-8 w-full">
+      {/* Season stats strip */}
+      {standingRow && (
+        <div className="flex flex-wrap gap-2">
+          <span className="bg-slate-800 rounded px-2 py-0.5 text-xs text-slate-300">
+            #{standingRow.position}
+          </span>
+          <span className="bg-slate-800 rounded px-2 py-0.5 text-xs text-slate-300">
+            {standingRow.won}W {standingRow.draw}D {standingRow.lost}L
+          </span>
+          {(standingRow.goalsFor !== undefined || standingRow.goalsAgainst !== undefined) && (
+            <span className="bg-slate-800 rounded px-2 py-0.5 text-xs text-slate-300">
+              {standingRow.goalsFor ?? "–"}–{standingRow.goalsAgainst ?? "–"}
+            </span>
+          )}
+          <span className="bg-slate-800 rounded px-2 py-0.5 text-xs text-slate-300">
+            {standingRow.points} pts
+          </span>
+        </div>
+      )}
       {live.length > 0 && (
         <Section title="Playing Now" color="text-red-400/80" dot>
           {live.map((m) => <MatchCard key={m.id} match={m} teamId={teamId} teamName={teamName} tieInfo={tieInfos.get(m.id)} />)}

@@ -61,6 +61,7 @@ export default function ScheduleView({ teamId, teamName, competitionCode, season
         error={error}
         teamId={teamId}
         teamName={teamName}
+        competitionCode={competitionCode}
         onRetry={retry}
         upcomingLoading={upcomingLoading}
       />

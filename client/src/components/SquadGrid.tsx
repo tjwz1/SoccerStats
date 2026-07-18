@@ -112,8 +112,33 @@ function PlayerCard({
 export default function SquadGrid({ starters, bench, onClick, onHover }: Props) {
   const all = [...starters, ...bench];
 
+  // ── Squad summary ────────────────────────────────────────────────────────────
+  const squadSize = all.length;
+  const dobPlayers = all.filter((p) => !!p.dateOfBirth);
+  const avgAge = dobPlayers.length > 0
+    ? dobPlayers.reduce((sum, p) => sum + (Date.now() - new Date(p.dateOfBirth).getTime()) / (365.25 * 24 * 3600 * 1000), 0) / dobPlayers.length
+    : null;
+  const uniqueNationalities = new Set(all.map((p) => p.nationality).filter(Boolean)).size;
+
   return (
     <div className="space-y-8 w-full">
+      {/* Squad summary strip */}
+      {squadSize > 0 && (
+        <div className="flex items-center gap-3 text-xs text-slate-400 flex-wrap">
+          <span className="bg-slate-800 rounded px-2 py-0.5 text-xs text-slate-300">{squadSize} players</span>
+          {avgAge !== null && (
+            <span className="bg-slate-800 rounded px-2 py-0.5 text-xs text-slate-300">
+              Avg age {avgAge.toFixed(1)}
+            </span>
+          )}
+          {uniqueNationalities > 0 && (
+            <span className="bg-slate-800 rounded px-2 py-0.5 text-xs text-slate-300">
+              {uniqueNationalities} {uniqueNationalities === 1 ? "nationality" : "nationalities"}
+            </span>
+          )}
+        </div>
+      )}
+
       {GROUPS.map(({ label, position, accent, dot }) => {
         const players = all.filter((p) => p.position === position);
         if (players.length === 0) return null;

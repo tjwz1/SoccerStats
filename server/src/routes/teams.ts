@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getCompetitions, getTeams, getTeamLineup, getTeamSchedule, getMatchDetail, getMatchLineups, getStandings, getCompetitionSeasons, getTopScorers, getTeamCleanSheets, getBracketMatches, getLiveMatches, getPositionHistory, getUpcomingFixtures, getH2HMatches, isInternationalComp, getFinishedMatchList, type FinishedMatchRef, type StandingsData, type MatchGoalEvent } from "../services/footballApi";
+import { getCompetitions, getTeams, getTeamLineup, getTeamSchedule, getMatchDetail, getMatchLineups, getStandings, getCompetitionSeasons, getTopScorers, getTeamCleanSheets, getBracketMatches, getLiveMatches, getPositionHistory, getUpcomingFixtures, getH2HMatches, isInternationalComp, getFinishedMatchList, getCompetitionFixtures, type FinishedMatchRef, type StandingsData, type MatchGoalEvent } from "../services/footballApi";
 import { fetchClubHonours, type ClubTrophy } from "../services/wikiStats";
 import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transfermarktScraper";
 import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoalEvents, getMatchBookingsAndSubs, teamsMatch, type EspnLineupPlayer } from "../services/matchStatsScraper";
@@ -179,6 +179,21 @@ router.get("/competitions/:code/scorers", async (req, res) => {
         return { goals: fdData.goals, assists: fdData.assists, cleanSheets: csData };
       },
       (d) => d.goals.length > 0 || d.assists.length > 0
+    );
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get("/competitions/:code/fixtures", async (req, res) => {
+  try {
+    const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+    const isPast = season !== undefined && season < new Date().getFullYear() - (new Date().getMonth() < 7 ? 1 : 0);
+    const ttl = isPast ? 365 * 24 * 60 * 60 * 1000 : 5 * 60 * 1000;
+    const cacheKey = `/competition-fixtures/v1/${req.params.code}${season ? `/${season}` : ""}`;
+    await serveWithSWR(res, cacheKey, ttl,
+      () => getCompetitionFixtures(req.params.code, season),
+      (d) => Array.isArray(d) && d.length > 0
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
