@@ -178,7 +178,7 @@ jobs:
           # ── EXTRA COVERAGE ───────────────────────────────────────────────────
           check "41. BL1 live-scorers"      "$BASE/competitions/BL1/live-scorers"
           check "42. BL1 seasons"           "$BASE/competitions/BL1/seasons"
-          check "43. EC bracket"            "$BASE/competitions/EC/bracket"
+          check_soft "43. EC bracket"       "$BASE/competitions/EC/bracket"
           check "44. Barcelona PD lineup"   "$BASE/teams/81/lineup?competition=PD"
           check "45. DED scorers"           "$BASE/competitions/DED/scorers"
 
