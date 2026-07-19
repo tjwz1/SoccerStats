@@ -158,7 +158,7 @@ jobs:
           # Prime the player-career Supabase cache in the background.
           # The first cold call triggers a Wiki/TM scrape that may exceed the
           # server's 20 s hard cap; the background task continues and writes to
-          # Supabase so check 46 (after 34-45 have run) hits the cache.
+          # Supabase so check 48 (after 34-47 have run) hits the cache.
           curl -s -H "x-vercel-protection-bypass: $BYPASS" --max-time 25 \
             "$BASE/players/38101?competition=PL" -o /dev/null 2>/dev/null &
           PLAYER_PRIME_PID=$!
@@ -181,12 +181,14 @@ jobs:
           check_soft "43. EC bracket"       "$BASE/competitions/EC/bracket"
           check "44. Barcelona PD lineup"   "$BASE/teams/81/lineup?competition=PD"
           check "45. DED scorers"           "$BASE/competitions/DED/scorers"
+          check "46. PL fixtures"           "$BASE/competitions/PL/fixtures"
+          check "47. CL fixtures"           "$BASE/competitions/CL/fixtures"
 
           # Wait for the priming curl to return, then give the server 10 s for
           # the background Wiki/TM scrape to finish writing to Supabase.
           wait $PLAYER_PRIME_PID
           sleep 10
-          check_player "46. Player career (Haaland)" "$BASE/players/38101?competition=PL"
+          check_player "48. Player career (Haaland)" "$BASE/players/38101?competition=PL"
 
           # ── SUMMARY ──────────────────────────────────────────────────────────
           SUMMARY="PASS=$PASS SKIP=$SKIP FAIL=$FAIL"
