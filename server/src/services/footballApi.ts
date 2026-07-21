@@ -785,10 +785,10 @@ export async function getBracketMatches(competitionCode: string, season?: number
   if (useMock()) return null;
 
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
-  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
   // Historical seasons are immutable → cache forever.
   // Current season uses a short TTL so winner advancement propagates quickly after knockout matches finish.
-  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : 2 * 60_000;
+  const ttl = season && season < getCurrentSeason() ? FOREVER_TTL_MS : 2 * 60_000;
 
   let raw: any;
   try {
@@ -910,6 +910,7 @@ export async function getBracketMatches(competitionCode: string, season?: number
   // For WC tournaments, correct R16 team assignments using Wikipedia's authoritative
   // bracket draw (section titles like "Paraguay vs France"). fd.org sometimes has teams
   // in wrong R16 slots; Wikipedia reflects the official draw order.
+  let r16VisualOrder: number[] | null = null;
   if (competitionCode === "WC") {
     try {
       const r16Pairings = await getWcR16Pairings(seasonYear);
@@ -945,6 +946,9 @@ export async function getBracketMatches(competitionCode: string, season?: number
             r16Sorted[i].leg1.awayTeam = { ...awayTeam };
           }
         }
+        // Capture the Wikipedia-derived visual order so the post-processing sort
+        // below doesn't need hardcoded match IDs.
+        r16VisualOrder = r16Sorted.map((t) => t.leg1.id);
       }
     } catch (e) {
       console.warn("[getBracketMatches] Wikipedia R16 correction failed:", (e as Error).message);
@@ -953,16 +957,23 @@ export async function getBracketMatches(competitionCode: string, season?: number
 
   const resultRounds = propagateWinners(rounds);
 
-  if (competitionCode === "WC" && seasonYear === 2026) {
-    // R32 IDs 537415-537430 are assigned in bracket visual order → sort ascending
-    const r32 = resultRounds.find(r => r.stage === "LAST_32");
-    if (r32) r32.ties.sort((a, b) => a.leg1.id - b.leg1.id);
+  if (competitionCode === "WC") {
+    if (seasonYear === 2026) {
+      // R32 IDs 537415-537430 are assigned in bracket visual order → sort ascending
+      const r32 = resultRounds.find(r => r.stage === "LAST_32");
+      if (r32) r32.ties.sort((a, b) => a.leg1.id - b.leg1.id);
+    }
 
-    // R16 IDs are NOT in bracket visual order → hardcoded position map
-    const R16_BRACKET = [537375, 537376, 537379, 537380, 537377, 537378, 537381, 537382];
+    // Hardcoded bracket slot order takes priority — fd.org returns R16 matches in the wrong
+    // visual order for WC 2026, and the slot order determines which QF each winner feeds into.
+    // Wikipedia-derived order is used only for future WC years where no hardcoded data exists.
+    const HARDCODED_R16_ORDER: Partial<Record<number, number[]>> = {
+      2026: [537375, 537376, 537379, 537380, 537377, 537378, 537381, 537382],
+    };
+    const r16VisualIds = HARDCODED_R16_ORDER[seasonYear] ?? r16VisualOrder;
     const r16 = resultRounds.find(r => r.stage === "LAST_16");
-    if (r16) {
-      const rank = new Map(R16_BRACKET.map((id, i) => [id, i]));
+    if (r16 && r16VisualIds) {
+      const rank = new Map(r16VisualIds.map((id, i) => [id, i]));
       r16.ties.sort((a, b) => (rank.get(a.leg1.id) ?? 99) - (rank.get(b.leg1.id) ?? 99));
     }
   }
@@ -1006,7 +1017,7 @@ export interface ScheduleMatch {
 const EURO_COMPS = ["CL", "EL", "ECL"] as const;
 
 // International tournaments run every 4 years — we must search multiple recent seasons.
-// Club competitions always use CURRENT_SEASON only.
+// Club competitions always use getCurrentSeason() only.
 const INTERNATIONAL_COMP_CODES = new Set(["EC", "WC"]);
 
 export async function getTeamSchedule(teamId: string, domesticCode = "PL", forcedSeason?: number): Promise<ScheduleMatch[]> {
@@ -1025,9 +1036,9 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
     // Default to current year only — past tournament seasons are selected via the season picker.
     // Fetching 5 years back for WC/EC causes 5 parallel fd.org calls, most returning empty,
     // and the resulting payload pushes over Vercel's 10-second function timeout on cold cache.
-    seasons = [now.getFullYear()];
+    seasons = [new Date().getFullYear()];
   } else {
-    seasons = [CURRENT_SEASON];
+    seasons = [getCurrentSeason()];
   }
 
   // fd.org occasionally returns corrupt status values (e.g. the utcDate string
@@ -1084,7 +1095,7 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
           // International comps (WC, EC, Copa…) use the same URL and 2-min TTL as the bracket
           // endpoint so they share the same Supabase cache key and stay in sync when teams advance.
           // Domestic leagues add &limit=500 (up to 380 matches) and use the normal 30-min TTL.
-          const matchesTtl = season < CURRENT_SEASON ? FOREVER_TTL_MS : (isIntl ? 2 * 60_000 : SCHEDULE_TTL_MS);
+          const matchesTtl = season < getCurrentSeason() ? FOREVER_TTL_MS : (isIntl ? 2 * 60_000 : SCHEDULE_TTL_MS);
           const matchesPath = isIntl
             ? `/competitions/${code}/matches?season=${season}`
             : `/competitions/${code}/matches?season=${season}&limit=500`;
@@ -1194,14 +1205,14 @@ export async function getH2HMatches(
 ): Promise<ScheduleMatch[]> {
   if (useMock()) return [];
 
-  const seasons = [CURRENT_SEASON, CURRENT_SEASON - 1, CURRENT_SEASON - 2];
+  const seasons = [getCurrentSeason(), getCurrentSeason() - 1, getCurrentSeason() - 2];
   const seen = new Set<number>();
   const all: ScheduleMatch[] = [];
 
   await Promise.all(
     seasons.map(async (season) => {
       try {
-        const ttl = season < CURRENT_SEASON ? FOREVER_TTL_MS : SCHEDULE_TTL_MS;
+        const ttl = season < getCurrentSeason() ? FOREVER_TTL_MS : SCHEDULE_TTL_MS;
         const data = await apiFetch(
           `/competitions/${competitionCode}/matches?season=${season}&limit=500`,
           ttl
@@ -1416,8 +1427,8 @@ export async function getPositionHistory(
   season?: number
 ): Promise<PositionPoint[]> {
   if (useMock()) return [];
-  const seasonYear = season ?? CURRENT_SEASON;
-  const ttl = seasonYear < CURRENT_SEASON ? FOREVER_TTL_MS : SCHEDULE_TTL_MS;
+  const seasonYear = season ?? getCurrentSeason();
+  const ttl = seasonYear < getCurrentSeason() ? FOREVER_TTL_MS : SCHEDULE_TTL_MS;
   let raw: any;
   try {
     raw = await apiFetch(`/competitions/${competitionCode}/matches?season=${seasonYear}&limit=500`, ttl);
@@ -1495,9 +1506,9 @@ export async function getTeams(competitionCode: string) {
   if (useMock()) return MOCK_TEAMS;
   const data = await apiFetch(`/competitions/${competitionCode}/teams`) as any;
   // Pre-warm scorers in background. International tournaments use their own season year
-  // (not CURRENT_SEASON) — skip pre-warming for them to avoid 404 noise.
+  // (not getCurrentSeason()) — skip pre-warming for them to avoid 404 noise.
   if (!INTERNATIONAL_COMP_CODES.has(competitionCode)) {
-    apiFetch(`/competitions/${competitionCode}/scorers?season=${CURRENT_SEASON}&limit=400`, SCORERS_CURRENT_TTL_MS).catch(() => {});
+    apiFetch(`/competitions/${competitionCode}/scorers?season=${getCurrentSeason()}&limit=400`, SCORERS_CURRENT_TTL_MS).catch(() => {});
   }
   return data.teams.map((t: any) => ({
     id: t.id, name: t.name, shortName: t.shortName, crest: t.crest, tla: t.tla,
@@ -1640,7 +1651,7 @@ export async function getStandings(competitionCode: string, season?: number): Pr
   // Past seasons are immutable — cache forever. Current season uses short TTL so points/form
   // update promptly when a match ends (works for both domestic and international comps).
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
-  const currentYear = isIntl ? new Date().getFullYear() : CURRENT_SEASON;
+  const currentYear = isIntl ? new Date().getFullYear() : getCurrentSeason();
   const standingsTtl = (season && season < currentYear) ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
   const isCurrentSeason = !season || season >= currentYear;
 
@@ -1683,7 +1694,7 @@ export async function getStandings(competitionCode: string, season?: number): Pr
       : result.groups.some((g) => g.rows.some((r) => r.form === null));
     if (needsStats) {
       try {
-        const seasonYear = isIntl ? currentYear : CURRENT_SEASON;
+        const seasonYear = isIntl ? currentYear : getCurrentSeason();
         const computed = await (matchStatsPromise ?? computeStatsFromMatches(competitionCode, seasonYear).catch(() => null));
         if (computed) {
           const { form: computedForm, gd: computedGD } = computed;
@@ -1779,10 +1790,10 @@ export async function getTeamCleanSheets(competitionCode: string, season?: numbe
   if (useMock()) return [];
 
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
-  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
   // Same TTL as computeFormFromMatches and getFinishedMatchList so all three share the
   // same cache entry — whichever runs first wins, and they all get consistently fresh data.
-  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
+  const ttl = season && season < getCurrentSeason() ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
   const data = await apiFetch(
     `/competitions/${competitionCode}/matches?season=${seasonYear}&status=FINISHED`,
     ttl
@@ -1838,8 +1849,8 @@ export async function getTopScorers(
   if (useMock()) return { goals: [], assists: [] };
 
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
-  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
-  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
+  const ttl = season && season < getCurrentSeason() ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
   const data = await apiFetch(
     `/competitions/${competitionCode}/scorers?season=${seasonYear}&limit=400`,
     ttl
@@ -1885,8 +1896,8 @@ export async function getFinishedMatchList(
   season?: number
 ): Promise<FinishedMatchRef[]> {
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
-  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
-  const ttl = season && season < CURRENT_SEASON ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
+  const ttl = season && season < getCurrentSeason() ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
   const data = await apiFetch(
     `/competitions/${competitionCode}/matches?season=${seasonYear}&status=FINISHED`,
     ttl
@@ -1922,8 +1933,8 @@ export async function getCompetitionFixtures(
 ): Promise<CompetitionFixture[]> {
   if (useMock()) return [];
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
-  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : CURRENT_SEASON);
-  const isPast = season !== undefined && season < CURRENT_SEASON;
+  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
+  const isPast = season !== undefined && season < getCurrentSeason();
   const ttl = isPast ? FOREVER_TTL_MS : 5 * 60 * 1000;
   const data = await apiFetch(
     `/competitions/${competitionCode}/matches?season=${seasonYear}`,
@@ -1972,7 +1983,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
       return apiFetch(`/teams/${teamId}`, SQUAD_TTL_MS);
     })(),
     competitionCode
-      ? apiFetch(`/competitions/${competitionCode}/scorers?season=${CURRENT_SEASON}&limit=400`, SCORERS_CURRENT_TTL_MS).catch(() => null)
+      ? apiFetch(`/competitions/${competitionCode}/scorers?season=${getCurrentSeason()}&limit=400`, SCORERS_CURRENT_TTL_MS).catch(() => null)
       : Promise.resolve(null),
   ]);
   const data = teamData as any;
@@ -1989,7 +2000,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
   if (compCode) {
     try {
       const scorersRaw = (preloadedScorers ??
-        await apiFetch(`/competitions/${compCode}/scorers?season=${CURRENT_SEASON}&limit=400`, SCORERS_CURRENT_TTL_MS)) as any;
+        await apiFetch(`/competitions/${compCode}/scorers?season=${getCurrentSeason()}&limit=400`, SCORERS_CURRENT_TTL_MS)) as any;
       for (const s of scorersRaw?.scorers ?? []) {
         if (s.player?.id) {
           appearances.set(s.player.id, s.playedMatches ?? 0);
@@ -2001,7 +2012,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     // Pre-warm past-season scorer caches for the main competition only.
     // CL/EL are skipped here — they're only fetched if a player actually appeared in them.
     (async () => {
-      for (const season of CAREER_SEASONS) {
+      for (const season of getCareerSeasons()) {
         apiFetch(`/competitions/${compCode}/scorers?season=${season}&limit=400`, FOREVER_TTL_MS).catch(() => {});
         await sleep(500);
       }
@@ -2138,7 +2149,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     // 15s cap so a slow TM cold-start doesn't block the entire lineup response
     try {
       const tmSquad = await Promise.race([
-        getTmClubSquad(data.name, CURRENT_SEASON),
+        getTmClubSquad(data.name, getCurrentSeason()),
         new Promise<TmSquadPlayer[]>((resolve) => setTimeout(() => resolve([]), 7_000)),
       ]);
       addMissing(tmSquad, buildExistingNorms(), `TM (${compCode})`);
@@ -2254,10 +2265,17 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
 
 // ── Stats via scorers endpoint ────────────────────────────────────────────────
 // Season starts in August — 2025 = 2025/26 season.
-const now = new Date();
-const CURRENT_SEASON = now.getFullYear() - (now.getMonth() < 7 ? 1 : 0);
+// Recomputed on each call so a long-lived server process stays correct across
+// the August boundary without requiring a restart.
+function getCurrentSeason(): number {
+  const n = new Date();
+  return n.getFullYear() - (n.getMonth() < 7 ? 1 : 0);
+}
 // Past seasons to query — goes back 10 years. Past-season data is immutable.
-const CAREER_SEASONS = Array.from({ length: 10 }, (_, i) => CURRENT_SEASON - 1 - i);
+function getCareerSeasons(): number[] {
+  const cs = getCurrentSeason();
+  return Array.from({ length: 10 }, (_, i) => cs - 1 - i);
+}
 
 // Human-readable names for competition codes shown in the career panel
 const COMP_DISPLAY: Record<string, string> = {
@@ -2291,7 +2309,7 @@ async function fetchScorerStats(
   season: number
 ): Promise<ScorerEntry | null> {
   try {
-    const ttl = season < CURRENT_SEASON ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
+    const ttl = season < getCurrentSeason() ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
     const data = await apiFetch(
       `/competitions/${competitionCode}/scorers?season=${season}&limit=400`,
       ttl
@@ -2396,7 +2414,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   ]);
 
   // Current season string e.g. "2025/26"
-  const currentSeasonStr = `${CURRENT_SEASON}/${String(CURRENT_SEASON + 1).slice(2)}`;
+  const currentSeasonStr = `${getCurrentSeason()}/${String(getCurrentSeason() + 1).slice(2)}`;
 
   // Re-scrape TM if: (a) no cache at all, or (b) cache exists with current-season league/UEFA
   // rows but NO cup rows — i.e. cached before cup integration.
@@ -2418,12 +2436,12 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // Phase 2: scorer API + wiki + Transfermarkt all run in parallel.
   // Wiki/TM are only invoked on a cache miss or when cups are missing from cache.
   // International tournaments (WC/EC) run in the calendar year of the tournament,
-  // not the club-season year (e.g. WC 2026 uses season=2026, not CURRENT_SEASON=2025).
-  const INTL_SEASON = now.getFullYear();
+  // not the club-season year (e.g. WC 2026 uses season=2026, not getCurrentSeason()=2025).
+  const INTL_SEASON = new Date().getFullYear();
   const [currentSeasonHits, freshWiki, tmCareer, tmHonours] = await Promise.all([
     Promise.all(
       probeComps.map(async (code) => {
-        const seasonYear = INTERNATIONAL_COMP_CODES.has(code) ? INTL_SEASON : CURRENT_SEASON;
+        const seasonYear = INTERNATIONAL_COMP_CODES.has(code) ? INTL_SEASON : getCurrentSeason();
         const entry = await fetchScorerStats(id, code, seasonYear);
         return entry ? { code, entry, seasonYear } : null;
       })
@@ -2479,7 +2497,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // reduces wait time from ceil(N/5)×50ms batches to a single ~50ms parallel read.
   // apiFetch deduplicates in-flight requests for the same path, so concurrent fd.org
   // misses on the same path share one HTTP call rather than stacking 429s.
-  const pastSeasonTasks = CAREER_SEASONS.flatMap((season) =>
+  const pastSeasonTasks = getCareerSeasons().flatMap((season) =>
     activeComps.map((code) => ({ code, season }))
   );
 
@@ -2500,7 +2518,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     ...currentSeasonHits.map(({ code, entry, seasonYear }) => ({
       season: INTERNATIONAL_COMP_CODES.has(code)
         ? `${seasonYear}`
-        : `${CURRENT_SEASON}/${String(CURRENT_SEASON + 1).slice(2)}`,
+        : `${getCurrentSeason()}/${String(getCurrentSeason() + 1).slice(2)}`,
       team: entry.team ?? fallbackTeam,
       competition: COMP_DISPLAY[code] ?? code,
       appearances: entry.appearances,
@@ -2565,9 +2583,14 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     { appearances: 0, goals: 0, assists: 0 }
   );
 
+  // Fetch photo from TheSportsDB for direct-navigation rendering (no squad lineup available).
+  const playerPhotos = await fetchPhotos([{ id, name: personData.name }]).catch(() => ({} as Record<number, string | null>));
+  const photo = playerPhotos[id] ?? null;
+
   return {
     id: personData.id,
     name: personData.name,
+    photo,
     nationality: personData.nationality,
     dateOfBirth: personData.dateOfBirth,
     position: personData.section ?? personData.position,

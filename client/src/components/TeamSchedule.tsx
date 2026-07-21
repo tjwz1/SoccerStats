@@ -98,11 +98,21 @@ function computeTieInfos(
       if (e1.side === e2.side) continue; // same side = group-stage pair, skip
 
       const getGoals = (e: { match: ScheduleMatch; side: "home" | "away" }) => {
-        const { scoreHome: sh, scoreAway: sa, etScoreHome: eth, etScoreAway: eta } = e.match;
+        const { scoreHome: sh, scoreAway: sa, etScoreHome: eth, etScoreAway: eta,
+                regularTimeHome: rth, regularTimeAway: rta, duration } = e.match;
         if (sh === null || sa === null) return null;
-        // score.extraTime is cumulative (total score at 120 min), so use it directly.
-        const home = eth !== null ? eth : sh;
-        const away = eta !== null ? eta : sa;
+        let home: number;
+        let away: number;
+        if (eth !== null && eta !== null) {
+          // score.extraTime is cumulative (total score at 120 min), so use it directly.
+          home = eth; away = eta;
+        } else if (duration === "PENALTY_SHOOTOUT" && rth !== null && rta !== null) {
+          // PK game with no ET fields — use regularTime to avoid inflating the aggregate
+          // with penalty goals (fullTime for PK games includes the shootout tally).
+          home = rth; away = rta;
+        } else {
+          home = sh; away = sa;
+        }
         return {
           ours: e.side === "home" ? home : away,
           theirs: e.side === "home" ? away : home,
@@ -1224,6 +1234,9 @@ function MatchCard({ match, teamId, teamName, tieInfo }: { match: ScheduleMatch;
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                 </svg>
               </button>
+            )}
+            {!canExpand && match.id < 0 && isFinished && (
+              <span className="text-[10px] text-slate-600">Details unavailable</span>
             )}
           </div>
         </div>

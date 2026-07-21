@@ -128,6 +128,11 @@ export default function StatLeaders({ compCode, season, onSelectTeam }: Props) {
           </p>
         )}
 
+        {filter === "assists" && !["WC", "EC"].includes(compCode) && !loading && leaders.length > 0 && (
+          <p className="text-[9px] text-slate-600 text-center pb-1 px-1">
+            Only includes players who have also scored (free-tier limit)
+          </p>
+        )}
         {leaders.map((s, i) => {
           const isLiveEntry = hasLive && (s.liveAdd ?? 0) > 0;
           const showRank = i === 0 || s.rank !== leaders[i - 1].rank;

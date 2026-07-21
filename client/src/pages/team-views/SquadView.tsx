@@ -17,7 +17,7 @@ export default function SquadView({ lineup, onPlayerClick, onPlayerHover, season
     <div>
       {isHistorical && (
         <p className="text-xs text-slate-500 text-center mb-4 bg-slate-900 rounded-lg px-4 py-2">
-          Showing current squad roster — historical {season} squad data is not available in the free tier.
+          Showing current squad roster with current-season stats — historical {season} squad data is not available in the free tier.
         </p>
       )}
       <SquadGrid

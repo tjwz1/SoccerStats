@@ -566,7 +566,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
       {compView === "standings" && <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
         {/* Column headers */}
         <div className="grid items-center gap-x-4 px-5 py-3 border-b border-slate-800 text-[11px] text-slate-500 uppercase tracking-wider font-medium"
-          style={{ gridTemplateColumns: "2rem 1fr 2.5rem 2.5rem 2.5rem 2.5rem 3rem 3rem 5.5rem 1.25rem" }}
+          style={{ gridTemplateColumns: "2rem 1fr 2.5rem 2.5rem 2.5rem 2.5rem 2.5rem 2.5rem 3rem 3rem 5.5rem 1.25rem" }}
         >
           <span className="text-right">#</span>
           <span className="pl-2 flex items-center gap-2">
@@ -582,6 +582,8 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
           <span className="text-center">W</span>
           <span className="text-center">D</span>
           <span className="text-center">L</span>
+          <span className="text-center">GF</span>
+          <span className="text-center">GA</span>
           <span className="text-center">GD</span>
           <span className="text-center font-bold text-slate-400">Pts</span>
           <span className="text-center">Form</span>
@@ -656,7 +658,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
             className={`relative w-full grid items-center gap-x-4 px-5 py-3 transition-colors border-b border-slate-800/40 last:border-0 hover:bg-green-900/10 group ${
               isLive ? "bg-green-950/20" : i % 2 === 1 ? "bg-slate-900/30" : ""
             }`}
-            style={{ gridTemplateColumns: "2rem 1fr 2.5rem 2.5rem 2.5rem 2.5rem 3rem 3rem 5.5rem 1.25rem" }}
+            style={{ gridTemplateColumns: "2rem 1fr 2.5rem 2.5rem 2.5rem 2.5rem 2.5rem 2.5rem 3rem 3rem 5.5rem 1.25rem" }}
           >
             {/* Zone indicator bar */}
             {zone && (
@@ -709,6 +711,12 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
             </span>
             <span onClick={() => onSelectTeam(row.team)} className="text-center text-sm text-slate-400 tabular-nums cursor-pointer">
               {row.lost}
+            </span>
+            <span onClick={() => onSelectTeam(row.team)} className="text-center text-sm text-slate-400 tabular-nums cursor-pointer">
+              {row.goalsFor ?? "—"}
+            </span>
+            <span onClick={() => onSelectTeam(row.team)} className="text-center text-sm text-slate-400 tabular-nums cursor-pointer">
+              {row.goalsAgainst ?? "—"}
             </span>
             <span
               onClick={() => onSelectTeam(row.team)}

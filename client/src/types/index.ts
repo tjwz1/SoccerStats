@@ -89,6 +89,7 @@ export interface CareerEntry {
 export interface PlayerDetail {
   id: number | string;
   name: string;
+  photo?: string | null;
   nationality?: string;
   dateOfBirth?: string;
   position?: string;

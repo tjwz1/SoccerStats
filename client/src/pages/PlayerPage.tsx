@@ -18,7 +18,9 @@ export default function PlayerPage() {
   );
 
   const displayName = data?.name ?? statePlayer?.name ?? "Player";
-  const photo = statePlayer?.photo ?? null;
+  // Prefer the API-fetched photo (available on direct navigation) over the navigation-state
+  // photo (only present when navigating from a squad view). Falls back to initials if neither exists.
+  const photo = data?.photo ?? statePlayer?.photo ?? null;
 
   const age = (dob: string | undefined) => {
     if (!dob) return null;
