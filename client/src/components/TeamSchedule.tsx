@@ -716,6 +716,7 @@ function MatchTeamStatsPanel({ match }: { match: ScheduleMatch }) {
       <StatBar label="Fouls" home={stats.home.fouls} away={stats.away.fouls} />
       <StatBar label="Offsides" home={stats.home.offsides} away={stats.away.offsides} />
       <StatBar label="Yellow Cards" home={stats.home.yellowCards} away={stats.away.yellowCards} />
+      <StatBar label="Red Cards" home={stats.home.redCards} away={stats.away.redCards} />
       <StatBar label="Saves" home={stats.home.saves} away={stats.away.saves} />
     </div>
   );

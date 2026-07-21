@@ -383,6 +383,11 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
     setSelectedGroupType(null);
   }, [selectedSeason]);
 
+  // Reset to standings if the Scorers tab is active but the current comp doesn't show it.
+  useEffect(() => {
+    if (hasKnockout && compView === "scorers") setCompView("standings");
+  }, [hasKnockout, compView]);
+
   const activeGroup =
     (selectedGroupType ? groups.find((g) => g.type === selectedGroupType) : null) ??
     groups[0];
@@ -533,16 +538,18 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         >
           Matches
         </button>
-        <button
-          onClick={() => setCompView("scorers")}
-          className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
-            compView === "scorers"
-              ? "border-green-500 text-white"
-              : "border-transparent text-slate-500 hover:text-slate-300"
-          }`}
-        >
-          Scorers
-        </button>
+        {!hasKnockout && (
+          <button
+            onClick={() => setCompView("scorers")}
+            className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
+              compView === "scorers"
+                ? "border-green-500 text-white"
+                : "border-transparent text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            Scorers
+          </button>
+        )}
       </div>
 
       {/* Bracket view */}
@@ -555,8 +562,8 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         <FixturesView comp={comp} selectedSeason={selectedSeason} onSelectTeam={onSelectTeam} />
       )}
 
-      {/* Scorers view */}
-      {compView === "scorers" && (
+      {/* Scorers view — only for domestic/non-knockout competitions; sidebar covers this for tournaments */}
+      {compView === "scorers" && !hasKnockout && (
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
           <StatLeaders compCode={comp.code} season={selectedSeason} onSelectTeam={onSelectTeam} />
         </div>
