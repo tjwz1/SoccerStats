@@ -43,6 +43,8 @@ function fmtSelectedDate(iso: string): string {
 }
 
 function fmtKickOff(utcDate: string): string {
+  // fd.org uses midnight UTC as a placeholder when kick-off time isn't set yet.
+  if (utcDate.includes("T00:00:00")) return "TBD";
   return new Date(utcDate).toLocaleTimeString(undefined, {
     hour: "2-digit",
     minute: "2-digit",
@@ -102,8 +104,9 @@ export default function FixtureCalendar({ onNavigateToTeam, favouriteTeamIds }: 
       const m = live
         ? { ...raw, status: live.status, scoreHome: live.scoreHome, scoreAway: live.scoreAway }
         : raw;
-      const d = new Date(m.utcDate);
-      const key = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      // Use the UTC date from the ISO string directly so games appear on the
+      // date they're actually played (not shifted into the user's local day).
+      const key = m.utcDate.slice(0, 10); // "2026-07-15" from "2026-07-15T21:00:00Z"
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(m);
     }

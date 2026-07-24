@@ -229,17 +229,21 @@ function shortName(name: string): string {
 }
 
 function formatDate(utcDate: string): string {
-  const d = new Date(utcDate);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const matchDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diff = Math.round((matchDay.getTime() - today.getTime()) / 86_400_000);
+  // Compare and display dates in UTC so games appear on the day they're
+  // actually played, regardless of the viewer's local timezone offset.
+  const matchUTC = utcDate.slice(0, 10); // "2026-07-15"
+  const todayUTC = new Date().toISOString().slice(0, 10);
+  const diff = Math.round((new Date(matchUTC).getTime() - new Date(todayUTC).getTime()) / 86_400_000);
   let dayStr: string;
   if (diff === 0) dayStr = "Today";
   else if (diff === 1) dayStr = "Tomorrow";
   else if (diff === -1) dayStr = "Yesterday";
-  else dayStr = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  else dayStr = new Date(utcDate).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+  // Keep kick-off time in the user's local timezone so they know when to tune in.
+  // fd.org uses midnight UTC as a placeholder when kick-off time isn't announced yet.
+  const time = utcDate.includes("T00:00:00")
+    ? "TBD"
+    : new Date(utcDate).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   return `${dayStr} · ${time}`;
 }
 
@@ -248,8 +252,7 @@ function googleLink(match: ScheduleMatch): string {
   const away = shortName(match.awayTeam);
   const isLive = match.status === "IN_PLAY" || match.status === "PAUSED";
   if (isLive) return `https://www.google.com/search?q=${encodeURIComponent(`${home} vs ${away} live score`)}`;
-  const d = new Date(match.utcDate);
-  const dateStr = d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const dateStr = new Date(match.utcDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
   return `https://www.google.com/search?q=${encodeURIComponent(`${home} vs ${away} ${match.competition} ${dateStr}`)}`;
 }
 
@@ -1025,8 +1028,7 @@ function H2HPanel({ match, viewingTeamId }: { match: ScheduleMatch; viewingTeamI
       <div className="space-y-1.5">
         {meetings.map((m, i) => {
           const result = getResult(m, viewingTeamId);
-          const d = new Date(m.utcDate);
-          const dateStr = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit" });
+          const dateStr = new Date(m.utcDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit", timeZone: "UTC" });
           return (
             <div key={i} className="flex items-center gap-2 text-xs">
               <span className="text-[10px] text-slate-600 w-16 shrink-0 tabular-nums">{dateStr}</span>
