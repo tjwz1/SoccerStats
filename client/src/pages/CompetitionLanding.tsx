@@ -37,6 +37,10 @@ const ZONE_OVERRIDES: Record<string, [number, number, Zone][]> = {
   FL1: [[1,2,"ucl"], [3,3,"uel"], [4,4,"ecl"], [17,17,"playoff"], [18,20,"rel"]],
   DED: [[1,2,"ucl"], [3,4,"uel"], [5,5,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
   PPL: [[1,2,"ucl"], [3,3,"uel"], [4,4,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
+  SCO: [[1,1,"ucl"], [2,3,"uel"], [4,4,"ecl"], [11,12,"rel"]],
+  TUR: [[1,2,"ucl"], [3,4,"uel"], [5,5,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
+  // ESPN-sourced leagues with no European competition zones
+  MLS: [], MX1: [], ARG: [], JPN: [],
 };
 
 // For competitions without exact rules, derive reasonable zones from team count

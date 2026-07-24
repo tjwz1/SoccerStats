@@ -11,6 +11,12 @@ import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnock
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, resolvePlayerRef, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
 import type { ClubTrophy as TmClubTrophy } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
+import {
+  isEspnLeague, getEspnLeagueConfig, getEspnCurrentSeason,
+  getEspnTeams, getEspnStandings, getEspnScorers,
+  getEspnTeamSchedule, getEspnCompetitionFixtures, getEspnTeamDataForLineup,
+  ESPN_LEAGUES,
+} from "./espnService";
 
 // Map competition display names (both API and Wikipedia variants) to canonical identifiers
 const COMP_CANONICAL: Record<string, string> = {
@@ -1022,6 +1028,8 @@ const INTERNATIONAL_COMP_CODES = new Set(["EC", "WC"]);
 
 export async function getTeamSchedule(teamId: string, domesticCode = "PL", forcedSeason?: number): Promise<ScheduleMatch[]> {
   if (useMock()) return [];
+  const espnConfig = getEspnLeagueConfig(domesticCode);
+  if (espnConfig) return getEspnTeamSchedule(parseInt(teamId, 10), espnConfig, forcedSeason);
 
   const isIntl = INTERNATIONAL_COMP_CODES.has(domesticCode);
 
@@ -1238,12 +1246,19 @@ export async function getH2HMatches(
 export async function getCompetitions() {
   if (useMock()) return MOCK_COMPETITIONS;
   const data = await apiFetch("/competitions?plan=TIER_ONE") as any;
-  return data.competitions.map((c: any) => ({
-    id: c.id,
-    name: COMP_DISPLAY_NAMES[c.name] ?? c.name,
-    code: c.code,
-    emblem: c.emblem,
+  const fdComps = data.competitions.map((c: any) => ({
+    id: c.id as number,
+    name: (COMP_DISPLAY_NAMES[c.name] ?? c.name) as string,
+    code: c.code as string,
+    emblem: c.emblem as string,
   }));
+  const espnComps = Object.values(ESPN_LEAGUES).map((l, i) => ({
+    id: 90000 + i,
+    name: l.name,
+    code: l.code,
+    emblem: l.emblem,
+  }));
+  return [...fdComps, ...espnComps];
 }
 
 const LIVE_TTL_MS = 30 * 1000; // 30 seconds
@@ -1514,6 +1529,8 @@ export async function getPositionHistory(
 
 export async function getTeams(competitionCode: string) {
   if (useMock()) return MOCK_TEAMS;
+  const espnConfig = getEspnLeagueConfig(competitionCode);
+  if (espnConfig) return getEspnTeams(espnConfig);
   const data = await apiFetch(`/competitions/${competitionCode}/teams`) as any;
   // Pre-warm scorers in background. International tournaments use their own season year
   // (not getCurrentSeason()) — skip pre-warming for them to avoid 404 noise.
@@ -1585,6 +1602,11 @@ export interface CompetitionSeason {
 }
 
 export async function getCompetitionSeasons(competitionCode: string): Promise<CompetitionSeason[]> {
+  const espnConfig = getEspnLeagueConfig(competitionCode);
+  if (espnConfig) {
+    const yr = getEspnCurrentSeason(espnConfig);
+    return [{ year: yr, startDate: `${yr}-01-01`, endDate: `${yr}-12-31`, winner: null }];
+  }
   const data = await apiFetch(`/competitions/${competitionCode}`) as any;
   const seen = new Set<number>();
   // Free tier supports roughly the last 3 seasons; filter out older data that returns 403
@@ -1657,6 +1679,8 @@ async function computeStatsFromMatches(
 }
 
 export async function getStandings(competitionCode: string, season?: number): Promise<StandingsData> {
+  const espnConfig = getEspnLeagueConfig(competitionCode);
+  if (espnConfig) return getEspnStandings(espnConfig, season);
   const query = season ? `?season=${season}` : "";
   // Past seasons are immutable — cache forever. Current season uses short TTL so points/form
   // update promptly when a match ends (works for both domestic and international comps).
@@ -1857,6 +1881,8 @@ export async function getTopScorers(
   season?: number
 ): Promise<{ goals: FdStatLeader[]; assists: FdStatLeader[] }> {
   if (useMock()) return { goals: [], assists: [] };
+  const espnConfig = getEspnLeagueConfig(competitionCode);
+  if (espnConfig) return getEspnScorers(espnConfig, season);
 
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
   const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
@@ -1942,6 +1968,8 @@ export async function getCompetitionFixtures(
   season?: number
 ): Promise<CompetitionFixture[]> {
   if (useMock()) return [];
+  const espnConfig = getEspnLeagueConfig(competitionCode);
+  if (espnConfig) return getEspnCompetitionFixtures(espnConfig, season);
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
   const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
   const isPast = season !== undefined && season < getCurrentSeason();
@@ -1981,33 +2009,57 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
   // Squad source: prefer /competitions/{code}/teams (works on fd.org free tier and is
   // already cached in Supabase by getTeams). Fall back to /teams/{id} only when the
   // competition endpoint doesn't contain this team (e.g. search result from another league).
-  const [teamData, preloadedScorers] = await Promise.all([
-    (async () => {
-      if (competitionCode) {
-        try {
-          const d = await apiFetch(`/competitions/${competitionCode}/teams`, SQUAD_TTL_MS) as any;
-          const found = d.teams?.find((t: any) => String(t.id) === String(teamId));
-          if (found?.squad?.length > 0) return found;
-        } catch { /* fall through to /teams/{id} */ }
-      }
-      return apiFetch(`/teams/${teamId}`, SQUAD_TTL_MS);
-    })(),
-    competitionCode
-      ? apiFetch(`/competitions/${competitionCode}/scorers?season=${getCurrentSeason()}&limit=400`, SCORERS_CURRENT_TTL_MS).catch(() => null)
-      : Promise.resolve(null),
-  ]);
+  const isEspnComp = competitionCode !== undefined && isEspnLeague(competitionCode);
+  const espnCompConfig = isEspnComp ? getEspnLeagueConfig(competitionCode!) : undefined;
+
+  const [teamData, preloadedScorers] = isEspnComp
+    ? await Promise.all([
+        getEspnTeamDataForLineup(parseInt(teamId, 10), espnCompConfig!),
+        getEspnScorers(espnCompConfig!).then((d) => ({
+          scorers: d.goals.map((g) => ({
+            player: { id: g.player.id },
+            playedMatches: 0,
+            goals: g.value,
+            assists: 0,
+          })),
+        })).catch(() => null),
+      ])
+    : await Promise.all([
+        (async () => {
+          if (competitionCode) {
+            try {
+              const d = await apiFetch(`/competitions/${competitionCode}/teams`, SQUAD_TTL_MS) as any;
+              const found = d.teams?.find((t: any) => String(t.id) === String(teamId));
+              if (found?.squad?.length > 0) return found;
+            } catch { /* fall through to /teams/{id} */ }
+          }
+          return apiFetch(`/teams/${teamId}`, SQUAD_TTL_MS);
+        })(),
+        competitionCode
+          ? apiFetch(`/competitions/${competitionCode}/scorers?season=${getCurrentSeason()}&limit=400`, SCORERS_CURRENT_TTL_MS).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
   const data = teamData as any;
   const squad: any[] = data.squad ?? [];
 
   // Resolve competition code (caller-supplied first, fall back to team's running competition)
   const compCode = competitionCode
-    ?? (data.runningCompetitions as any[] | undefined)
-        ?.find((c: any) => c.type === "LEAGUE")?.code;
+    ?? (!isEspnComp
+        ? (data.runningCompetitions as any[] | undefined)?.find((c: any) => c.type === "LEAGUE")?.code
+        : undefined);
 
   // Process scorers — use the pre-loaded result, or fetch now if compCode was unknown upfront
   const appearances = new Map<number, number>();
   const goalStats = new Map<number, { goals: number; assists: number }>();
-  if (compCode) {
+  if (isEspnComp) {
+    for (const s of (preloadedScorers as any)?.scorers ?? []) {
+      if (s.player?.id) {
+        appearances.set(s.player.id, s.playedMatches ?? 0);
+        goalStats.set(s.player.id, { goals: s.goals ?? 0, assists: s.assists ?? 0 });
+      }
+    }
+  } else if (compCode) {
     try {
       const scorersRaw = (preloadedScorers ??
         await apiFetch(`/competitions/${compCode}/scorers?season=${getCurrentSeason()}&limit=400`, SCORERS_CURRENT_TTL_MS)) as any;
@@ -2157,9 +2209,11 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
   } else if (compCode) {
     // Club competitions: use Transfermarkt /kader/ page
     // 15s cap so a slow TM cold-start doesn't block the entire lineup response
+    // ESPN calendar-year leagues (MLS etc.) use the calendar year, not the European season.
+    const tmSeason = espnCompConfig ? getEspnCurrentSeason(espnCompConfig) : getCurrentSeason();
     try {
       const tmSquad = await Promise.race([
-        getTmClubSquad(data.name, getCurrentSeason()),
+        getTmClubSquad(data.name, tmSeason),
         new Promise<TmSquadPlayer[]>((resolve) => setTimeout(() => resolve([]), 7_000)),
       ]);
       addMissing(tmSquad, buildExistingNorms(), `TM (${compCode})`);
