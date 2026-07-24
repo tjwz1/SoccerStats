@@ -239,11 +239,11 @@ function formatDate(utcDate: string): string {
   else if (diff === 1) dayStr = "Tomorrow";
   else if (diff === -1) dayStr = "Yesterday";
   else dayStr = new Date(utcDate).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
-  // Keep kick-off time in the user's local timezone so they know when to tune in.
+  // Show kick-off time in UTC to stay consistent with the UTC date label above.
   // fd.org uses midnight UTC as a placeholder when kick-off time isn't announced yet.
   const time = utcDate.includes("T00:00:00")
     ? "TBD"
-    : new Date(utcDate).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    : new Date(utcDate).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
   return `${dayStr} · ${time}`;
 }
 

@@ -48,6 +48,7 @@ function fmtKickOff(utcDate: string): string {
   return new Date(utcDate).toLocaleTimeString(undefined, {
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: "UTC",
   });
 }
 

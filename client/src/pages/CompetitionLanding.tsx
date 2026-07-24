@@ -114,9 +114,11 @@ function stageLabel(stage: string): string {
 }
 
 function fmtFixtureDate(utcDate: string): string {
-  const d = new Date(utcDate);
-  const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const opts = { timeZone: "UTC" } as const;
+  const day = new Date(utcDate).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...opts });
+  const time = utcDate.includes("T00:00:00")
+    ? "TBD"
+    : new Date(utcDate).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", ...opts });
   return `${day}, ${time}`;
 }
 
