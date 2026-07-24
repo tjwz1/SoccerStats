@@ -169,6 +169,11 @@ function statVal(stats: any[], name: string): number {
   return stats.find((s: any) => s.name === name)?.value ?? 0;
 }
 
+// Memoizes the day-offset (−1, 0, or +1) that successfully resolved a match for each
+// competition code. Most leagues play in UTC or UTC+1, so probing the known-good offset
+// first reduces steady-state ESPN scoreboard requests from 3 to 1.
+const compDayOffset = new Map<string, number>();
+
 // Find the ESPN event ID matching the football-data.org match
 async function findEspnEventId(
   homeTeam: string,
@@ -191,6 +196,36 @@ async function findEspnEventId(
     const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
     const base = utcDate.slice(0, 10).replace(/-/g, ""); // YYYYMMDD
 
+    const knownOffset = compDayOffset.get(competitionCode);
+
+    function tryMatch(data: any): string | null {
+      if (!data?.events) return null;
+      for (const event of data.events) {
+        const competitors: any[] = event.competitions?.[0]?.competitors ?? [];
+        const espnHome = competitors.find((c: any) => c.homeAway === "home")?.team?.displayName ?? "";
+        const espnAway = competitors.find((c: any) => c.homeAway === "away")?.team?.displayName ?? "";
+        if (
+          (teamsMatch(homeTeam, espnHome) && teamsMatch(awayTeam, espnAway)) ||
+          (teamsMatch(homeTeam, espnAway) && teamsMatch(awayTeam, espnHome))
+        ) {
+          return event.id as string;
+        }
+      }
+      return null;
+    }
+
+    // Fast path: if we already know the right offset for this competition, probe only that date.
+    if (knownOffset !== undefined) {
+      const data = await espnFetch(`${ESPN_BASE}/${espnLeague}/scoreboard?dates=${shiftDay(base, knownOffset)}`);
+      const id = tryMatch(data);
+      if (id) {
+        console.log(`[matchStats] ESPN event ${id} (offset ${knownOffset >= 0 ? "+" : ""}${knownOffset}): ${homeTeam} vs ${awayTeam}`);
+        cappedSet(eventIdCache, cacheKey, id, EVENT_ID_CACHE_MAX);
+        return id;
+      }
+      // Known offset missed — fall through to full 3-way probe (timezone shift or data delay)
+    }
+
     // Fetch UTC-1, UTC, and UTC+1 in parallel — ESPN uses local-time date keys so the
     // correct scoreboard date depends on kick-off timezone (US evening = UTC next day, etc.).
     // Parallel fetch cuts worst-case latency from 3× to 1× ESPN round-trip.
@@ -201,23 +236,14 @@ async function findEspnEventId(
     ]);
 
     // Scan in priority order: exact UTC date first, then ±1 day fallbacks.
-    for (const data of [dateBase, dateMinus, datePlus]) {
-      if (!data?.events) continue;
-
-      for (const event of data.events) {
-        const competitors: any[] = event.competitions?.[0]?.competitors ?? [];
-        const espnHome = competitors.find((c: any) => c.homeAway === "home")?.team?.displayName ?? "";
-        const espnAway = competitors.find((c: any) => c.homeAway === "away")?.team?.displayName ?? "";
-
-        // Try both orderings (ESPN home/away may not match football-data.org)
-        if (
-          (teamsMatch(homeTeam, espnHome) && teamsMatch(awayTeam, espnAway)) ||
-          (teamsMatch(homeTeam, espnAway) && teamsMatch(awayTeam, espnHome))
-        ) {
-          console.log(`[matchStats] ESPN event ${event.id}: ${espnHome} vs ${espnAway}`);
-          cappedSet(eventIdCache, cacheKey, event.id as string, EVENT_ID_CACHE_MAX);
-          return event.id as string;
-        }
+    const candidates: [any, number][] = [[dateBase, 0], [dateMinus, -1], [datePlus, 1]];
+    for (const [data, offset] of candidates) {
+      const id = tryMatch(data);
+      if (id) {
+        console.log(`[matchStats] ESPN event ${id} (offset ${offset >= 0 ? "+" : ""}${offset}): ${homeTeam} vs ${awayTeam}`);
+        cappedSet(eventIdCache, cacheKey, id, EVENT_ID_CACHE_MAX);
+        compDayOffset.set(competitionCode, offset); // remember winning offset for next time
+        return id;
       }
     }
 

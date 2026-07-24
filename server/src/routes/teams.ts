@@ -7,7 +7,12 @@ import { fetchEspnCupMatches, fetchTmCupMatches, DOMESTIC_CUP_MAP, TM_CUP_LEAGUE
 import { fetchTeamNews } from "../services/newsService";
 import { getCached, getAnyCached, setCached, clearMemCache, clearAllCache, FOREVER_TTL_MS } from "../db/apiCache";
 import { requireAdmin } from "../utils/auth";
+import { isIndexComplete, searchTeamIndex, addCompToIndex, setKnownCompCodes } from "../utils/teamIndex";
 import type { Response } from "express";
+
+// Keys currently being revalidated in the background — prevents duplicate background
+// fetches when two requests arrive simultaneously for the same stale route.
+const revalidating = new Set<string>();
 
 // Stale-while-revalidate helper: if a cached entry exists (even expired) return it
 // immediately, then refresh in the background. Only blocks when there is no entry at all.
@@ -21,10 +26,12 @@ async function serveWithSWR<T>(
   const hit = await getAnyCached(key);
   if (hit) {
     res.json(hit.data);
-    if (hit.stale) {
+    if (hit.stale && !revalidating.has(key)) {
+      revalidating.add(key);
       fetch()
         .then((fresh) => { if (shouldCache(fresh)) setCached(key, fresh, ttlMs); })
-        .catch((e) => console.error(`[SWR] refresh failed for ${key}:`, e.message));
+        .catch((e) => console.error(`[SWR] refresh failed for ${key}:`, e.message))
+        .finally(() => revalidating.delete(key));
     }
     return;
   }
@@ -76,7 +83,13 @@ router.get("/fixtures", async (req, res) => {
 router.get("/competitions", async (_req, res) => {
   try {
     await serveWithSWR(res, "/competitions/v1", 60 * 60 * 1000,
-      () => getCompetitions(),
+      async () => {
+        const comps = await getCompetitions();
+        // Register the full competition code list so the team search index knows
+        // when it covers all competitions and can safely serve as the fast path.
+        setKnownCompCodes((comps as any[]).map((c: any) => c.code).filter(Boolean));
+        return comps;
+      },
       (d: any[]) => d.length > 0
     );
   } catch (e: any) {
@@ -414,6 +427,12 @@ router.get("/teams/search", async (req, res) => {
   const q = safeStr(req.query.q as string | undefined, 50).toLowerCase();
   if (q.length < 2) return res.json([]);
   try {
+    // Fast path: use the in-memory index only when it's complete (all competitions indexed).
+    // A partial index would return inconsistent results vs. the full parallel-fetch fallback.
+    if (isIndexComplete()) {
+      return res.json(searchTeamIndex(q, 15));
+    }
+
     const competitions = await getCompetitions();
     // Domestic leagues first so e.g. "barcelona" gets PD (La Liga) not CL
     const DOMESTIC_PRIORITY = ["PL", "PD", "BL1", "SA", "FL1", "DED", "PPL", "BSA", "ELC"];
@@ -431,19 +450,25 @@ router.get("/teams/search", async (req, res) => {
         teams: await getTeams(c.code).catch(() => []),
       }))
     );
-    const seen = new Set<number>();
+    const seenIds = new Set<number>();
     const results: unknown[] = [];
     for (const { code: compCode, teams } of teamArrays) {
       for (const team of teams as any[]) {
-        if (seen.has(team.id)) continue;
+        if (seenIds.has(team.id)) continue;
         const name = (team.name ?? "").toLowerCase();
         const short = (team.shortName ?? "").toLowerCase();
         const tla = (team.tla ?? "").toLowerCase();
         if (name.includes(q) || short.includes(q) || tla.includes(q)) {
-          seen.add(team.id);
+          seenIds.add(team.id);
           results.push({ ...team, competitionCode: compCode });
         }
       }
+    }
+    // Populate the index with freshly-fetched data so subsequent requests
+    // can use the fast path (all comps are now loaded and indexed).
+    setKnownCompCodes(sorted.map((c: any) => c.code));
+    for (const { code: compCode, teams } of teamArrays) {
+      addCompToIndex(compCode, teams as any[]);
     }
     res.json(results.slice(0, 15));
   } catch (e: any) {

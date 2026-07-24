@@ -123,7 +123,7 @@ const PLAYER_HREF = /^\/([^/]+)\/profil\/spieler\/(\d+)/;
 // Resolves a player's TM EntityRef, checking players.tm_ref before falling
 // through to the generic tmSearch. Stores the result permanently in players.tm_ref
 // so subsequent lookups skip TM entirely (slugs and IDs are stable for years).
-async function resolvePlayerRef(playerId: number | undefined, playerName: string): Promise<EntityRef | null> {
+export async function resolvePlayerRef(playerId: number | undefined, playerName: string): Promise<EntityRef | null> {
   if (playerId) {
     try {
       const { data } = await getClient()

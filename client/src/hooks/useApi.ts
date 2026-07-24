@@ -19,10 +19,10 @@ async function fetchWithRetry(url: string, signal: AbortSignal, retries = 2, del
 }
 
 // In-memory cache keyed by URL; survives React re-renders within the same session.
-// Entries expire after SESSION_CACHE_TTL_MS so live scores/standings refresh automatically.
-const SESSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// Default TTL is 5 minutes; immutable past-season data can use Infinity via clientTtlMs option.
+const SESSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes default
 const SESSION_CACHE_MAX = 300; // evict oldest when over this limit
-const SESSION_CACHE = new Map<string, { data: unknown; at: number }>();
+const SESSION_CACHE = new Map<string, { data: unknown; at: number; ttl: number }>();
 
 // In-flight deduplication: if two useApi calls request the same URL concurrently,
 // the second attaches to the first's promise rather than making a duplicate HTTP request.
@@ -37,16 +37,16 @@ const INFLIGHT = new Map<string, InflightEntry>();
 export function sessionGet(url: string): unknown | undefined {
   const entry = SESSION_CACHE.get(url);
   if (!entry) return undefined;
-  if (Date.now() - entry.at > SESSION_CACHE_TTL_MS) { SESSION_CACHE.delete(url); return undefined; }
+  if (Date.now() - entry.at > entry.ttl) { SESSION_CACHE.delete(url); return undefined; }
   return entry.data;
 }
 
-export function sessionSet(url: string, data: unknown) {
+export function sessionSet(url: string, data: unknown, ttlMs = SESSION_CACHE_TTL_MS) {
   if (SESSION_CACHE.size >= SESSION_CACHE_MAX) {
     const firstKey = SESSION_CACHE.keys().next().value;
     if (firstKey !== undefined) SESSION_CACHE.delete(firstKey);
   }
-  SESSION_CACHE.set(url, { data, at: Date.now() });
+  SESSION_CACHE.set(url, { data, at: Date.now(), ttl: ttlMs });
 }
 
 export function clearSessionCache() {
@@ -62,8 +62,25 @@ function releaseInflight(targetUrl: string, entry: InflightEntry) {
   }
 }
 
-export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
+// Returns Infinity for past-season URLs (season param < current year) — those are immutable.
+function inferClientTtl(url: string | null, explicitTtl?: number): number {
+  if (explicitTtl !== undefined) return explicitTtl;
+  if (!url) return SESSION_CACHE_TTL_MS;
+  const m = url.match(/[?&]season=(\d{4})(?:&|$)/);
+  if (m) {
+    const seasonYear = parseInt(m[1], 10);
+    const currentYear = new Date().getFullYear();
+    // Season param < current year means the season has finished — data won't change.
+    if (seasonYear < currentYear - 1 || (seasonYear === currentYear - 1 && new Date().getMonth() >= 7)) {
+      return Infinity;
+    }
+  }
+  return SESSION_CACHE_TTL_MS;
+}
+
+export function useApi<T>(url: string | null, options?: { noCache?: boolean; clientTtlMs?: number }) {
   const noCache = options?.noCache ?? false;
+  const clientTtlMs = inferClientTtl(url, options?.clientTtlMs);
   const [data, setData] = useState<T | null>(() => {
     if (!url || noCache) return null;
     return (sessionGet(url) as T) ?? null;
@@ -71,7 +88,7 @@ export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
   const [loading, setLoading] = useState(() => !!url && (noCache || sessionGet(url) === undefined));
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback((targetUrl: string, skipCache: boolean) => {
+  const load = useCallback((targetUrl: string, skipCache: boolean, ttlMs: number) => {
     const cached = !skipCache ? sessionGet(targetUrl) : undefined;
     if (cached !== undefined) {
       setData(cached as T);
@@ -106,7 +123,7 @@ export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
         return r.json();
       })
       .then((d) => {
-        if (!skipCache) sessionSet(targetUrl, d);
+        if (!skipCache) sessionSet(targetUrl, d, ttlMs);
         return d;
       })
       .finally(() => {
@@ -131,22 +148,22 @@ export function useApi<T>(url: string | null, options?: { noCache?: boolean }) {
       setError(null);
       return;
     }
-    return load(url, noCache);
-  }, [url, load, noCache]);
+    return load(url, noCache, clientTtlMs);
+  }, [url, load, noCache, clientTtlMs]);
 
   // Re-fetch when the server restarts (SESSION_CACHE was cleared before this fires).
   useEffect(() => {
     if (!url) return;
-    const onRestart = () => load(url, false);
+    const onRestart = () => load(url, false, clientTtlMs);
     window.addEventListener("server-restart", onRestart);
     return () => window.removeEventListener("server-restart", onRestart);
-  }, [url, load]);
+  }, [url, load, clientTtlMs]);
 
   const retry = useCallback(() => {
     if (!url) return;
     SESSION_CACHE.delete(url); // force re-fetch on explicit retry
-    load(url, false);
-  }, [url, load]);
+    load(url, false, clientTtlMs);
+  }, [url, load, clientTtlMs]);
 
   return { data, loading, error, retry };
 }

@@ -8,7 +8,7 @@ import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCac
 import { getWikiStats, getWikiStatsBatch, setWikiStats } from "../db/wikiCareerCache";
 import { getWikiTrophies, setWikiTrophies, getTmCupChecked, setTmCupChecked } from "../db/wikiTrophyCache";
 import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus, getWcR16Pairings } from "./wikiStats";
-import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
+import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, resolvePlayerRef, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
 import type { ClubTrophy as TmClubTrophy } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
 
@@ -1421,6 +1421,11 @@ export interface PositionPoint {
   pts: number;
 }
 
+// Memo keyed by `${compCode}:${seasonYear}:${teamId}` → last computed result.
+// Stores the number of finished matches at computation time so we can skip re-running
+// when the same request arrives before any new matches have finished.
+const positionHistoryMemo = new Map<string, { data: PositionPoint[]; matchCount: number }>();
+
 export async function getPositionHistory(
   competitionCode: string,
   teamId: number,
@@ -1443,6 +1448,10 @@ export async function getPositionHistory(
       m.score?.fullTime?.home !== null && m.score?.fullTime?.home !== undefined &&
       m.score?.fullTime?.away !== null && m.score?.fullTime?.away !== undefined
   );
+
+  const memoKey = `${competitionCode}:${seasonYear}:${teamId}`;
+  const prev = positionHistoryMemo.get(memoKey);
+  if (prev && prev.matchCount === finished.length) return prev.data;
 
   // Sort by date ascending so we build the table chronologically
   finished.sort(
@@ -1499,6 +1508,7 @@ export async function getPositionHistory(
     }
   }
 
+  positionHistoryMemo.set(memoKey, { data: result, matchCount: finished.length });
   return result;
 }
 
@@ -2185,10 +2195,11 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
 
   const photos = allSquadPhotos;
 
-  // Background Wikipedia pre-warm: fetch career + trophy data for starters/bench
-  // not yet cached so that clicking a player is instant rather than 3-7s cold.
-  // Uses batches of 3 concurrent scrapes with 200ms between batches to avoid
-  // hammering Wikipedia while still being ~3x faster than the old serial approach.
+  // Background pre-warm: fetch Wikipedia career/trophies + resolve TM slug for starters/bench
+  // not yet cached, so clicking a player is instant rather than 3-7s cold.
+  // Wikipedia uses batches of 3 with 200ms between batches to avoid hammering.
+  // TM slug resolution is fire-and-forget per player: it's a lightweight Supabase lookup
+  // followed by a single TM search request only when the slug isn't already stored.
   (async () => {
     const displayed = [
       ...xi.map(({ player: p }) => ({ id: p.id as number, name: p.name as string })),
@@ -2198,7 +2209,10 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     for (let i = 0; i < displayed.length; i += BATCH) {
       await Promise.all(displayed.slice(i, i + BATCH).map(async (p) => {
         try {
-          const wikiData = await fetchPlayerWikiData(p.name, true, true);
+          const [wikiData] = await Promise.all([
+            fetchPlayerWikiData(p.name, true, true),
+            resolvePlayerRef(p.id, p.name).catch(() => null),
+          ]);
           if (wikiData.career.length > 0) setWikiStats(p.id, p.name, wikiData.career);
           if (wikiData.trophies.length > 0) setWikiTrophies(p.id, p.name, wikiData.trophies);
         } catch {}

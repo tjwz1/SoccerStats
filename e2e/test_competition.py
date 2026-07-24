@@ -62,7 +62,8 @@ def test_pl_positions_are_sequential(page_with_pl_standings: Page):
     """Position numbers in standings run 1–20 without gaps."""
     rows = page_with_pl_standings.locator("div.relative.w-full.grid").all()
     for idx, row in enumerate(rows, start=1):
-        pos_span = row.locator("span").first
+        # skip absolute-positioned zone indicator bars (empty text) — target tabular-nums span
+        pos_span = row.locator("span.tabular-nums").first
         text = pos_span.inner_text().strip()
         assert text == str(idx), \
             f"Row {idx} shows position '{text}' instead of {idx}"

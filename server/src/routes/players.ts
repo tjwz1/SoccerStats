@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getPlayer } from "../services/footballApi";
-import { getCached, setCached } from "../db/apiCache";
+import { getAnyCached, setCached } from "../db/apiCache";
 
 // Cache the assembled player response for 10 minutes — avoids re-running all the
 // scorer + wiki + TM lookups on every request while still refreshing after a match day.
@@ -10,6 +10,9 @@ const PLAYER_RESPONSE_TTL_MS = 10 * 60 * 1000;
 // browser tabs or a retry during the 20s window share one getPlayer() call.
 const inflightLookups = new Map<string, Promise<unknown>>();
 
+// Keys currently being refreshed in the background (SWR revalidation guard).
+const revalidatingPlayers = new Set<string>();
+
 const router = Router();
 
 router.get("/:id", async (req, res) => {
@@ -17,10 +20,20 @@ router.get("/:id", async (req, res) => {
     const competition = (req.query.competition as string) || "PL";
     const cacheKey = `player_response:${req.params.id}`;
 
-    const cached = await getCached(cacheKey);
-    // Treat a cached empty-career response as a miss — allows retries after a first-run scrape failure.
-    if (cached && (cached as any)?.career?.length > 0) {
-      return res.json(cached);
+    // SWR: return any cached entry (even stale) immediately, refresh in background.
+    // Only treats empty-career entries as misses — allows retries after a first-run scrape failure.
+    const hit = await getAnyCached(cacheKey);
+    if (hit && (hit.data as any)?.career?.length > 0) {
+      if (hit.stale && !revalidatingPlayers.has(cacheKey)) {
+        revalidatingPlayers.add(cacheKey);
+        getPlayer(req.params.id, competition)
+          .then((fresh) => {
+            if ((fresh as any)?.career?.length > 0) setCached(cacheKey, fresh, PLAYER_RESPONSE_TTL_MS);
+          })
+          .catch(() => {})
+          .finally(() => revalidatingPlayers.delete(cacheKey));
+      }
+      return res.json(hit.data);
     }
 
     // 20-second hard cap — Wikipedia/TM scrapes can hang on first load for
