@@ -45,7 +45,7 @@ function fmtSelectedDate(iso: string): string {
 function fmtKickOff(utcDate: string): string {
   // fd.org uses midnight UTC as a placeholder when kick-off time isn't set yet.
   if (utcDate.includes("T00:00:00")) return "TBD";
-  return new Date(utcDate).toLocaleTimeString(undefined, {
+  return new Date(utcDate).toLocaleTimeString("en-GB", {
     hour: "2-digit",
     minute: "2-digit",
     timeZone: "UTC",
