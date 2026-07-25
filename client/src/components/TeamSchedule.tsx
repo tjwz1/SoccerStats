@@ -228,22 +228,27 @@ function shortName(name: string): string {
     .trim();
 }
 
+function localDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function formatDate(utcDate: string): string {
-  // Compare and display dates in UTC so games appear on the day they're
-  // actually played, regardless of the viewer's local timezone offset.
-  const matchUTC = utcDate.slice(0, 10); // "2026-07-15"
-  const todayUTC = new Date().toISOString().slice(0, 10);
-  const diff = Math.round((new Date(matchUTC).getTime() - new Date(todayUTC).getTime()) / 86_400_000);
+  const d = new Date(utcDate);
+  const matchLocal = localDateStr(d);
+  const todayLocal = localDateStr(new Date());
+  const diff = Math.round((new Date(matchLocal).getTime() - new Date(todayLocal).getTime()) / 86_400_000);
   let dayStr: string;
   if (diff === 0) dayStr = "Today";
   else if (diff === 1) dayStr = "Tomorrow";
   else if (diff === -1) dayStr = "Yesterday";
-  else dayStr = new Date(utcDate).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
-  // Show kick-off time in UTC to stay consistent with the UTC date label above.
+  else dayStr = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
   // fd.org uses midnight UTC as a placeholder when kick-off time isn't announced yet.
   const time = utcDate.includes("T00:00:00")
     ? "TBD"
-    : new Date(utcDate).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+    : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   return `${dayStr} · ${time}`;
 }
 
@@ -1028,7 +1033,7 @@ function H2HPanel({ match, viewingTeamId }: { match: ScheduleMatch; viewingTeamI
       <div className="space-y-1.5">
         {meetings.map((m, i) => {
           const result = getResult(m, viewingTeamId);
-          const dateStr = new Date(m.utcDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit", timeZone: "UTC" });
+          const dateStr = new Date(m.utcDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit" });
           return (
             <div key={i} className="flex items-center gap-2 text-xs">
               <span className="text-[10px] text-slate-600 w-16 shrink-0 tabular-nums">{dateStr}</span>
