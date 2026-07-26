@@ -118,7 +118,7 @@ function fmtFixtureDate(utcDate: string): string {
   const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
   const time = utcDate.includes("T00:00:00")
     ? "TBD"
-    : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    : d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
   return `${day}, ${time}`;
 }
 
@@ -568,8 +568,8 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         <FixturesView comp={comp} selectedSeason={selectedSeason} onSelectTeam={onSelectTeam} />
       )}
 
-      {/* Scorers view — only for domestic/non-knockout competitions; sidebar covers this for tournaments */}
-      {compView === "scorers" && !hasKnockout && (
+      {/* Scorers view */}
+      {compView === "scorers" && (
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
           <StatLeaders compCode={comp.code} season={selectedSeason} onSelectTeam={onSelectTeam} />
         </div>

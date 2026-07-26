@@ -248,7 +248,7 @@ function formatDate(utcDate: string): string {
   // fd.org uses midnight UTC as a placeholder when kick-off time isn't announced yet.
   const time = utcDate.includes("T00:00:00")
     ? "TBD"
-    : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    : d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
   return `${dayStr} · ${time}`;
 }
 
