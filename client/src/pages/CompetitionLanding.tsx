@@ -3,7 +3,6 @@ import type { Competition, StandingsData, CompetitionSeason, Team, ScheduleMatch
 import { useApi } from "../hooks/useApi";
 import { useLiveMatches } from "../contexts/LiveMatchesContext";
 import BracketView from "../components/BracketView";
-import StatLeaders from "../components/StatLeaders";
 
 // ── Fixture types ─────────────────────────────────────────────────────────────
 
@@ -85,7 +84,7 @@ function getZone(compCode: string, position: number, totalTeams: number): Zone |
 // Competitions that have a knockout bracket in addition to standings
 const KNOCKOUT_COMP_CODES = new Set(["CL", "EL", "ECL", "EC", "WC", "CLI"]);
 
-type CompView = "standings" | "bracket" | "fixtures" | "scorers";
+type CompView = "standings" | "bracket" | "fixtures";
 
 // ── Fixture helpers ───────────────────────────────────────────────────────────
 
@@ -360,7 +359,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
     if (!seasons || seasons.length <= 1) return;
     for (const s of seasons.slice(1)) {
       fetch(`/api/competitions/${comp.code}/standings?season=${s.year}`).catch(() => {});
-      fetch(`/api/competitions/${comp.code}/scorers?season=${s.year}`).catch(() => {});
     }
   }, [seasons, comp.code]);
 
@@ -389,10 +387,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
     setSelectedGroupType(null);
   }, [selectedSeason]);
 
-  // Reset to standings if the Scorers tab is active but the current comp doesn't show it.
-  useEffect(() => {
-    if (hasKnockout && compView === "scorers") setCompView("standings");
-  }, [hasKnockout, compView]);
 
   const activeGroup =
     (selectedGroupType ? groups.find((g) => g.type === selectedGroupType) : null) ??
@@ -544,18 +538,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         >
           Matches
         </button>
-        {!hasKnockout && (
-          <button
-            onClick={() => setCompView("scorers")}
-            className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
-              compView === "scorers"
-                ? "border-green-500 text-white"
-                : "border-transparent text-slate-500 hover:text-slate-300"
-            }`}
-          >
-            Scorers
-          </button>
-        )}
       </div>
 
       {/* Bracket view */}
@@ -568,12 +550,6 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         <FixturesView comp={comp} selectedSeason={selectedSeason} onSelectTeam={onSelectTeam} />
       )}
 
-      {/* Scorers view */}
-      {compView === "scorers" && (
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
-          <StatLeaders compCode={comp.code} season={selectedSeason} onSelectTeam={onSelectTeam} />
-        </div>
-      )}
 
       {/* Standings table */}
       {compView === "standings" && <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
