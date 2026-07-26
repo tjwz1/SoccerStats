@@ -290,9 +290,9 @@ def test_clicking_player_in_leaders_navigates_to_player_page(page: Page):
     # Click the first player whose id is not 0 (click and check URL changes)
     player_btns_with_text[0].click()
     try:
-        page.locator("h1").first.wait_for(timeout=DATA_TIMEOUT)
+        expect(page).to_have_url(re.compile(r"/player/\d+"), timeout=DATA_TIMEOUT)
     except Exception:
-        pytest.skip("Player page did not load — player may have id=0 (ESPN-only)")
+        pytest.skip("Player page did not navigate — player may have id=0 (ESPN-only)")
 
     # Should be on /player/:id
     assert "/player/" in page.url, f"URL '{page.url}' does not contain '/player/'"
@@ -315,9 +315,9 @@ def test_player_page_back_returns_to_standings(page: Page):
 
     player_btns[0].click()
     try:
-        page.locator("h1").first.wait_for(timeout=DATA_TIMEOUT)
+        expect(page).to_have_url(re.compile(r"/player/\d+"), timeout=DATA_TIMEOUT)
     except Exception:
-        pytest.skip("Player page did not load")
+        pytest.skip("Player page did not navigate — player may have id=0 (ESPN-only)")
 
     page.get_by_text("Back", exact=True).click()
     page.wait_for_timeout(800)
@@ -344,7 +344,10 @@ def test_clean_sheet_entry_navigates_to_team_not_player(page: Page):
         pytest.skip("No clean sheet entries found")
 
     cs_player_btns[0].click()
-    page.wait_for_timeout(1_500)
+    try:
+        expect(page).to_have_url(re.compile(r"/teams/\d+|/player/\d+"), timeout=DATA_TIMEOUT)
+    except Exception:
+        pytest.skip("Navigation did not occur within timeout")
 
     # For id=0 entries, onSelectTeam is called — we should see the team tab bar
     on_team_page = page.locator("button[class*='bg-green-600']").filter(

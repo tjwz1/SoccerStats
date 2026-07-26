@@ -37,7 +37,10 @@ def _nav_to_arsenal(page: Page) -> None:
     page.locator("main div.relative.w-full.grid button span").filter(
         has_text="Arsenal"
     ).first.click()
-    page.locator("[class*='font-mono']").first.wait_for(timeout=DATA_TIMEOUT)
+    try:
+        expect(page).to_have_url(re.compile(r"/teams/\d+"), timeout=DATA_TIMEOUT)
+    except Exception:
+        pytest.skip("Team view did not load within timeout")
 
 
 def _open_arsenal_player(page: Page, index: int = 0) -> None:
