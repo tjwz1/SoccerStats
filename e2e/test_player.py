@@ -290,8 +290,8 @@ def test_season_table_has_correct_columns(page: Page):
     table_header = page.locator("main div[class*='grid'][class*='bg-slate-900']").first
     if table_header.count() == 0:
         pytest.skip("Season table header not found")
-    header_text = table_header.inner_text()
-    for col in ["Season", "Apps", "G", "A"]:
+    header_text = table_header.inner_text().upper()
+    for col in ["SEASON", "APPS", "G", "A"]:
         assert col in header_text, f"Column '{col}' not found in season table header"
 
 

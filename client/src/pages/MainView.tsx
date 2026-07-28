@@ -279,7 +279,7 @@ export default function MainView() {
                   <>
                     <span className="text-slate-700">›</span>
                     <button
-                      onClick={() => { setSelectedTeam(null); setHoveredPlayer(null); }}
+                      onClick={() => { setSelectedTeam(null); setHoveredPlayer(null); if (selectedTeam) navigate(`/competitions/${selectedComp.code}`); }}
                       className={selectedTeam ? "text-slate-400 hover:text-green-400 transition-colors" : "text-slate-400 cursor-default"}
                     >
                       {selectedComp.name}
