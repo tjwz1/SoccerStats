@@ -724,13 +724,10 @@ router.get("/teams/:id/news", async (req, res) => {
     const teamName = (req.query.name as string | undefined)?.trim();
     if (!teamName) return res.status(400).json({ error: "?name= query param required" });
     const cacheKey = `team-news:${req.params.id}`;
-    const cached = await getCached(cacheKey);
-    if (cached) return res.json(cached);
-    const articles = await fetchTeamNews(teamName);
-    if (Array.isArray(articles) && articles.length > 0) {
-      setCached(cacheKey, articles, 15 * 60 * 1000);
-    }
-    res.json(articles);
+    await serveWithSWR(res, cacheKey, 15 * 60 * 1000,
+      () => fetchTeamNews(teamName),
+      (d) => Array.isArray(d) && (d as unknown[]).length > 0
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -816,7 +813,12 @@ router.get("/h2h", async (req, res) => {
     const teamId2 = parseId((req.query.awayTeamId as string | undefined) ?? "");
     const comp    = safeStr(req.query.comp as string | undefined) || "PL";
     if (!teamId1 || !teamId2) return res.status(400).json({ error: "invalid team IDs" });
-    res.json(await getH2HMatches(teamId1, teamId2, comp, 5));
+    // Canonical key: sort IDs so A-vs-B and B-vs-A share the same cache entry.
+    const key = `/h2h/v1/${[teamId1, teamId2].sort().join("-")}/${comp}`;
+    await serveWithSWR(res, key, 30 * 60 * 1000,
+      () => getH2HMatches(teamId1, teamId2, comp, 5),
+      (d) => Array.isArray(d) && d.length > 0
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

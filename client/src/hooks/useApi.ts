@@ -38,6 +38,9 @@ export function sessionGet(url: string): unknown | undefined {
   const entry = SESSION_CACHE.get(url);
   if (!entry) return undefined;
   if (Date.now() - entry.at > entry.ttl) { SESSION_CACHE.delete(url); return undefined; }
+  // Move to end so the Map's insertion-order eviction acts as LRU.
+  SESSION_CACHE.delete(url);
+  SESSION_CACHE.set(url, entry);
   return entry.data;
 }
 
