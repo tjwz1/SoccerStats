@@ -396,18 +396,26 @@ router.get("/live-matches/stream", async (req, res) => {
   });
   res.flushHeaders();
 
+  let nextTimeout: ReturnType<typeof setTimeout> | null = null;
+  let lastHadLive = false;
+
   const send = async () => {
     try {
       const data = await getLiveMatches();
+      lastHadLive = Array.isArray(data) && data.length > 0;
       if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
     } catch {
+      lastHadLive = false;
       if (!res.writableEnded) res.write(`data: []\n\n`);
+    }
+    // Poll every 30s during live matches, 60s when idle to reduce free-tier burn.
+    if (!res.writableEnded) {
+      nextTimeout = setTimeout(send, lastHadLive ? 30_000 : 60_000);
     }
   };
 
   await send();
-  const interval = setInterval(send, 30_000);
-  req.on("close", () => clearInterval(interval));
+  req.on("close", () => { if (nextTimeout) clearTimeout(nextTimeout); });
 });
 
 router.get("/live-matches", async (_req, res) => {

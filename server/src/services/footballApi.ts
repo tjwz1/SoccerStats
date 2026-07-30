@@ -9,7 +9,7 @@ import { getWikiStats, getWikiStatsBatch, setWikiStats } from "../db/wikiCareerC
 import { getWikiTrophies, setWikiTrophies, getTmCupChecked, setTmCupChecked } from "../db/wikiTrophyCache";
 import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus, getWcR16Pairings } from "./wikiStats";
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, resolvePlayerRef, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
-import type { ClubTrophy as TmClubTrophy } from "./wikiStats";
+import type { ClubTrophy as TmClubTrophy, KnockoutStatus } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
 import {
   isEspnLeague, getEspnLeagueConfig, getEspnCurrentSeason,
@@ -1696,6 +1696,12 @@ export async function getStandings(competitionCode: string, season?: number): Pr
     ? computeStatsFromMatches(competitionCode, currentYear).catch(() => null)
     : Promise.resolve(null);
 
+  // WC knockout status is scraped from Wikipedia — start concurrently so it doesn't
+  // add latency after standings + match-stats are already awaited.
+  const wcStatusPromise = (competitionCode === "WC" && isCurrentSeason)
+    ? getWcKnockoutStatus(isIntl ? currentYear : new Date().getFullYear()).catch(() => new Map<string, KnockoutStatus>())
+    : Promise.resolve(new Map<string, KnockoutStatus>());
+
   const data = await apiFetch(`/competitions/${competitionCode}/standings${query}`, standingsTtl) as any;
   const all: any[] = data.standings ?? [];
 
@@ -1755,8 +1761,7 @@ export async function getStandings(competitionCode: string, season?: number): Pr
   // EC format doesn't have the same "best 3rd" complexity — skip for now.
   if (competitionCode === "WC" && isCurrentSeason && result.groups.length > 0) {
     try {
-      const wcYear = isIntl ? currentYear : new Date().getFullYear();
-      const statusMap = await getWcKnockoutStatus(wcYear);
+      const statusMap = await wcStatusPromise;
       if (statusMap.size > 0) {
         const normalize = (s: string) =>
           s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, "").trim();
@@ -2071,10 +2076,12 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
       }
     } catch { /* graceful degradation — sorting falls back to career/photo signal */ }
 
-    // Pre-warm past-season scorer caches for the main competition only.
+    // Pre-warm the 5 most-recent past-season scorer caches for the main competition only.
     // CL/EL are skipped here — they're only fetched if a player actually appeared in them.
+    // Limit to 5 (not all 10 career seasons) to halve warmup time; older seasons are warmed
+    // lazily when a player's career panel is opened.
     (async () => {
-      for (const season of getCareerSeasons()) {
+      for (const season of getCareerSeasons().slice(0, 5)) {
         apiFetch(`/competitions/${compCode}/scorers?season=${season}&limit=400`, FOREVER_TTL_MS).catch(() => {});
         await sleep(500);
       }

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import type { ScheduleMatch, LineupData, Player, MatchDetailData, MatchGoalEvent, MatchBookingEvent, MatchSubstitutionEvent, PlayerGameStats, MatchLineups, MatchLineupPlayer, MatchTeamStats, StandingsData } from "../types";
+import type { ScheduleMatch, LineupData, Player, MatchDetailData, MatchGoalEvent, MatchBookingEvent, MatchSubstitutionEvent, PlayerGameStats, MatchLineups, MatchLineupPlayer, MatchTeamStats, StandingsData, StandingRow } from "../types";
 import { useApi } from "../hooks/useApi";
 import Pitch from "./Pitch";
 import Bench from "./Bench";
@@ -181,6 +181,7 @@ interface Props {
   competitionCode?: string;
   onRetry?: () => void;
   upcomingLoading?: boolean;
+  standingRow?: StandingRow | null;
 }
 
 type Result = "W" | "D" | "L";
@@ -1321,18 +1322,18 @@ function Section({ title, color, dot, children }: { title: string; color: string
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export default function TeamSchedule({ matches, loading, error, teamId, teamName, competitionCode, onRetry, upcomingLoading }: Props) {
+export default function TeamSchedule({ matches, loading, error, teamId, teamName, competitionCode, onRetry, upcomingLoading, standingRow: propStandingRow }: Props) {
   const tieInfos = useMemo(
     () => computeTieInfos(matches, teamId, teamName),
     [matches, teamId, teamName]
   );
 
   // ── Season stats strip ───────────────────────────────────────────────────────
-  // Fetch standings only when we have a competition code, then find this team's row.
+  // Skip the fetch when the caller already resolved the row from its own cache.
   const { data: standingsData } = useApi<StandingsData>(
-    competitionCode ? `/api/competitions/${competitionCode}/standings` : null
+    competitionCode && propStandingRow === undefined ? `/api/competitions/${competitionCode}/standings` : null
   );
-  const standingRow = useMemo(() => {
+  const computedStandingRow = useMemo(() => {
     if (!standingsData) return null;
     for (const group of standingsData.groups) {
       const row = group.rows.find((r) => r.team.id === teamId);
@@ -1340,6 +1341,7 @@ export default function TeamSchedule({ matches, loading, error, teamId, teamName
     }
     return null;
   }, [standingsData, teamId]);
+  const standingRow = propStandingRow !== undefined ? propStandingRow : computedStandingRow;
 
   if (loading) {
     return (

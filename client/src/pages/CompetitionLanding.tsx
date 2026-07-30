@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import type { Competition, StandingsData, CompetitionSeason, Team, ScheduleMatch, StandingRow } from "../types";
-import { useApi } from "../hooks/useApi";
+import { useApi, sessionGet } from "../hooks/useApi";
 import { useLiveMatches } from "../contexts/LiveMatchesContext";
 import BracketView from "../components/BracketView";
 
@@ -353,12 +353,14 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
   const groups = standings?.groups ?? [];
   const isMultiGroup = groups.length > 1;
 
-  // Silently prime past-season standings + scorers so the season switcher feels instant.
+  // Silently prime past-season standings so the season switcher feels instant.
   // Past seasons are cached FOREVER on the server, so each URL is only fetched once ever.
+  // Skip any URL already in the session cache to avoid redundant network traffic.
   useEffect(() => {
     if (!seasons || seasons.length <= 1) return;
     for (const s of seasons.slice(1)) {
-      fetch(`/api/competitions/${comp.code}/standings?season=${s.year}`).catch(() => {});
+      const url = `/api/competitions/${comp.code}/standings?season=${s.year}`;
+      if (sessionGet(url) === undefined) fetch(url).catch(() => {});
     }
   }, [seasons, comp.code]);
 
@@ -368,7 +370,8 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
   const prefetchTeam = useCallback((teamId: number) => {
     if (prefetchTimer.current) clearTimeout(prefetchTimer.current);
     prefetchTimer.current = setTimeout(() => {
-      fetch(`/api/teams/${teamId}/lineup?competition=${comp.code}`).catch(() => {});
+      const url = `/api/teams/${teamId}/lineup?competition=${comp.code}`;
+      if (sessionGet(url) === undefined) fetch(url).catch(() => {});
     }, 150);
   }, [comp.code]);
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
-import type { ScheduleMatch } from "../../types";
-import { useApi } from "../../hooks/useApi";
+import type { ScheduleMatch, StandingsData, StandingRow } from "../../types";
+import { useApi, sessionGet } from "../../hooks/useApi";
 import { useLiveMatches } from "../../contexts/LiveMatchesContext";
 import TeamSchedule from "../../components/TeamSchedule";
 import PositionChart from "../../components/PositionChart";
@@ -14,16 +14,25 @@ interface Props {
 
 export default function ScheduleView({ teamId, teamName, competitionCode, season }: Props) {
   const baseQuery = `competition=${competitionCode}&name=${encodeURIComponent(teamName)}${season ? `&season=${season}` : ""}`;
+  const fullUrl = `/api/teams/${teamId}/schedule?${baseQuery}`;
+
+  // Resolve a standing row from the session cache — available when the user
+  // navigated from CompetitionLanding which already fetched standings.
+  const standingsUrl = `/api/competitions/${competitionCode}/standings`;
+  const cachedStandings = sessionGet(standingsUrl) as StandingsData | undefined;
+  const cachedStandingRow: StandingRow | null = cachedStandings
+    ? cachedStandings.groups.flatMap((g) => g.rows).find((r) => r.team.id === teamId) ?? null
+    : null;
 
   // Phase 1: finished matches only from permanent Supabase cache (~50ms).
+  // Skip when the full schedule is already cached to avoid a redundant request.
+  const isFullCached = sessionGet(fullUrl) !== undefined;
   const { data: pastData } = useApi<ScheduleMatch[]>(
-    season ? null : `/api/teams/${teamId}/schedule?${baseQuery}&past=true`
+    (!season && !isFullCached) ? `${fullUrl}&past=true` : null
   );
 
   // Phase 2: full schedule (past + upcoming/live).
-  const { data: fullData, error, retry } = useApi<ScheduleMatch[]>(
-    `/api/teams/${teamId}/schedule?${baseQuery}`
-  );
+  const { data: fullData, error, retry } = useApi<ScheduleMatch[]>(fullUrl);
 
   const hasPastData = pastData !== null && pastData.length > 0;
   const matches = fullData ?? (hasPastData ? pastData! : null) ?? [];
@@ -64,6 +73,7 @@ export default function ScheduleView({ teamId, teamName, competitionCode, season
         competitionCode={competitionCode}
         onRetry={retry}
         upcomingLoading={upcomingLoading}
+        standingRow={cachedStandingRow}
       />
     </div>
   );
