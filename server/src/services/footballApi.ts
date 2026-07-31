@@ -1524,6 +1524,8 @@ export async function getPositionHistory(
   }
 
   positionHistoryMemo.set(memoKey, { data: result, matchCount: finished.length });
+  // LRU eviction: JS Map preserves insertion order, so the first key is oldest.
+  if (positionHistoryMemo.size > 200) positionHistoryMemo.delete(positionHistoryMemo.keys().next().value!);
   return result;
 }
 

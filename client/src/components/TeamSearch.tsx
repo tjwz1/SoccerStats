@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { Competition, Team } from "../types";
 import type { FavTeam } from "../hooks/useFavourites";
-import { useApi } from "../hooks/useApi";
+import { useCompetitions } from "../contexts/CompetitionsContext";
+import { useTeamSearch } from "../hooks/useTeamSearch";
 import StatLeaders from "./StatLeaders";
 
 interface Props {
@@ -29,28 +30,12 @@ export default function TeamSearch({
   isFavourite: _isFavourite,
   toggleFavourite,
 }: Props) {
-  const { data: competitions, loading: compsLoading } = useApi<Competition[]>("/api/competitions");
+  const { competitions, competitionsLoading: compsLoading } = useCompetitions();
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<Team[] | null>(null);
-  const [searchLoading, setSearchLoading] = useState(false);
 
-  // Debounced global team search
-  useEffect(() => {
-    const q = searchQuery.trim();
-    if (q.length < 2) { setSearchResults(null); return; }
-    const timer = setTimeout(async () => {
-      setSearchLoading(true);
-      try {
-        const res = await fetch(`/api/teams/search?q=${encodeURIComponent(q)}`);
-        setSearchResults(await res.json());
-      } catch {
-        setSearchResults([]);
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+  // Routed through useTeamSearch so the INFLIGHT deduplication map prevents
+  // concurrent identical queries from firing duplicate HTTP requests.
+  const { results: searchResults, loading: searchLoading } = useTeamSearch(searchQuery, 300);
 
   const isSearching = searchQuery.trim().length >= 2;
 
@@ -145,8 +130,6 @@ export default function TeamSearch({
               >
                 <button
                   onClick={() => {
-                    // If this favourite has a stored competition and it differs from the
-                    // current selection, switch to it so the schedule/lineup load correctly.
                     if (team.competitionCode && team.competitionCode !== selectedComp?.code) {
                       const comp = competitions?.find((c) => c.code === team.competitionCode);
                       if (comp) onSelectComp(comp);

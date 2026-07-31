@@ -44,6 +44,14 @@ export function sessionGet(url: string): unknown | undefined {
   return entry.data;
 }
 
+// Internal peek: returns data + staleness without deleting expired entries.
+// Used by the load function so stale data can be served immediately (SWR pattern).
+function sessionPeek(url: string): { data: unknown; stale: boolean } | undefined {
+  const entry = SESSION_CACHE.get(url);
+  if (!entry) return undefined;
+  return { data: entry.data, stale: Date.now() - entry.at > entry.ttl };
+}
+
 export function sessionSet(url: string, data: unknown, ttlMs = SESSION_CACHE_TTL_MS) {
   if (SESSION_CACHE.size >= SESSION_CACHE_MAX) {
     const firstKey = SESSION_CACHE.keys().next().value;
@@ -84,20 +92,70 @@ function inferClientTtl(url: string | null, explicitTtl?: number): number {
 export function useApi<T>(url: string | null, options?: { noCache?: boolean; clientTtlMs?: number }) {
   const noCache = options?.noCache ?? false;
   const clientTtlMs = inferClientTtl(url, options?.clientTtlMs);
+
+  // Initialise from cache including stale entries so we never start with a blank slate
+  // when data was previously fetched — background revalidation updates state when fresh.
   const [data, setData] = useState<T | null>(() => {
     if (!url || noCache) return null;
-    return (sessionGet(url) as T) ?? null;
+    const peek = sessionPeek(url);
+    return peek !== undefined ? (peek.data as T) : null;
   });
-  const [loading, setLoading] = useState(() => !!url && (noCache || sessionGet(url) === undefined));
+  const [loading, setLoading] = useState(() => !!url && (noCache || sessionPeek(url) === undefined));
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback((targetUrl: string, skipCache: boolean, ttlMs: number) => {
-    const cached = !skipCache ? sessionGet(targetUrl) : undefined;
-    if (cached !== undefined) {
-      setData(cached as T);
-      setLoading(false);
-      setError(null);
-      return () => {};
+    if (!skipCache) {
+      const peek = sessionPeek(targetUrl);
+      if (peek !== undefined) {
+        setData(peek.data as T);
+        setLoading(false);
+        setError(null);
+
+        if (!peek.stale) {
+          // Fresh hit: LRU touch — re-insert at end of Map.
+          const entry = SESSION_CACHE.get(targetUrl)!;
+          SESSION_CACHE.delete(targetUrl);
+          SESSION_CACHE.set(targetUrl, entry);
+          return () => {};
+        }
+
+        // Stale-while-revalidate: serve stale immediately, refresh in background.
+        let cancelled = false;
+
+        // Attach to an already-running revalidation for this URL.
+        if (INFLIGHT.has(targetUrl)) {
+          const entry = INFLIGHT.get(targetUrl)!;
+          entry.refs++;
+          entry.promise
+            .then((d) => { if (!cancelled) setData(d as T); })
+            .catch(() => {}); // background failures silently ignored
+          return () => { cancelled = true; releaseInflight(targetUrl, entry); };
+        }
+
+        // No in-flight: start a new background revalidation.
+        const controller = new AbortController();
+        const promise = fetchWithRetry(targetUrl, controller.signal)
+          .then((r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.json();
+          })
+          .then((d) => {
+            sessionSet(targetUrl, d, ttlMs);
+            return d;
+          })
+          .finally(() => {
+            if (INFLIGHT.get(targetUrl)?.controller === controller) INFLIGHT.delete(targetUrl);
+          });
+
+        const entry: InflightEntry = { promise, controller, refs: 1 };
+        INFLIGHT.set(targetUrl, entry);
+
+        promise
+          .then((d) => { if (!cancelled) setData(d as T); })
+          .catch(() => {}); // background failures silently ignored
+
+        return () => { cancelled = true; releaseInflight(targetUrl, entry); };
+      }
     }
 
     // If a request for this URL is already in-flight, attach to it

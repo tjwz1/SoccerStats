@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, useMemo, useCallback, memo } from "react";
 import type { Player } from "../types";
+import PlayerTooltip from "./PlayerTooltip";
 
 interface Props {
   starters: Player[];
   bench: Player[];
   onClick: (player: Player) => void;
-  onHover: (player: Player | null, x: number, y: number) => void;
 }
 
 const GROUPS: { label: string; position: Player["position"]; accent: string; dot: string }[] = [
@@ -15,7 +15,7 @@ const GROUPS: { label: string; position: Player["position"]; accent: string; dot
   { label: "Forwards",    position: "Attacker",   accent: "border-red-400",     dot: "bg-red-400"     },
 ];
 
-function PlayerCard({
+const PlayerCard = memo(function PlayerCard({
   player,
   accent,
   onClick,
@@ -107,18 +107,27 @@ function PlayerCard({
       </div>
     </button>
   );
-}
+});
 
-export default function SquadGrid({ starters, bench, onClick, onHover }: Props) {
-  const all = [...starters, ...bench];
+function SquadGridInner({ starters, bench, onClick }: Props) {
+  const [hoveredPlayer, setHoveredPlayer] = useState<{ player: Player; x: number; y: number } | null>(null);
+
+  // Stable: deps are empty because setHoveredPlayer is always the same setter.
+  const handleHover = useCallback((player: Player | null, x: number, y: number) => {
+    setHoveredPlayer(player ? { player, x, y } : null);
+  }, []);
+
+  const all = useMemo(() => [...starters, ...bench], [starters, bench]);
 
   // ── Squad summary ────────────────────────────────────────────────────────────
-  const squadSize = all.length;
-  const dobPlayers = all.filter((p) => !!p.dateOfBirth);
-  const avgAge = dobPlayers.length > 0
-    ? dobPlayers.reduce((sum, p) => sum + (Date.now() - new Date(p.dateOfBirth).getTime()) / (365.25 * 24 * 3600 * 1000), 0) / dobPlayers.length
-    : null;
-  const uniqueNationalities = new Set(all.map((p) => p.nationality).filter(Boolean)).size;
+  const { squadSize, avgAge, uniqueNationalities } = useMemo(() => {
+    const dobPlayers = all.filter((p) => !!p.dateOfBirth);
+    const avg = dobPlayers.length > 0
+      ? dobPlayers.reduce((sum, p) => sum + (Date.now() - new Date(p.dateOfBirth).getTime()) / (365.25 * 24 * 3600 * 1000), 0) / dobPlayers.length
+      : null;
+    const nats = new Set(all.map((p) => p.nationality).filter(Boolean)).size;
+    return { squadSize: all.length, avgAge: avg, uniqueNationalities: nats };
+  }, [all]);
 
   return (
     <div className="space-y-8 w-full">
@@ -159,13 +168,24 @@ export default function SquadGrid({ starters, bench, onClick, onHover }: Props) 
                   player={player}
                   accent={accent}
                   onClick={onClick}
-                  onHover={onHover}
+                  onHover={handleHover}
                 />
               ))}
             </div>
           </section>
         );
       })}
+
+      {hoveredPlayer && (
+        <PlayerTooltip
+          player={hoveredPlayer.player}
+          anchorX={hoveredPlayer.x}
+          anchorY={hoveredPlayer.y}
+        />
+      )}
     </div>
   );
 }
+
+const SquadGrid = memo(SquadGridInner);
+export default SquadGrid;

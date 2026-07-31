@@ -1,16 +1,16 @@
+import { memo } from "react";
 import type { LineupData, Player } from "../../types";
 import SquadGrid from "../../components/SquadGrid";
 
 interface Props {
   lineup: LineupData;
   onPlayerClick: (player: Player) => void;
-  onPlayerHover: (player: Player | null, x: number, y: number) => void;
   season?: number;
 }
 
 const CURRENT_YEAR = new Date().getFullYear();
 
-export default function SquadView({ lineup, onPlayerClick, onPlayerHover, season }: Props) {
+function SquadViewInner({ lineup, onPlayerClick, season }: Props) {
   const isHistorical = season && season < CURRENT_YEAR;
 
   return (
@@ -24,8 +24,9 @@ export default function SquadView({ lineup, onPlayerClick, onPlayerHover, season
         starters={lineup.starters}
         bench={lineup.bench}
         onClick={onPlayerClick}
-        onHover={onPlayerHover}
       />
     </div>
   );
 }
+
+export default memo(SquadViewInner);

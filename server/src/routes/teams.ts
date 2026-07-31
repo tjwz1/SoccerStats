@@ -148,8 +148,12 @@ router.get("/competitions/:code/bracket", async (req, res) => {
 
 router.get("/competitions/:code/live-matches", async (req, res) => {
   try {
-    const all = await getLiveMatches();
-    res.json(all.filter((m) => m.competitionCode === req.params.code));
+    const code = req.params.code;
+    // 30-second SWR so polling clients get an instant stale response while fresh
+    // data is revalidated in the background — avoids blocking on getLiveMatches().
+    await serveWithSWR(res, `/live-matches/comp/${code}`, 30 * 1000,
+      async () => { const all = await getLiveMatches(); return all.filter((m) => m.competitionCode === code); }
+    );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -420,7 +424,9 @@ router.get("/live-matches/stream", async (req, res) => {
 
 router.get("/live-matches", async (_req, res) => {
   try {
-    res.json(await getLiveMatches());
+    // 30-second SWR so the live ticker returns immediately on stale data while
+    // background-revalidating — prevents long blocks when the upstream is slow.
+    await serveWithSWR(res, "/live-matches", 30 * 1000, () => getLiveMatches());
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -500,6 +506,8 @@ router.get("/teams/:id/lineup", async (req, res) => {
       async () => {
         const data = await getTeamLineup(req.params.id, competition || undefined);
         lineupCache.set(memKey, { data, fetchedAt: Date.now() });
+        // LRU eviction: JS Map preserves insertion order, so the first key is oldest.
+        if (lineupCache.size > 500) lineupCache.delete(lineupCache.keys().next().value!);
         return data;
       },
       (d: any) => Array.isArray(d?.starters) && d.starters.length > 0
@@ -558,10 +566,15 @@ router.get("/matches/:id", async (req, res) => {
     let substitutions = detail.substitutions;
 
     if (homeTeam && awayTeam && utcDate && competition) {
-      // Supplement goals from ESPN when fd.org returns none (free-tier gap)
-      if (goals.length === 0) {
+      if (goals.length === 0 && bookings.length === 0) {
+        // Both missing — fire both ESPN calls in parallel to save one round-trip.
+        // getMatchGoalEvents already has per-match L1 (in-memory) + L2 (Supabase) caching,
+        // so repeated calls for the same match are zero-cost after the first scrape.
         try {
-          const espnGoals = await getMatchGoalEvents(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
+          const [espnGoals, espnEvents] = await Promise.all([
+            getMatchGoalEvents(matchId, homeTeam, awayTeam, utcDate, competition, isLive),
+            getMatchBookingsAndSubs(matchId, homeTeam, awayTeam, utcDate, competition, isLive),
+          ]);
           if (espnGoals.length > 0) {
             goals = espnGoals.map((g) => ({
               minute: g.minute,
@@ -572,13 +585,6 @@ router.get("/matches/:id", async (req, res) => {
               type: (g.ownGoal ? "OWN_GOAL" : g.penalty ? "PENALTY" : "REGULAR") as "REGULAR" | "OWN_GOAL" | "PENALTY",
             }));
           }
-        } catch {}
-      }
-
-      // Always supplement bookings/subs from ESPN (fd.org free tier never includes these)
-      if (bookings.length === 0) {
-        try {
-          const espnEvents = await getMatchBookingsAndSubs(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
           bookings = espnEvents.bookings.map((b) => ({
             minute: b.minute,
             extraTime: b.extraTime,
@@ -594,6 +600,44 @@ router.get("/matches/:id", async (req, res) => {
             playerIn: s.playerIn,
           }));
         } catch {}
+      } else {
+        // Supplement goals from ESPN when fd.org returns none (free-tier gap)
+        if (goals.length === 0) {
+          try {
+            const espnGoals = await getMatchGoalEvents(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
+            if (espnGoals.length > 0) {
+              goals = espnGoals.map((g) => ({
+                minute: g.minute,
+                extraTime: g.extraTime,
+                team: (teamsMatch(homeTeam, g.teamDisplayName) ? "home" : "away") as "home" | "away",
+                scorer: g.scorer,
+                assist: g.assist,
+                type: (g.ownGoal ? "OWN_GOAL" : g.penalty ? "PENALTY" : "REGULAR") as "REGULAR" | "OWN_GOAL" | "PENALTY",
+              }));
+            }
+          } catch {}
+        }
+
+        // Always supplement bookings/subs from ESPN (fd.org free tier never includes these)
+        if (bookings.length === 0) {
+          try {
+            const espnEvents = await getMatchBookingsAndSubs(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
+            bookings = espnEvents.bookings.map((b) => ({
+              minute: b.minute,
+              extraTime: b.extraTime,
+              team: (teamsMatch(homeTeam, b.teamDisplayName) ? "home" : "away") as "home" | "away",
+              player: b.player,
+              card: b.card,
+            }));
+            substitutions = espnEvents.substitutions.map((s) => ({
+              minute: s.minute,
+              extraTime: s.extraTime,
+              team: (teamsMatch(homeTeam, s.teamDisplayName) ? "home" : "away") as "home" | "away",
+              playerOut: s.playerOut,
+              playerIn: s.playerIn,
+            }));
+          } catch {}
+        }
       }
     }
 
@@ -655,6 +699,50 @@ router.get("/matches/:id/player-stats", async (req, res) => {
       setCached(cacheKey, stats, FOREVER_TTL_MS);
     }
     res.json(stats);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Compound endpoint: returns detail + player-stats + team-stats in one round-trip.
+// Client seeds individual session-cache URLs from this response so subsequent tab
+// switches inside MatchCard are instant.
+router.get("/matches/:id/full", async (req, res) => {
+  try {
+    const matchId = parseId(req.params.id);
+    if (!matchId) return res.status(400).json({ error: "invalid match id" });
+    const status = safeStr(req.query.status as string | undefined, 20) || "FINISHED";
+    const homeTeam = safeStr(req.query.homeTeam as string | undefined);
+    const awayTeam = safeStr(req.query.awayTeam as string | undefined);
+    const utcDate = safeStr(req.query.utcDate as string | undefined, 30);
+    const competition = safeStr(req.query.competition as string | undefined, 10) || "PL";
+
+    if (!homeTeam || !awayTeam || !utcDate) {
+      return res.status(400).json({ error: "homeTeam, awayTeam, utcDate required" });
+    }
+
+    const isLive = ["IN_PLAY", "PAUSED"].includes(status);
+    const isFinished = status === "FINISHED";
+    const fullKey = `match-full:${matchId}`;
+
+    if (isFinished) {
+      const hit = await getCached(fullKey);
+      if (hit) return res.json(hit);
+    }
+
+    // All three calls have their own internal caches — parallel here just removes
+    // the sequential waterfall when a cold request hits all three simultaneously.
+    const [detail, playerStats, teamStats] = await Promise.all([
+      getMatchDetail(matchId, status),
+      getMatchPlayerStats(matchId, homeTeam, awayTeam, utcDate, competition, isLive).catch(() => null),
+      getMatchTeamStats(matchId, homeTeam, awayTeam, utcDate, competition).catch(() => null),
+    ]);
+
+    const result = { detail, playerStats, teamStats };
+    if (isFinished && playerStats && teamStats) {
+      setCached(fullKey, result, FOREVER_TTL_MS);
+    }
+    res.json(result);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

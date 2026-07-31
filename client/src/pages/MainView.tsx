@@ -1,17 +1,19 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
 import type { Player, Team, LineupData, Competition, ClubTrophy } from "../types";
 import { useApi, sessionGet, sessionSet } from "../hooks/useApi";
 import { useFavourites } from "../hooks/useFavourites";
 import { useTheme } from "../contexts/ThemeContext";
+import { useCompetitions } from "../contexts/CompetitionsContext";
+import { useTeamSearch } from "../hooks/useTeamSearch";
 import TeamSearch from "../components/TeamSearch";
-import PlayerTooltip from "../components/PlayerTooltip";
 import FixtureCalendar from "../components/FixtureCalendar";
-import SquadView from "./team-views/SquadView";
-import HonoursView from "./team-views/HonoursView";
-import ScheduleView from "./team-views/ScheduleView";
-import NewsView from "./team-views/NewsView";
 import CompetitionLanding from "./CompetitionLanding";
+
+const SquadView    = lazy(() => import("./team-views/SquadView"));
+const HonoursView  = lazy(() => import("./team-views/HonoursView"));
+const ScheduleView = lazy(() => import("./team-views/ScheduleView"));
+const NewsView     = lazy(() => import("./team-views/NewsView"));
 
 function readSession<T>(key: string): T | null {
   try { return JSON.parse(sessionStorage.getItem(key) ?? "null") as T; } catch { return null; }
@@ -27,16 +29,22 @@ const VIEW_REGISTRY = [
 
 type ViewId = typeof VIEW_REGISTRY[number]["id"];
 
+const ViewSpinner = () => (
+  <div className="flex justify-center py-20">
+    <div className="w-6 h-6 border-2 border-slate-600 border-t-white rounded-full animate-spin" />
+  </div>
+);
+
 export default function MainView() {
   const navigate = useNavigate();
   const location = useLocation();
   const { code: urlCode, teamId: urlTeamId } = useParams<{ code?: string; teamId?: string }>();
   const { theme, toggle: toggleTheme } = useTheme();
+  const { competitions } = useCompetitions();
   const [selectedComp, setSelectedComp] = useState<Competition | null>(() => readSession("ss_comp"));
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(() => readSession("ss_team"));
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   const { favourites, isFavourite, toggleFavourite } = useFavourites();
-  const [hoveredPlayer, setHoveredPlayer] = useState<{ player: Player; x: number; y: number } | null>(null);
   const VALID_VIEWS = VIEW_REGISTRY.map((v) => v.id);
   const [view, setView] = useState<ViewId>(() => {
     const saved = sessionStorage.getItem("ss_view");
@@ -57,9 +65,6 @@ export default function MainView() {
   }, [view]);
 
   // URL → state: auto-select competition when navigating directly to /competitions/:code
-  const { data: competitions } = useApi<Competition[]>("/api/competitions");
-  // Tracks which urlCode is currently being applied to state so state→URL doesn't
-  // clobber the URL before the URL→state effect finishes.
   const urlTransitionPending = useRef<string | null>(null);
   useEffect(() => {
     if (!urlCode || !competitions?.length) return;
@@ -72,33 +77,28 @@ export default function MainView() {
     }
   }, [urlCode, competitions?.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // URL → state: restore team when navigating to /competitions/:code/teams/:id.
-  // Tries sessionStorage first; falls back to fetching the competition's teams so
-  // direct links and browser refreshes work even with a cold session.
+  // URL → state: restore team on direct navigation — uses urlCode directly so we don't
+  // wait for the competitions list to load, breaking the waterfall on /competitions/:code/teams/:id.
   useEffect(() => {
-    if (!urlTeamId || !selectedComp) return;
+    if (!urlCode || !urlTeamId) return;
     const id = parseInt(urlTeamId, 10);
     if (selectedTeam?.id === id) return;
     const saved = readSession<Team>("ss_team");
     if (saved?.id === id) { setSelectedTeam(saved); return; }
-    fetch(`/api/competitions/${selectedComp.code}/teams`)
+    fetch(`/api/competitions/${urlCode}/teams`)
       .then((r) => r.json())
       .then((teams: Team[]) => {
         const team = Array.isArray(teams) ? teams.find((t) => t.id === id) : null;
         if (team) setSelectedTeam(team);
       })
       .catch(() => {});
-  }, [urlTeamId, selectedComp?.code]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [urlCode, urlTeamId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // State → URL: keep address bar in sync so links are shareable.
-  // Only blocked during an active URL→state transition (while state hasn't caught up yet).
   useEffect(() => {
-    // urlCode present but competitions not yet loaded — URL→state can't have fired yet, wait.
     if (urlCode && !competitions?.length) return;
-    // URL→state is in flight: state hasn't applied the new urlCode yet — wait.
     if (urlTransitionPending.current !== null && selectedComp?.code !== urlTransitionPending.current) return;
     urlTransitionPending.current = null;
-    // URL has a team but state hasn't restored it yet — wait.
     if (urlTeamId && selectedComp && !selectedTeam) return;
     const target = !selectedComp ? "/"
       : !selectedTeam ? `/competitions/${selectedComp.code}`
@@ -113,7 +113,6 @@ export default function MainView() {
     setSelectedTeam(s.navTeam);
     if (s.navComp) setSelectedComp(s.navComp);
     setView((s.navView as ViewId | undefined) ?? "schedule");
-    setHoveredPlayer(null);
     navigate("/", { replace: true, state: null });
   }, [location.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -123,9 +122,6 @@ export default function MainView() {
       : null
   );
 
-  // When the lineup resolves its competition (server checks runningCompetitions), auto-correct
-  // selectedComp if it's missing or points at the wrong league. This fixes favourites that have
-  // no stored competitionCode and any other case where the wrong league is active.
   useEffect(() => {
     const code = lineup?.competitionCode;
     if (!code || code === selectedComp?.code) return;
@@ -154,64 +150,43 @@ export default function MainView() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false);
   const [headerSearchQuery, setHeaderSearchQuery] = useState("");
-  const [headerSearchResults, setHeaderSearchResults] = useState<Team[] | null>(null);
-  const [headerSearchLoading, setHeaderSearchLoading] = useState(false);
   const activeViewDef = VIEW_REGISTRY.find((v) => v.id === view) ?? VIEW_REGISTRY[0];
 
-  useEffect(() => {
-    const q = headerSearchQuery.trim();
-    if (q.length < 2) { setHeaderSearchResults(null); return; }
-    const timer = setTimeout(async () => {
-      setHeaderSearchLoading(true);
-      try {
-        const res = await fetch(`/api/teams/search?q=${encodeURIComponent(q)}`);
-        setHeaderSearchResults(await res.json());
-      } catch {
-        setHeaderSearchResults([]);
-      } finally {
-        setHeaderSearchLoading(false);
-      }
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [headerSearchQuery]);
+  // Header search: routed through useTeamSearch so INFLIGHT deduplication prevents
+  // concurrent identical queries from firing duplicate HTTP requests.
+  const { results: headerSearchResults, loading: headerSearchLoading } = useTeamSearch(headerSearchQuery, 250);
 
-  function closeHeaderSearch() {
+  const closeHeaderSearch = useCallback(() => {
     setHeaderSearchOpen(false);
     setHeaderSearchQuery("");
-    setHeaderSearchResults(null);
-  }
+  }, []);
 
-  function handleSelectTeam(team: Team) {
+  const handleSelectTeam = useCallback((team: Team) => {
     setSelectedTeam(team);
     setView("schedule");
-    setHoveredPlayer(null);
     setSidebarOpen(false);
     closeHeaderSearch();
     if (team.competitionCode) {
       const comp = competitions?.find((c) => c.code === team.competitionCode);
       if (comp) setSelectedComp(comp);
     }
-  }
+  }, [competitions, closeHeaderSearch]);
 
-  function handlePlayerClick(player: Player) {
+  const handlePlayerClick = useCallback((player: Player) => {
     if (!player.id) return; // id=0 = TM/wiki supplemented player, no career data
     navigate(`/player/${player.id}?competition=${selectedComp?.code ?? "PL"}`, {
       state: { player, teamName: selectedTeam?.name },
     });
-  }
-
-  function handleHover(player: Player | null, x: number, y: number) {
-    setHoveredPlayer(player ? { player, x, y } : null);
-  }
+  }, [navigate, selectedComp?.code, selectedTeam?.name]);
 
   function renderView() {
     if (!selectedTeam) return null;
     switch (view) {
       case "squad":
         return lineup
-          ? <SquadView lineup={lineup} onPlayerClick={handlePlayerClick} onPlayerHover={handleHover} season={selectedSeason ?? undefined} />
+          ? <SquadView lineup={lineup} onPlayerClick={handlePlayerClick} season={selectedSeason ?? undefined} />
           : lineupLoading
-            ? <div className="flex justify-center py-20"><div className="w-6 h-6 border-2 border-slate-600 border-t-white rounded-full animate-spin" /></div>
+            ? <ViewSpinner />
             : null;
       case "honours":
         return <HonoursView teamId={selectedTeam.id} teamName={selectedTeam.name} />;
@@ -236,7 +211,7 @@ export default function MainView() {
           </svg>
         </button>
         <button
-          onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); setSidebarOpen(false); closeHeaderSearch(); }}
+          onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setSidebarOpen(false); closeHeaderSearch(); }}
           title="Home"
           className="w-8 h-8 bg-green-600 rounded-lg flex items-center justify-center text-white font-bold text-sm hover:bg-green-500 transition-colors shrink-0"
         >
@@ -270,7 +245,7 @@ export default function MainView() {
             {(selectedTeam || selectedComp) && (
               <span className="ml-1 text-sm flex items-center gap-1 min-w-0 overflow-hidden">
                 <button
-                  onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); }}
+                  onClick={() => { setSelectedComp(null); setSelectedTeam(null); setSelectedSeason(null); }}
                   className="text-slate-500 hover:text-green-400 transition-colors"
                 >
                   Fixtures
@@ -279,7 +254,7 @@ export default function MainView() {
                   <>
                     <span className="text-slate-700">›</span>
                     <button
-                      onClick={() => { setSelectedTeam(null); setHoveredPlayer(null); if (selectedTeam) navigate(`/competitions/${selectedComp.code}`); }}
+                      onClick={() => { setSelectedTeam(null); if (selectedTeam) navigate(`/competitions/${selectedComp.code}`); }}
                       className={selectedTeam ? "text-slate-400 hover:text-green-400 transition-colors" : "text-slate-400 cursor-default"}
                     >
                       {selectedComp.name}
@@ -400,7 +375,7 @@ export default function MainView() {
             onSelectTeam={handleSelectTeam}
             selectedTeam={selectedTeam}
             selectedComp={selectedComp}
-            onSelectComp={(c) => { setSelectedComp(c); setSelectedTeam(null); setSelectedSeason(null); setHoveredPlayer(null); setSidebarOpen(false); }}
+            onSelectComp={(c) => { setSelectedComp(c); setSelectedTeam(null); setSelectedSeason(null); setSidebarOpen(false); }}
             selectedSeason={selectedSeason}
             onSelectSeason={setSelectedSeason}
             favourites={favourites}
@@ -418,7 +393,6 @@ export default function MainView() {
                   setSelectedComp(comp);
                   setSelectedTeam(team);
                   setSelectedSeason(null);
-                  setHoveredPlayer(null);
                   setView("schedule");
                 }}
                 favouriteTeamIds={favourites.map((f) => f.id)}
@@ -459,19 +433,13 @@ export default function MainView() {
                 ))}
               </div>
 
-              {renderView()}
+              <Suspense fallback={<ViewSpinner />}>
+                {renderView()}
+              </Suspense>
             </div>
           )}
         </main>
       </div>
-
-      {hoveredPlayer && (
-        <PlayerTooltip
-          player={hoveredPlayer.player}
-          anchorX={hoveredPlayer.x}
-          anchorY={hoveredPlayer.y}
-        />
-      )}
     </div>
   );
 }
