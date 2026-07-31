@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import type { ScheduleMatch, LineupData, Player, MatchDetailData, MatchGoalEvent, MatchBookingEvent, MatchSubstitutionEvent, PlayerGameStats, MatchLineups, MatchLineupPlayer, MatchTeamStats, StandingsData, StandingRow } from "../types";
-import { useApi } from "../hooks/useApi";
+import { useApi, sessionSet } from "../hooks/useApi";
 import Pitch from "./Pitch";
 import Bench from "./Bench";
 
@@ -1128,14 +1128,21 @@ function MatchCard({ match, teamId, teamName, tieInfo }: { match: ScheduleMatch;
   // Upcoming games can expand — FD.org publishes official lineups ~1 h before kickoff (status stays TIMED).
   const canExpand = !isPostponed && !!match.competitionCode && match.id > 0;
 
-  // Pre-fetch all three panel data sources as soon as the card expands so that
-  // switching tabs is instant. useApi deduplication ensures no double HTTP requests
-  // even though the individual panels also call useApi for the same URLs.
+  // Pre-fetch all panel data via the compound endpoint so one round-trip covers
+  // detail + player-stats + team-stats. Seed individual-URL session caches so the
+  // stats panels find data immediately when they mount without any extra fetch.
   const cardHasStats = isFinished || isLive;
   const encParams = `homeTeam=${encodeURIComponent(match.homeTeam)}&awayTeam=${encodeURIComponent(match.awayTeam)}&utcDate=${encodeURIComponent(match.utcDate)}&competition=${encodeURIComponent(match.competitionCode)}`;
-  const { data: cardDetail } = useApi<MatchDetailData>(expanded && cardHasStats ? `/api/matches/${match.id}?status=${encodeURIComponent(match.status)}&${encParams}` : null);
-  useApi<Record<string, PlayerGameStats>>(expanded && cardHasStats ? `/api/matches/${match.id}/player-stats?${encParams}&status=${encodeURIComponent(match.status)}` : null);
-  useApi<MatchTeamStats>(expanded && cardHasStats ? `/api/matches/${match.id}/team-stats?${encParams}` : null);
+  const compoundUrl = expanded && cardHasStats
+    ? `/api/matches/${match.id}/full?${encParams}&status=${encodeURIComponent(match.status)}`
+    : null;
+  const { data: fullMatchData } = useApi<{ detail: MatchDetailData; playerStats: Record<string, PlayerGameStats>; teamStats: MatchTeamStats }>(compoundUrl);
+  useEffect(() => {
+    if (!fullMatchData) return;
+    sessionSet(`/api/matches/${match.id}/player-stats?${encParams}&status=${encodeURIComponent(match.status)}`, fullMatchData.playerStats);
+    sessionSet(`/api/matches/${match.id}/team-stats?${encParams}`, fullMatchData.teamStats);
+  }, [fullMatchData]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cardDetail = fullMatchData?.detail ?? null;
 
   // When the card is expanded and live, use the authoritative FT score from the detail
   // response instead of the liveById overlay (which has SWR lag up to ~60s).

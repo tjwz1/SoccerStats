@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
 import type { Competition, StandingsData, CompetitionSeason, Team, ScheduleMatch, StandingRow } from "../types";
 import { useApi, sessionGet } from "../hooks/useApi";
 import { useLiveMatches } from "../contexts/LiveMatchesContext";
-import BracketView from "../components/BracketView";
+
+const BracketView = lazy(() => import("../components/BracketView"));
 
 // ── Fixture types ─────────────────────────────────────────────────────────────
 
@@ -545,7 +546,9 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
       {/* Bracket view */}
       {compView === "bracket" && (
-        <BracketView compCode={comp.code} season={selectedSeason} />
+        <Suspense fallback={<div className="flex justify-center py-20"><div className="w-6 h-6 border-2 border-slate-600 border-t-white rounded-full animate-spin" /></div>}>
+          <BracketView compCode={comp.code} season={selectedSeason} />
+        </Suspense>
       )}
 
       {/* Fixtures view */}

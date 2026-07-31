@@ -1,9 +1,12 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import MainView from "./pages/MainView";
-import PlayerPage from "./pages/PlayerPage";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { LiveMatchesProvider } from "./contexts/LiveMatchesContext";
+import { CompetitionsProvider } from "./contexts/CompetitionsContext";
 import { useServerWatchdog } from "./hooks/useServerWatchdog";
+
+const PlayerPage = lazy(() => import("./pages/PlayerPage"));
 
 function NotFound() {
   return (
@@ -13,6 +16,12 @@ function NotFound() {
   );
 }
 
+const PageSpinner = () => (
+  <div className="flex items-center justify-center h-screen">
+    <div className="w-6 h-6 border-2 border-slate-600 border-t-white rounded-full animate-spin" />
+  </div>
+);
+
 function AppInner() {
   useServerWatchdog();
   return (
@@ -20,7 +29,14 @@ function AppInner() {
       <Route path="/" element={<MainView />} />
       <Route path="/competitions/:code" element={<MainView />} />
       <Route path="/competitions/:code/teams/:teamId" element={<MainView />} />
-      <Route path="/player/:id" element={<PlayerPage />} />
+      <Route
+        path="/player/:id"
+        element={
+          <Suspense fallback={<PageSpinner />}>
+            <PlayerPage />
+          </Suspense>
+        }
+      />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );
@@ -29,9 +45,11 @@ function AppInner() {
 export default function App() {
   return (
     <ThemeProvider>
-      <LiveMatchesProvider>
-        <AppInner />
-      </LiveMatchesProvider>
+      <CompetitionsProvider>
+        <LiveMatchesProvider>
+          <AppInner />
+        </LiveMatchesProvider>
+      </CompetitionsProvider>
     </ThemeProvider>
   );
 }
