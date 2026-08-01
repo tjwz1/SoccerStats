@@ -1716,37 +1716,58 @@ export async function getStandings(competitionCode: string, season?: number): Pr
     : Promise.resolve(new Map<string, KnockoutStatus>());
 
   const data = await apiFetch(`/competitions/${competitionCode}/standings${query}`, standingsTtl) as any;
+  const all: any[] = data.standings ?? [];
 
-  // Detect season drift: fd.org returns the previous completed season as "current" during
-  // the inter-season gap (typically July–August for domestic leagues). When that happens,
-  // build a zeroed table from the team list so the UI shows the new season at 0-0-0
-  // rather than the stale final standings of the season that just ended.
-  if (!season && data.season?.winner != null) {
-    const returnedYear = data.season.startDate
+  // Detect inter-season drift: fd.org sometimes returns stale standings for "current" season
+  // queries during the July–August gap. Two cases handled:
+  //
+  // Case A — winner is recorded: fd.org still serves the completed season (has winner set)
+  //   and its start year is behind our expected current year.
+  //
+  // Case B — season pointer switched but data didn't: fd.org updated the season object to
+  //   the new year (winner=null, currentMatchday=0) but the standings rows still contain
+  //   a full complement of played games from the previous season.
+  //
+  // In both cases we extract teams from the stale response itself (no extra network call)
+  // and return a zeroed table for the new season.
+  if (!season) {
+    const returnedYear = data.season?.startDate
       ? new Date(data.season.startDate).getFullYear()
       : null;
-    if (returnedYear !== null && returnedYear < currentYear) {
-      const teams = await getTeams(competitionCode).catch(() => []);
-      if (teams.length > 0) {
-        const zeroedRows: StandingRow[] = teams.map((t: StandingRow["team"], i: number) => ({
-          position: i + 1,
-          team: t,
-          playedGames: 0,
-          won: 0,
-          draw: 0,
-          lost: 0,
-          points: 0,
-          goalDifference: 0,
-          goalsFor: 0,
-          goalsAgainst: 0,
-          form: null,
-        }));
-        return { groups: [{ label: "Standings", type: "TOTAL", rows: zeroedRows }] };
-      }
+    const existingTable: any[] =
+      (all.find((s: any) => s.type === "TOTAL") ?? all.find((s: any) => s.table?.length > 0))?.table ?? [];
+    const maxGamesPlayed: number = existingTable.reduce(
+      (m: number, r: any) => Math.max(m, (r.playedGames ?? 0) as number), 0
+    );
+
+    const caseA = data.season?.winner != null && returnedYear !== null && returnedYear < currentYear;
+    const caseB = !data.season?.winner
+      && (data.season?.currentMatchday ?? 0) < 3
+      && maxGamesPlayed > 30;
+
+    if ((caseA || caseB) && existingTable.length > 0) {
+      const zeroedRows: StandingRow[] = existingTable.map((e: any, i: number) => ({
+        position: i + 1,
+        team: {
+          id: e.team.id,
+          name: e.team.name,
+          shortName: e.team.shortName || e.team.name,
+          tla: e.team.tla,
+          crest: e.team.crest,
+        },
+        playedGames: 0,
+        won: 0,
+        draw: 0,
+        lost: 0,
+        points: 0,
+        goalDifference: 0,
+        goalsFor: 0,
+        goalsAgainst: 0,
+        form: null,
+      }));
+      return { groups: [{ label: "Standings", type: "TOTAL", rows: zeroedRows }] };
     }
   }
-
-  const all: any[] = data.standings ?? [];
 
   // Entries that belong to a named group (World Cup, Euros: group="Group A" / "GROUP_A")
   const grouped = all.filter((s) => s.group && s.table?.length > 0);
