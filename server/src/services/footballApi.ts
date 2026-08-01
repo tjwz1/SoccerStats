@@ -1567,6 +1567,7 @@ export interface StandingsGroup {
 
 export interface StandingsData {
   groups: StandingsGroup[];
+  seasonNotStarted?: boolean;
 }
 
 function mapStandingRow(e: any): StandingRow {
@@ -1719,17 +1720,17 @@ export async function getStandings(competitionCode: string, season?: number): Pr
   const all: any[] = data.standings ?? [];
 
   // Detect inter-season drift: fd.org sometimes returns stale standings for "current" season
-  // queries during the July–August gap. Two cases handled:
+  // queries during the July–August gap. Two cases:
   //
-  // Case A — winner is recorded: fd.org still serves the completed season (has winner set)
-  //   and its start year is behind our expected current year.
+  // Case A — winner recorded: fd.org still serves the completed season (winner set,
+  //   start year behind the expected current year).
+  // Case B — pointer switched but data didn't: fd.org updated the season object to the
+  //   new year (winner=null, currentMatchday=0) but standings rows still show a full
+  //   season of played games.
   //
-  // Case B — season pointer switched but data didn't: fd.org updated the season object to
-  //   the new year (winner=null, currentMatchday=0) but the standings rows still contain
-  //   a full complement of played games from the previous season.
-  //
-  // In both cases we extract teams from the stale response itself (no extra network call)
-  // and return a zeroed table for the new season.
+  // In both cases the new season hasn't actually started yet, so return an empty groups
+  // array with seasonNotStarted=true. The client renders an appropriate message instead
+  // of a table with wrong teams (promoted/relegated clubs would be missing or extra).
   if (!season) {
     const returnedYear = data.season?.startDate
       ? new Date(data.season.startDate).getFullYear()
@@ -1745,27 +1746,8 @@ export async function getStandings(competitionCode: string, season?: number): Pr
       && (data.season?.currentMatchday ?? 0) < 3
       && maxGamesPlayed > 30;
 
-    if ((caseA || caseB) && existingTable.length > 0) {
-      const zeroedRows: StandingRow[] = existingTable.map((e: any, i: number) => ({
-        position: i + 1,
-        team: {
-          id: e.team.id,
-          name: e.team.name,
-          shortName: e.team.shortName || e.team.name,
-          tla: e.team.tla,
-          crest: e.team.crest,
-        },
-        playedGames: 0,
-        won: 0,
-        draw: 0,
-        lost: 0,
-        points: 0,
-        goalDifference: 0,
-        goalsFor: 0,
-        goalsAgainst: 0,
-        form: null,
-      }));
-      return { groups: [{ label: "Standings", type: "TOTAL", rows: zeroedRows }] };
+    if (caseA || caseB) {
+      return { groups: [], seasonNotStarted: true };
     }
   }
 

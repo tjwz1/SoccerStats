@@ -47,6 +47,7 @@ export interface StandingsGroup {
 
 export interface StandingsData {
   groups: StandingsGroup[];
+  seasonNotStarted?: boolean;
 }
 
 export interface Player {

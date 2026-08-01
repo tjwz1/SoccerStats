@@ -617,7 +617,9 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
         {!loading && !standingsError && rows.length === 0 && (
           <p className="text-sm text-slate-500 text-center py-14">
-            No standings available for this competition.
+            {standings?.seasonNotStarted
+              ? "The new season hasn't started yet."
+              : "No standings available for this competition."}
           </p>
         )}
 

@@ -175,7 +175,7 @@ router.get("/competitions/:code/standings", async (req, res) => {
       const cacheKey = `/standings/v7/${req.params.code}/current`;
       await serveWithSWR(res, cacheKey, 5 * 60 * 1000,
         () => getStandings(req.params.code, season),
-        (d) => d.groups.length > 0
+        (d: StandingsData) => d.groups.length > 0 || !!d.seasonNotStarted
       );
     }
   } catch (e: any) {
