@@ -142,7 +142,12 @@ export async function getEspnStandings(
   config: EspnLeagueConfig,
   _season?: number
 ): Promise<StandingsData> {
-  const data = await espnFetch(`${ESPN_CORE}/${config.slug}/standings`, ESPN_MED_TTL);
+  let data: any;
+  try {
+    data = await espnFetch(`${ESPN_CORE}/${config.slug}/standings`, ESPN_MED_TTL);
+  } catch {
+    return { groups: [] };
+  }
   const children: any[] = data?.children ?? [];
   const groups = children.length > 0 ? children : [data];
 
