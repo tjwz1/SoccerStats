@@ -1613,7 +1613,7 @@ export async function getCompetitionSeasons(competitionCode: string): Promise<Co
   const seen = new Set<number>();
   // Free tier supports roughly the last 3 seasons; filter out older data that returns 403
   const cutoff = new Date().getFullYear() - 3;
-  return (data.seasons ?? [])
+  const seasons: CompetitionSeason[] = (data.seasons ?? [])
     .map((s: any) => {
       const year = new Date(s.startDate).getFullYear();
       return { year, startDate: s.startDate, endDate: s.endDate, winner: s.winner?.name ?? null };
@@ -1624,6 +1624,17 @@ export async function getCompetitionSeasons(competitionCode: string): Promise<Co
       return s.year >= cutoff;
     })
     .sort((a: any, b: any) => b.year - a.year);
+
+  // If fd.org hasn't registered the upcoming season yet, the completed season sits at
+  // index 0 with a winner set. Prepend a synthetic current-year entry so the dropdown
+  // shows "Current season" for the new year and the completed season becomes accessible
+  // as an explicit past option rather than being hidden behind "Current season".
+  const cs = getCurrentSeason();
+  if (seasons.length > 0 && seasons[0].winner !== null && seasons[0].year < cs) {
+    seasons.unshift({ year: cs, startDate: `${cs}-08-01`, endDate: `${cs + 1}-05-31`, winner: null });
+  }
+
+  return seasons;
 }
 
 // Compute last-5-results form per team from the competition's finished matches.
@@ -1705,6 +1716,36 @@ export async function getStandings(competitionCode: string, season?: number): Pr
     : Promise.resolve(new Map<string, KnockoutStatus>());
 
   const data = await apiFetch(`/competitions/${competitionCode}/standings${query}`, standingsTtl) as any;
+
+  // Detect season drift: fd.org returns the previous completed season as "current" during
+  // the inter-season gap (typically July–August for domestic leagues). When that happens,
+  // build a zeroed table from the team list so the UI shows the new season at 0-0-0
+  // rather than the stale final standings of the season that just ended.
+  if (!season && data.season?.winner != null) {
+    const returnedYear = data.season.startDate
+      ? new Date(data.season.startDate).getFullYear()
+      : null;
+    if (returnedYear !== null && returnedYear < currentYear) {
+      const teams = await getTeams(competitionCode).catch(() => []);
+      if (teams.length > 0) {
+        const zeroedRows: StandingRow[] = teams.map((t: StandingRow["team"], i: number) => ({
+          position: i + 1,
+          team: t,
+          playedGames: 0,
+          won: 0,
+          draw: 0,
+          lost: 0,
+          points: 0,
+          goalDifference: 0,
+          goalsFor: 0,
+          goalsAgainst: 0,
+          form: null,
+        }));
+        return { groups: [{ label: "Standings", type: "TOTAL", rows: zeroedRows }] };
+      }
+    }
+  }
+
   const all: any[] = data.standings ?? [];
 
   // Entries that belong to a named group (World Cup, Euros: group="Group A" / "GROUP_A")
