@@ -172,7 +172,7 @@ router.get("/competitions/:code/standings", async (req, res) => {
     } else {
       // Current season: 5-min route-level SWR so cold/expired requests return
       // stale standings instantly instead of blocking 8-17s on fd.org.
-      const cacheKey = `/standings/v7/${req.params.code}/current`;
+      const cacheKey = `/standings/v8/${req.params.code}/current`;
       await serveWithSWR(res, cacheKey, 5 * 60 * 1000,
         () => getStandings(req.params.code, season),
         (d: StandingsData) => d.groups.length > 0 || !!d.seasonNotStarted

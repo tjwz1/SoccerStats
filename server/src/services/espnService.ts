@@ -180,6 +180,15 @@ export async function getEspnStandings(
     return { label, type, rows };
   });
 
+  // If every team has 0 games played the season hasn't started yet.
+  // Return seasonNotStarted so the client shows the appropriate message
+  // instead of a table full of zeros.
+  const allRows = standingGroups.flatMap((g) => g.rows);
+  const maxPlayed = allRows.reduce((m, r) => Math.max(m, r.playedGames), 0);
+  if (allRows.length > 0 && maxPlayed === 0) {
+    return { groups: [], seasonNotStarted: true };
+  }
+
   return { groups: standingGroups };
 }
 
