@@ -1741,12 +1741,18 @@ export async function getStandings(competitionCode: string, season?: number): Pr
       (m: number, r: any) => Math.max(m, (r.playedGames ?? 0) as number), 0
     );
 
+    // Case A: fd.org explicitly shows a completed season (winner recorded, year mismatch).
     const caseA = data.season?.winner != null && returnedYear !== null && returnedYear < currentYear;
+    // Case B: season pointer switched to new year but standings data still has a full
+    // season of played games (currentMatchday reset to 0 but rows weren't cleared).
     const caseB = !data.season?.winner
       && (data.season?.currentMatchday ?? 0) < 3
       && maxGamesPlayed > 30;
+    // Case C: fd.org correctly serves the new season but no games have been played yet
+    // (all teams at 0 games played — the season has been registered but not kicked off).
+    const caseC = !data.season?.winner && existingTable.length > 0 && maxGamesPlayed === 0;
 
-    if (caseA || caseB) {
+    if (caseA || caseB || caseC) {
       return { groups: [], seasonNotStarted: true };
     }
   }
