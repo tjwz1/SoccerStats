@@ -1,5 +1,5 @@
 import { safeFetch as fetch } from "../utils/httpClient";
-import { getCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
+import { getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
 import type {
   StandingsData, StandingRow, StandingsGroup,
   CompetitionFixture, ScheduleMatch, FdStatLeader,
@@ -11,6 +11,10 @@ const ESPN_CORE = "https://site.api.espn.com/apis/v2/sports/soccer";
 const ESPN_LIVE_TTL   = 2 * 60 * 1000;
 const ESPN_MED_TTL    = 30 * 60 * 1000;
 const ESPN_STATIC_TTL = 6 * 60 * 60 * 1000;
+
+// Keys currently being revalidated in the background — prevents duplicate background
+// fetches when two ESPN requests arrive simultaneously for the same stale entry.
+const revalidatingEspn = new Set<string>();
 
 export interface EspnLeagueConfig {
   slug: string;
@@ -109,10 +113,21 @@ function statVal(stats: any[], name: string): number {
 }
 
 async function espnFetch(url: string, ttlMs: number): Promise<any> {
-  // Build a cache key from the URL path+query
   const key = `/espn/${url.replace(/^https?:\/\/[^/]+/, "")}`;
-  const hit = await getCached(key);
-  if (hit) return hit;
+  const hit = await getAnyCached(key);
+  if (hit) {
+    // SWR: serve stale data immediately and refresh in background.
+    // Consistent with the serveWithSWR pattern used throughout teams.ts.
+    if (hit.stale && !revalidatingEspn.has(key)) {
+      revalidatingEspn.add(key);
+      fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } })
+        .then((r) => r.ok ? r.json() : Promise.reject(new Error(`ESPN HTTP ${r.status}`)))
+        .then((data) => setCached(key, data, ttlMs))
+        .catch(() => {})
+        .finally(() => revalidatingEspn.delete(key));
+    }
+    return hit.data;
+  }
   const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
   if (!res.ok) throw new Error(`ESPN HTTP ${res.status} for ${url}`);
   const data = await res.json();

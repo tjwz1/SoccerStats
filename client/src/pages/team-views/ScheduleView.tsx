@@ -16,13 +16,22 @@ export default function ScheduleView({ teamId, teamName, competitionCode, season
   const baseQuery = `competition=${competitionCode}&name=${encodeURIComponent(teamName)}${season ? `&season=${season}` : ""}`;
   const fullUrl = `/api/teams/${teamId}/schedule?${baseQuery}`;
 
-  // Resolve a standing row from the session cache — available when the user
-  // navigated from CompetitionLanding which already fetched standings.
+  // Resolve standings for the team's current table position.
+  // If the user navigated via CompetitionLanding the data is already in session cache.
+  // If they navigated directly (URL bar / back button) we fire one fetch to populate it.
+  // We do NOT fetch for past seasons (irrelevant), or if we already know standings are empty
+  // (seasonNotStarted or no groups) — those are valid states, not missing data.
   const standingsUrl = `/api/competitions/${competitionCode}/standings`;
   const cachedStandings = sessionGet(standingsUrl) as StandingsData | undefined;
-  const cachedStandingRow: StandingRow | null = cachedStandings
-    ? cachedStandings.groups.flatMap((g) => g.rows).find((r) => r.team.id === teamId) ?? null
-    : null;
+  const standingsAlreadyKnown = cachedStandings !== undefined;
+  const { data: fetchedStandings } = useApi<StandingsData>(
+    (!standingsAlreadyKnown && !season) ? standingsUrl : null
+  );
+  const standingsData = cachedStandings ?? fetchedStandings ?? null;
+  const cachedStandingRow: StandingRow | null =
+    standingsData && standingsData.groups.length > 0
+      ? standingsData.groups.flatMap((g) => g.rows).find((r) => r.team.id === teamId) ?? null
+      : null;
 
   // Phase 1: finished matches only from permanent Supabase cache (~50ms).
   // Skip when the full schedule is already cached to avoid a redundant request.

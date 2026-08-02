@@ -19,6 +19,8 @@ const seen = new Map<number, string>();
 const indexedComps = new Set<string>();
 // comp codes that are expected to be in a complete index
 let knownCompCodes: Set<string> = new Set();
+// raw teams-by-comp kept for Supabase persistence (export/hydrate round-trip)
+const rawTeamsByComp = new Map<string, TeamEntry[]>();
 
 const DOMESTIC_PRIORITY = ["PL", "PD", "BL1", "SA", "FL1", "DED", "PPL", "BSA", "ELC"];
 
@@ -32,6 +34,7 @@ function tokenize(s: string): string[] {
 }
 
 function addTeamsForComp(compCode: string, teams: TeamEntry[]) {
+  rawTeamsByComp.set(compCode, teams); // keep raw data for export/persistence
   for (const team of teams) {
     if (seen.has(team.id)) continue;
     seen.set(team.id, compCode);
@@ -54,6 +57,7 @@ export function buildTeamIndex(teamsByComp: Map<string, TeamEntry[]>): void {
   index.clear();
   seen.clear();
   indexedComps.clear();
+  rawTeamsByComp.clear();
 
   // Sort comps: domestic leagues first so that e.g. "Barcelona" → PD not CL
   const sorted = [...teamsByComp.entries()].sort(([a], [b]) => {
@@ -86,6 +90,23 @@ export function isIndexComplete(): boolean {
     if (!indexedComps.has(code)) return false;
   }
   return true;
+}
+
+/** Serialises the current index state for Supabase persistence. */
+export function exportIndexData(): { codes: string[]; teams: Record<string, TeamEntry[]> } {
+  return {
+    codes: [...knownCompCodes],
+    teams: Object.fromEntries(rawTeamsByComp),
+  };
+}
+
+/**
+ * Rebuilds the in-memory index from data previously exported via exportIndexData.
+ * Used on cold start to hydrate from the single Supabase entry instead of N team fetches.
+ */
+export function hydrateIndex(data: { codes: string[]; teams: Record<string, TeamEntry[]> }): void {
+  setKnownCompCodes(data.codes);
+  buildTeamIndex(new Map(Object.entries(data.teams)));
 }
 
 /** Returns up to `limit` teams matching query string, preserving domestic-first ordering. */

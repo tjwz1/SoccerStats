@@ -5,9 +5,9 @@ import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transferma
 import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoalEvents, getMatchBookingsAndSubs, teamsMatch, type EspnLineupPlayer } from "../services/matchStatsScraper";
 import { fetchEspnCupMatches, fetchTmCupMatches, DOMESTIC_CUP_MAP, TM_CUP_LEAGUES } from "../services/cupSchedule";
 import { fetchTeamNews } from "../services/newsService";
-import { getCached, getAnyCached, setCached, clearMemCache, clearAllCache, FOREVER_TTL_MS } from "../db/apiCache";
+import { getAnyCached, setCached, clearMemCache, clearAllCache, FOREVER_TTL_MS } from "../db/apiCache";
 import { requireAdmin } from "../utils/auth";
-import { isIndexComplete, searchTeamIndex, addCompToIndex, setKnownCompCodes } from "../utils/teamIndex";
+import { isIndexComplete, searchTeamIndex, addCompToIndex, setKnownCompCodes, exportIndexData, hydrateIndex } from "../utils/teamIndex";
 import type { Response } from "express";
 
 // Keys currently being revalidated in the background — prevents duplicate background
@@ -47,6 +47,15 @@ const CLUB_HONOURS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 // Supabase (via serveWithSWR in the route) acts as L2, persisting across Vercel cold starts.
 const lineupCache = new Map<string, { data: unknown; fetchedAt: number }>();
 const LINEUP_TTL_MS = 24 * 60 * 60 * 1000; // 24h — squad changes at most weekly
+
+// Typed shouldCache helpers — prevents the type-mismatch bugs that silently defeat caching.
+const cacheWhen = {
+  nonEmpty:    (d: unknown[]) => d.length > 0,
+  nonEmptyArr: (d: unknown)   => Array.isArray(d) && (d as unknown[]).length > 0,
+  hasStandings:(d: StandingsData) => d.groups.length > 0 || !!d.seasonNotStarted,
+  hasScorers:  (d: { goals: unknown[]; assists: unknown[] }) => d.goals.length > 0 || d.assists.length > 0,
+  hasArticles: (d: { articles?: unknown[] }) => Array.isArray(d?.articles) && d.articles!.length > 0,
+};
 
 const router = Router();
 
@@ -90,7 +99,7 @@ router.get("/competitions", async (_req, res) => {
         setKnownCompCodes((comps as any[]).map((c: any) => c.code).filter(Boolean));
         return comps;
       },
-      (d: any[]) => d.length > 0
+      cacheWhen.nonEmpty
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -102,7 +111,7 @@ router.get("/competitions/:code/teams", async (req, res) => {
     const cacheKey = `/teams/v1/${req.params.code}`;
     await serveWithSWR(res, cacheKey, 60 * 60 * 1000,
       () => getTeams(req.params.code),
-      (d: any[]) => d.length > 0
+      cacheWhen.nonEmpty
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -114,7 +123,7 @@ router.get("/competitions/:code/seasons", async (req, res) => {
     const cacheKey = `/competition-seasons/v3/${req.params.code}`;
     await serveWithSWR(res, cacheKey, 24 * 60 * 60 * 1000,
       () => getCompetitionSeasons(req.params.code),
-      (d: any[]) => d.length > 0
+      cacheWhen.nonEmpty
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -167,7 +176,7 @@ router.get("/competitions/:code/standings", async (req, res) => {
       const cacheKey = `/standings/v5/${req.params.code}/${season}`;
       await serveWithSWR(res, cacheKey, 365 * 24 * 60 * 60 * 1000,
         () => getStandings(req.params.code, season),
-        (d) => d.groups.length > 0
+        cacheWhen.hasStandings
       );
     } else {
       // Current season: 5-min route-level SWR so cold/expired requests return
@@ -175,7 +184,7 @@ router.get("/competitions/:code/standings", async (req, res) => {
       const cacheKey = `/standings/v9/${req.params.code}/current`;
       await serveWithSWR(res, cacheKey, 5 * 60 * 1000,
         () => getStandings(req.params.code, season),
-        (d: StandingsData) => d.groups.length > 0 || !!d.seasonNotStarted
+        cacheWhen.hasStandings
       );
     }
   } catch (e: any) {
@@ -195,7 +204,7 @@ router.get("/competitions/:code/scorers", async (req, res) => {
         ]);
         return { goals: fdData.goals, assists: fdData.assists, cleanSheets: csData };
       },
-      (d) => d.goals.length > 0 || d.assists.length > 0
+      cacheWhen.hasScorers
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -210,7 +219,7 @@ router.get("/competitions/:code/fixtures", async (req, res) => {
     const cacheKey = `/competition-fixtures/v1/${req.params.code}${season ? `/${season}` : ""}`;
     await serveWithSWR(res, cacheKey, ttl,
       () => getCompetitionFixtures(req.params.code, season),
-      (d) => Array.isArray(d) && d.length > 0
+      cacheWhen.nonEmptyArr
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -437,18 +446,28 @@ router.post("/admin/cache/clear", requireAdmin, async (_req, res) => {
   res.status(204).send();
 });
 
+const TEAM_INDEX_CACHE_KEY = "/team-index/v1";
+const TEAM_INDEX_TTL_MS = 24 * 60 * 60 * 1000;
+
 router.get("/teams/search", async (req, res) => {
   const q = safeStr(req.query.q as string | undefined, 50).toLowerCase();
   if (q.length < 2) return res.json([]);
   try {
-    // Fast path: use the in-memory index only when it's complete (all competitions indexed).
-    // A partial index would return inconsistent results vs. the full parallel-fetch fallback.
+    // Fast path 1: in-memory index already built in this process instance.
     if (isIndexComplete()) {
       return res.json(searchTeamIndex(q, 15));
     }
 
+    // Fast path 2: load index from Supabase (cold start with warm cache).
+    // Converts N parallel getTeams() reads into a single Supabase lookup.
+    const indexHit = await getAnyCached(TEAM_INDEX_CACHE_KEY);
+    if (indexHit) {
+      hydrateIndex(indexHit.data as { codes: string[]; teams: Record<string, any[]> });
+      return res.json(searchTeamIndex(q, 15));
+    }
+
+    // Full build: fetch all competitions' teams (Supabase L2 or fd.org L3 per comp).
     const competitions = await getCompetitions();
-    // Domestic leagues first so e.g. "barcelona" gets PD (La Liga) not CL
     const DOMESTIC_PRIORITY = ["PL", "PD", "BL1", "SA", "FL1", "DED", "PPL", "BSA", "ELC"];
     const sorted = [...competitions].sort((a: any, b: any) => {
       const ai = DOMESTIC_PRIORITY.indexOf(a.code);
@@ -478,12 +497,13 @@ router.get("/teams/search", async (req, res) => {
         }
       }
     }
-    // Populate the index with freshly-fetched data so subsequent requests
-    // can use the fast path (all comps are now loaded and indexed).
+    // Populate the in-memory index so subsequent requests use fast path 1.
     setKnownCompCodes(sorted.map((c: any) => c.code));
     for (const { code: compCode, teams } of teamArrays) {
       addCompToIndex(compCode, teams as any[]);
     }
+    // Persist the built index to Supabase so future cold starts use fast path 2.
+    setCached(TEAM_INDEX_CACHE_KEY, exportIndexData(), TEAM_INDEX_TTL_MS).catch(() => {});
     res.json(results.slice(0, 15));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -510,7 +530,7 @@ router.get("/teams/:id/lineup", async (req, res) => {
         if (lineupCache.size > 500) lineupCache.delete(lineupCache.keys().next().value!);
         return data;
       },
-      (d: any) => Array.isArray(d?.starters) && d.starters.length > 0
+      (d: any) => Array.isArray(d?.starters) && d.starters.length > 0  // shaped differently; no cacheWhen helper applies
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -524,6 +544,8 @@ router.get("/teams/:id/honours", async (req, res) => {
     if (!teamName) return res.status(400).json({ error: "?name= query param required" });
 
     const cacheKey = `/club-honours/${teamId}`;
+    // Always cache — including empty results. Clubs with no honours shouldn't
+    // trigger a fresh Wikipedia + TM scrape on every cold request for 24 hours.
     await serveWithSWR(res, cacheKey, CLUB_HONOURS_TTL_MS,
       async () => {
         let data = await fetchClubHonours(teamName!);
@@ -532,8 +554,7 @@ router.get("/teams/:id/honours", async (req, res) => {
           data = await scrapeTransfermarktHonours(teamName!);
         }
         return data;
-      },
-      (d) => d.length > 0
+      }
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -553,11 +574,12 @@ router.get("/matches/:id", async (req, res) => {
     const isLive = ["IN_PLAY", "PAUSED"].includes(status);
     const isFinished = status === "FINISHED";
 
-    // Return cached assembled response for finished matches (ESPN scrapes included)
+    // Return cached assembled response for finished matches (ESPN scrapes included).
+    // getAnyCached serves stale entries too — consistent with the SWR pattern elsewhere.
     const assembledKey = `match-assembled:${matchId}`;
     if (isFinished) {
-      const hit = await getCached(assembledKey);
-      if (hit) return res.json(hit);
+      const hit = await getAnyCached(assembledKey);
+      if (hit) return res.json(hit.data);
     }
 
     const detail = await getMatchDetail(matchId, status);
@@ -665,8 +687,8 @@ router.get("/matches/:id/team-stats", async (req, res) => {
       return res.status(400).json({ error: "homeTeam, awayTeam, utcDate required" });
     }
     const cacheKey = `match-team-stats:${matchId}`;
-    const cached = await getCached(cacheKey);
-    if (cached) return res.json(cached);
+    const hit = await getAnyCached(cacheKey);
+    if (hit) return res.json(hit.data);
     const stats = await getMatchTeamStats(matchId, homeTeam, awayTeam, utcDate, competition);
     if (!stats) return res.status(404).json({ error: "team stats not available" });
     setCached(cacheKey, stats, FOREVER_TTL_MS);
@@ -691,8 +713,8 @@ router.get("/matches/:id/player-stats", async (req, res) => {
     }
     const cacheKey = `match-player-stats:${matchId}`;
     if (!isLive) {
-      const cached = await getCached(cacheKey);
-      if (cached) return res.json(cached);
+      const hit = await getAnyCached(cacheKey);
+      if (hit) return res.json(hit.data);
     }
     const stats = await getMatchPlayerStats(matchId, homeTeam, awayTeam, utcDate, competition, isLive);
     if (!isLive && Array.isArray(stats) && stats.length > 0) {
@@ -726,8 +748,8 @@ router.get("/matches/:id/full", async (req, res) => {
     const fullKey = `match-full:${matchId}`;
 
     if (isFinished) {
-      const hit = await getCached(fullKey);
-      if (hit) return res.json(hit);
+      const hit = await getAnyCached(fullKey);
+      if (hit) return res.json(hit.data);
     }
 
     // All three calls have their own internal caches — parallel here just removes
@@ -775,8 +797,8 @@ router.get("/matches/:id/actual-lineup", async (req, res) => {
 
     const cacheKey = `match-actual-lineup:${matchId}`;
     if (isFinished) {
-      const cached = await getCached(cacheKey);
-      if (cached) return res.json(cached);
+      const hit = await getAnyCached(cacheKey);
+      if (hit) return res.json(hit.data);
     }
 
     // Try football-data.org first (has player IDs for photo lookup)
@@ -822,7 +844,7 @@ router.get("/teams/:id/news", async (req, res) => {
     const cacheKey = `team-news:${req.params.id}`;
     await serveWithSWR(res, cacheKey, 15 * 60 * 1000,
       () => fetchTeamNews(teamName),
-      (d) => Array.isArray(d) && (d as unknown[]).length > 0
+      cacheWhen.hasArticles
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -840,21 +862,27 @@ router.get("/teams/:id/schedule", async (req, res) => {
     // Fast path: return only FINISHED matches from permanent Supabase cache.
     // Skip when a specific season is requested (cache is keyed without season).
     if (req.query.past === "true" && !season) {
-      const cached = await getCached(pastKey);
-      return res.json(cached ?? []);
+      const hit = await getAnyCached(pastKey);
+      return res.json(hit?.data ?? []);
     }
 
-    // International tournaments (WC, EC): skip the assembled Supabase cache and always
-    // rebuild synchronously. The Vercel SWR pattern fires a background refresh after sending
-    // the response, but Vercel kills that background task — so stale assembled data persists
-    // indefinitely. For intl comps we must serve fresh data so bracket propagation (which fills
-    // in TBD team names after each round) is always reflected. The cost is negligible because
-    // the underlying fd.org data is already cached in apiFetch at a 2-min TTL.
+    // International tournaments (WC, EC): rebuild synchronously so bracket propagation
+    // (TBD team names filled in after each round) is always reflected. Vercel kills
+    // background SWR tasks so we never use the background-refresh pattern here.
+    // Instead, write the assembled result to Supabase with a short TTL so repeat
+    // requests within the window skip the rebuild entirely.
     if (isInternationalComp(domestic)) {
+      const intlKey = `/team-schedule-intl/v1/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
+      const INTL_TTL_MS = 2 * 60 * 1000; // 2 min — aligned with apiFetch underlying TTL
+
+      const intlHit = await getAnyCached(intlKey);
+      if (intlHit && !intlHit.stale) return res.json(intlHit.data);
+
       const fdMatches = await getTeamSchedule(req.params.id, domestic, season);
       fdMatches.sort((a, b) => +new Date(b.utcDate) - +new Date(a.utcDate));
       const finished = fdMatches.filter((m) => m.status === "FINISHED");
       if (finished.length > 0) setCached(pastKey, finished, FOREVER_TTL_MS);
+      setCached(intlKey, fdMatches, INTL_TTL_MS).catch(() => {});
       return res.json(fdMatches);
     }
 
@@ -896,7 +924,7 @@ router.get("/teams/:id/schedule", async (req, res) => {
 
         return merged;
       },
-      (d) => d.length > 0
+      cacheWhen.nonEmpty
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -913,7 +941,7 @@ router.get("/h2h", async (req, res) => {
     const key = `/h2h/v1/${[teamId1, teamId2].sort().join("-")}/${comp}`;
     await serveWithSWR(res, key, 30 * 60 * 1000,
       () => getH2HMatches(teamId1, teamId2, comp, 5),
-      (d) => Array.isArray(d) && d.length > 0
+      cacheWhen.nonEmptyArr
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });
