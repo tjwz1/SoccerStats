@@ -811,7 +811,14 @@ export async function getBracketMatches(competitionCode: string, season?: number
   const data = raw as any;
   const all: any[] = data.matches ?? [];
   const knockout = all.filter((m) => !GROUP_STAGE_SLUGS.has(m.stage));
-  if (knockout.length === 0) return null;
+  if (knockout.length === 0) {
+    // Inter-season gap: the new season has no knockout matches yet (e.g. CL in August
+    // before the league phase ends). Fall back to the previous season so we keep serving
+    // the completed bracket rather than a 404. Only applies when season was inferred
+    // (not explicitly requested).
+    if (!season) return getBracketMatches(competitionCode, seasonYear - 1);
+    return null;
+  }
 
   // Group by stage
   const byStage = new Map<string, any[]>();

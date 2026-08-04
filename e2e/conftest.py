@@ -1,8 +1,10 @@
+import os
 import pytest
 from playwright.sync_api import sync_playwright, Page, expect
 
-APP_URL = "http://localhost:5173"
-API_URL = "http://localhost:3001"
+APP_URL = os.environ.get("APP_URL", "http://localhost:5173")
+API_URL = os.environ.get("API_URL", "http://localhost:3001")
+VERCEL_BYPASS = os.environ.get("VERCEL_BYPASS", "")
 
 # Shared wait helpers
 NAV_TIMEOUT   = 15_000   # ms — page navigation / major component mount
@@ -18,10 +20,17 @@ def browser_instance():
         browser.close()
 
 
+def _bypass_headers() -> dict:
+    return {"x-vercel-protection-bypass": VERCEL_BYPASS} if VERCEL_BYPASS else {}
+
+
 @pytest.fixture
 def page(browser_instance):
     """Fresh browser context + page for each test; clears localStorage."""
-    ctx  = browser_instance.new_context(viewport={"width": 1280, "height": 900})
+    ctx  = browser_instance.new_context(
+        viewport={"width": 1280, "height": 900},
+        extra_http_headers=_bypass_headers(),
+    )
     page = ctx.new_page()
     # Clear any persisted favourites / session state between tests
     page.goto(APP_URL)
@@ -33,7 +42,10 @@ def page(browser_instance):
 @pytest.fixture
 def mobile_page(browser_instance):
     """Narrow viewport that activates mobile layout (sidebar drawer, header search icon)."""
-    ctx  = browser_instance.new_context(viewport={"width": 390, "height": 844})
+    ctx  = browser_instance.new_context(
+        viewport={"width": 390, "height": 844},
+        extra_http_headers=_bypass_headers(),
+    )
     page = ctx.new_page()
     page.goto(APP_URL)
     page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
