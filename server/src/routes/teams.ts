@@ -179,10 +179,10 @@ router.get("/competitions/:code/standings", async (req, res) => {
         cacheWhen.hasStandings
       );
     } else {
-      // Current season: 5-min route-level SWR so cold/expired requests return
-      // stale standings instantly instead of blocking 8-17s on fd.org.
+      // Current season: 90s route-level SWR so standings reflect live match
+      // outcomes within two polling cycles (client polls every 60s).
       const cacheKey = `/standings/v9/${req.params.code}/current`;
-      await serveWithSWR(res, cacheKey, 5 * 60 * 1000,
+      await serveWithSWR(res, cacheKey, 90 * 1000,
         () => getStandings(req.params.code, season),
         cacheWhen.hasStandings
       );
@@ -231,7 +231,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
   const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
   const cacheKey = `/live-scorers/v1/${code}/${season ?? "current"}`;
   try {
-    await serveWithSWR(res, cacheKey, 5 * 60 * 1000, async () => {
+    await serveWithSWR(res, cacheKey, 90 * 1000, async () => {
     const intl = isInternationalComp(code);
 
     const [fdDataRaw, csData, allLive, finishedList] = await Promise.all([
@@ -397,38 +397,6 @@ router.get("/competitions/:code/position-history", async (req, res) => {
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
-});
-
-// SSE stream — must be registered before the plain /live-matches route
-router.get("/live-matches/stream", async (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
-  res.flushHeaders();
-
-  let nextTimeout: ReturnType<typeof setTimeout> | null = null;
-  let lastHadLive = false;
-
-  const send = async () => {
-    try {
-      const data = await getLiveMatches();
-      lastHadLive = Array.isArray(data) && data.length > 0;
-      if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
-    } catch {
-      lastHadLive = false;
-      if (!res.writableEnded) res.write(`data: []\n\n`);
-    }
-    // Poll every 30s during live matches, 60s when idle to reduce free-tier burn.
-    if (!res.writableEnded) {
-      nextTimeout = setTimeout(send, lastHadLive ? 30_000 : 60_000);
-    }
-  };
-
-  await send();
-  req.on("close", () => { if (nextTimeout) clearTimeout(nextTimeout); });
 });
 
 router.get("/live-matches", async (_req, res) => {

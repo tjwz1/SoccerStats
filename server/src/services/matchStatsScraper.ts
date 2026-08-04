@@ -176,6 +176,7 @@ const compDayOffset = new Map<string, number>();
 
 // Find the ESPN event ID matching the football-data.org match
 async function findEspnEventId(
+  matchId: number,
   homeTeam: string,
   awayTeam: string,
   utcDate: string,
@@ -193,6 +194,23 @@ async function findEspnEventId(
   if (eventIdInflight.has(cacheKey)) return eventIdInflight.get(cacheKey)!;
 
   const promise = (async () => {
+    // Cold-start: try Supabase before probing ESPN (event IDs are stable once assigned).
+    if (matchId > 0) {
+      const cachedId = await getCached(`/espn-event-id/${matchId}`);
+      if (cachedId) {
+        cappedSet(eventIdCache, cacheKey, cachedId as string, EVENT_ID_CACHE_MAX);
+        return cachedId as string;
+      }
+    }
+
+    // Cold-start: hydrate compDayOffset from Supabase to skip the 3-way probe.
+    if (!compDayOffset.has(competitionCode)) {
+      const cachedOffset = await getCached(`/espn-comp-offset/${competitionCode}`);
+      if (cachedOffset !== null && cachedOffset !== undefined) {
+        compDayOffset.set(competitionCode, cachedOffset as number);
+      }
+    }
+
     const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
     const base = utcDate.slice(0, 10).replace(/-/g, ""); // YYYYMMDD
 
@@ -221,6 +239,7 @@ async function findEspnEventId(
       if (id) {
         console.log(`[matchStats] ESPN event ${id} (offset ${knownOffset >= 0 ? "+" : ""}${knownOffset}): ${homeTeam} vs ${awayTeam}`);
         cappedSet(eventIdCache, cacheKey, id, EVENT_ID_CACHE_MAX);
+        if (matchId > 0) setCached(`/espn-event-id/${matchId}`, id, FOREVER_TTL_MS);
         return id;
       }
       // Known offset missed — fall through to full 3-way probe (timezone shift or data delay)
@@ -243,6 +262,8 @@ async function findEspnEventId(
         console.log(`[matchStats] ESPN event ${id} (offset ${offset >= 0 ? "+" : ""}${offset}): ${homeTeam} vs ${awayTeam}`);
         cappedSet(eventIdCache, cacheKey, id, EVENT_ID_CACHE_MAX);
         compDayOffset.set(competitionCode, offset); // remember winning offset for next time
+        if (matchId > 0) setCached(`/espn-event-id/${matchId}`, id, FOREVER_TTL_MS);
+        setCached(`/espn-comp-offset/${competitionCode}`, offset, 7 * 24 * 60 * 60 * 1000);
         return id;
       }
     }
@@ -395,7 +416,7 @@ export async function getMatchTeamStats(
   utcDate: string,
   competitionCode: string
 ): Promise<EspnMatchTeamStats | null> {
-  const eventId = await findEspnEventId(homeTeam, awayTeam, utcDate, competitionCode);
+  const eventId = await findEspnEventId(matchId, homeTeam, awayTeam, utcDate, competitionCode);
   if (!eventId) return null;
   return fetchEspnTeamStats(eventId, competitionCode);
 }
@@ -563,7 +584,7 @@ export async function getEspnMatchLineup(
     }
   }
 
-  const eventId = await findEspnEventId(homeTeam, awayTeam, utcDate, competitionCode);
+  const eventId = await findEspnEventId(matchId, homeTeam, awayTeam, utcDate, competitionCode);
   if (!eventId) return null;
 
   const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
@@ -664,7 +685,7 @@ export async function getMatchPlayerStats(
 
   // Start both lookups concurrently — Google ratings run in the background and
   // don't block the response; ESPN stats are returned as soon as they're ready.
-  const eventIdPromise = findEspnEventId(homeTeam, awayTeam, utcDate, competitionCode);
+  const eventIdPromise = findEspnEventId(matchId, homeTeam, awayTeam, utcDate, competitionCode);
   const googleRatingsPromise = scrapeGoogleRatings(homeTeam, awayTeam, utcDate);
 
   const eventId = await eventIdPromise;
@@ -751,7 +772,7 @@ export async function getMatchBookingsAndSubs(
     }
   }
 
-  const eventId = await findEspnEventId(homeTeam, awayTeam, utcDate, competitionCode);
+  const eventId = await findEspnEventId(matchId, homeTeam, awayTeam, utcDate, competitionCode);
   if (!eventId) return empty;
 
   const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";
@@ -840,7 +861,7 @@ export async function getMatchGoalEvents(
     }
   }
 
-  const eventId = await findEspnEventId(homeTeam, awayTeam, utcDate, competitionCode);
+  const eventId = await findEspnEventId(matchId, homeTeam, awayTeam, utcDate, competitionCode);
   if (!eventId) return [];
 
   const espnLeague = COMP_MAP[competitionCode] ?? "eng.1";

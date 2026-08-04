@@ -136,12 +136,24 @@ function buildTeam(t: { id: number; name: string; crest: string }): Team {
   return { id: t.id, name: t.name, shortName: t.name, crest: t.crest, tla: "" };
 }
 
-function FixtureMatchRow({ m, onSelectTeam }: { m: FixtureMatch; onSelectTeam: (t: Team) => void }) {
+function FixtureMatchRow({
+  m,
+  onSelectTeam,
+  liveData,
+}: {
+  m: FixtureMatch;
+  onSelectTeam: (t: Team) => void;
+  liveData: ScheduleMatch | null;
+}) {
   const [homeErr, setHomeErr] = useState(false);
   const [awayErr, setAwayErr] = useState(false);
   const isFinished = m.status === "FINISHED";
   const isLive = m.status === "IN_PLAY" || m.status === "PAUSED";
-  const hasScore = m.scoreHome !== null && m.scoreAway !== null;
+  // Overlay live-context score for in-play matches so scores stay in sync with
+  // the Standings tab (which also reads from the live context every 30s).
+  const liveHomeScore = liveData?.scoreHome ?? m.scoreHome;
+  const liveAwayScore = liveData?.scoreAway ?? m.scoreAway;
+  const hasScore = liveHomeScore !== null && liveAwayScore !== null;
   return (
     <div className={`flex items-center px-4 py-2.5 gap-2 ${isLive ? "bg-green-950/20" : ""}`}>
       {/* Home team */}
@@ -160,9 +172,9 @@ function FixtureMatchRow({ m, onSelectTeam }: { m: FixtureMatch; onSelectTeam: (
       {/* Score or time */}
       <div className="w-20 shrink-0 text-center">
         {isFinished && hasScore ? (
-          <span className="text-sm font-bold text-white tabular-nums">{m.scoreHome}–{m.scoreAway}</span>
+          <span className="text-sm font-bold text-white tabular-nums">{liveHomeScore}–{liveAwayScore}</span>
         ) : isLive && hasScore ? (
-          <span className="text-sm font-bold text-red-300 tabular-nums">{m.scoreHome}–{m.scoreAway}</span>
+          <span className="text-sm font-bold text-red-300 tabular-nums">{liveHomeScore}–{liveAwayScore}</span>
         ) : m.status === "POSTPONED" ? (
           <span className="text-[10px] font-semibold text-amber-400">POSTP.</span>
         ) : (
@@ -190,10 +202,12 @@ function FixturesView({
   comp,
   selectedSeason,
   onSelectTeam,
+  liveById,
 }: {
   comp: Competition;
   selectedSeason: number | null;
   onSelectTeam: (team: Team) => void;
+  liveById: Map<number, ScheduleMatch>;
 }) {
   const fixturesUrl = `/api/competitions/${comp.code}/fixtures${selectedSeason ? `?season=${selectedSeason}` : ""}`;
   const { data: fixtures, loading, error } = useApi<FixtureMatch[]>(fixturesUrl);
@@ -273,7 +287,7 @@ function FixturesView({
             {!collapsed && (
               <div className="divide-y divide-slate-800/50">
                 {matches.map((m) => (
-                  <FixtureMatchRow key={m.id} m={m} onSelectTeam={onSelectTeam} />
+                  <FixtureMatchRow key={m.id} m={m} onSelectTeam={onSelectTeam} liveData={liveById.get(m.id) ?? null} />
                 ))}
               </div>
             )}
@@ -418,6 +432,13 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
     return map;
   }, [liveMatches]);
 
+  // match ID → live match lookup (used by FixturesView to overlay live scores)
+  const liveByMatchId = useMemo(() => {
+    const map = new Map<number, ScheduleMatch>();
+    for (const m of liveMatches ?? []) map.set(m.id, m);
+    return map;
+  }, [liveMatches]);
+
   const hasLiveInGroup = (liveMatches?.length ?? 0) > 0 &&
     rows.some((r) => liveByTeam.has(r.team.id));
 
@@ -553,7 +574,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
       {/* Fixtures view */}
       {compView === "fixtures" && (
-        <FixturesView comp={comp} selectedSeason={selectedSeason} onSelectTeam={onSelectTeam} />
+        <FixturesView comp={comp} selectedSeason={selectedSeason} onSelectTeam={onSelectTeam} liveById={liveByMatchId} />
       )}
 
 
