@@ -13,9 +13,6 @@ export interface NewsResponse {
   articles: NewsArticle[];
 }
 
-const cache = new Map<string, { data: NewsArticle[]; fetchedAt: number }>();
-const NEWS_TTL_MS = 15 * 60 * 1000; // 15 minutes
-
 // ─── Digest algorithm ───────────────────────────────────────────────────────
 
 const STOP_WORDS = new Set([
@@ -349,12 +346,6 @@ function searchQuery(teamName: string): string {
 }
 
 export async function fetchTeamNews(teamName: string): Promise<NewsResponse> {
-  const cacheKey = teamName.toLowerCase();
-  const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < NEWS_TTL_MS) {
-    return { digest: generateDigest(cached.data, teamName), articles: cached.data };
-  }
-
   const q = searchQuery(teamName);
   const url =
     `https://news.google.com/rss/search` +
@@ -424,7 +415,6 @@ export async function fetchTeamNews(teamName: string): Promise<NewsResponse> {
     });
 
     const data = deduped.slice(0, 20);
-    cache.set(cacheKey, { data, fetchedAt: Date.now() });
     console.log(`[news] "${teamName}" → ${data.length} articles (${articles.length - deduped.length} dupes removed)`);
     return { digest: generateDigest(data, teamName), articles: data };
   } catch (e) {

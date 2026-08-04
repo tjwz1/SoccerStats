@@ -10,8 +10,13 @@ const WARM_PREFIXES = [
   "/competitions",
   "/team-lineup/v3/",
   "/standings/v5/",
+  "/standings/v9/",
   "/competition-fixtures/v1/",
   "/scorers/v5/",
+  "/bracket/v3/",
+  "/competition-seasons/v3/",
+  "/espn/",
+  "/team-index/v1",
 ];
 
 export function warmL1Cache(): void {
