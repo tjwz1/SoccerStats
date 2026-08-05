@@ -65,9 +65,15 @@ async function tmFetch(url: string): Promise<string | null> {
 
 interface EntityRef { slug: string; id: string; name: string }
 
+function cappedSet<K, V>(map: Map<K, V>, key: K, value: V, max: number) {
+  if (map.size >= max && !map.has(key)) map.delete(map.keys().next().value!);
+  map.set(key, value);
+}
+
 // In-process search cache: avoids re-querying TM for the same name within one
 // server lifetime (club/player names are stable; this is safe to cache forever).
 const tmSearchCache = new Map<string, EntityRef | null>();
+const TM_SEARCH_CACHE_MAX = 1000;
 
 async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef | null> {
   const cacheKey = `${hrefPattern.source}:${query}`;
@@ -82,7 +88,7 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
   if (dbCached !== null) {
     const ref = (dbCached as { ref: EntityRef | null }).ref;
     if (ref !== null) {
-      tmSearchCache.set(cacheKey, ref);
+      cappedSet(tmSearchCache, cacheKey, ref, TM_SEARCH_CACHE_MAX);
       return ref;
     }
     // ref is null — fall through to re-run the search
@@ -92,7 +98,7 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
     `${BASE}/schnellsuche/ergebnis/schnellsuche` +
     `?query=${encodeURIComponent(query)}&x=0&y=0`;
   const html = await tmFetch(searchUrl);
-  if (!html) { tmSearchCache.set(cacheKey, null); return null; }
+  if (!html) { cappedSet(tmSearchCache, cacheKey, null, TM_SEARCH_CACHE_MAX); return null; }
 
   const $ = cheerio.load(html);
   let best: EntityRef | null = null;
@@ -108,7 +114,7 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
     best = { slug: m[1], id: m[2], name };
   });
 
-  tmSearchCache.set(cacheKey, best);
+  cappedSet(tmSearchCache, cacheKey, best, TM_SEARCH_CACHE_MAX);
   // Only persist non-null results — a null from an SSL/network failure shouldn't
   // block retries for 30 days. Re-running the search is cheap (one HTTP call).
   if (best !== null) setCached(dbKey, { ref: best }, TM_SEARCH_TTL_MS);
@@ -133,7 +139,7 @@ export async function resolvePlayerRef(playerId: number | undefined, playerName:
         .maybeSingle();
       if (data?.tm_ref) {
         const ref = data.tm_ref as EntityRef;
-        tmSearchCache.set(`${PLAYER_HREF.source}:${playerName}`, ref);
+        cappedSet(tmSearchCache, `${PLAYER_HREF.source}:${playerName}`, ref, TM_SEARCH_CACHE_MAX);
         return ref;
       }
     } catch {}

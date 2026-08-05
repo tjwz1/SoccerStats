@@ -13,7 +13,7 @@ const WARM_PREFIXES = [
   "/standings/v9/",
   "/competition-fixtures/v1/",
   "/scorers/v5/",
-  "/bracket/v3/",
+  "/bracket/v4/",
   "/competition-seasons/v3/",
   "/espn/",
   "/team-index/v1",

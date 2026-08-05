@@ -71,6 +71,7 @@ const EVENT_ID_CACHE_MAX = 1000;
 // Short-term null cache: records when a lookup returned no result so we don't hammer
 // ESPN on every request when the event doesn't exist (yet). Retried after 10 minutes.
 const eventIdNullCache = new Map<string, number>(); // cacheKey → timestamp
+const NULL_CACHE_MAX = 2000;
 const NULL_RETRY_MS = 10 * 60 * 1000;
 // Deduplicates concurrent lookups for the same event so parallel route handlers
 // (actual-lineup + player-stats) share one scoreboard request instead of two.
@@ -173,6 +174,7 @@ function statVal(stats: any[], name: string): number {
 // competition code. Most leagues play in UTC or UTC+1, so probing the known-good offset
 // first reduces steady-state ESPN scoreboard requests from 3 to 1.
 const compDayOffset = new Map<string, number>();
+const COMP_OFFSET_MAX = 100;
 
 // Find the ESPN event ID matching the football-data.org match
 async function findEspnEventId(
@@ -261,7 +263,7 @@ async function findEspnEventId(
       if (id) {
         console.log(`[matchStats] ESPN event ${id} (offset ${offset >= 0 ? "+" : ""}${offset}): ${homeTeam} vs ${awayTeam}`);
         cappedSet(eventIdCache, cacheKey, id, EVENT_ID_CACHE_MAX);
-        compDayOffset.set(competitionCode, offset); // remember winning offset for next time
+        cappedSet(compDayOffset, competitionCode, offset, COMP_OFFSET_MAX);
         if (matchId > 0) setCached(`/espn-event-id/${matchId}`, id, FOREVER_TTL_MS);
         setCached(`/espn-comp-offset/${competitionCode}`, offset, 7 * 24 * 60 * 60 * 1000);
         return id;
@@ -271,7 +273,7 @@ async function findEspnEventId(
     // Don't permanently cache null — ESPN may be temporarily down or the event not yet listed.
     // The null-TTL cache prevents hammering within the retry window.
     console.log(`[matchStats] No ESPN event found for ${homeTeam} vs ${awayTeam} (${utcDate.slice(0, 10)}, comp=${competitionCode})`);
-    eventIdNullCache.set(cacheKey, Date.now());
+    cappedSet(eventIdNullCache, cacheKey, Date.now(), NULL_CACHE_MAX);
     return null;
   })().finally(() => eventIdInflight.delete(cacheKey));
 
@@ -514,6 +516,7 @@ export interface EspnMatchLineup {
 
 // Cache for ESPN raw lineup data (separate from stats cache)
 const lineupCache = new Map<number, { data: EspnMatchLineup; fetchedAt: number }>();
+const LINEUP_CACHE_MAX = 300;
 
 // ESPN position abbreviation → broad position
 // ESPN uses: G (GK), CD (CB), LD (LB), RD (RB), DM, CM, AM, LM, RM, F, S, ST, LW, RW
@@ -579,7 +582,7 @@ export async function getEspnMatchLineup(
     const dbCached = await getCached(`/espn-lineup/${matchId}`);
     if (dbCached) {
       const data = dbCached as EspnMatchLineup;
-      lineupCache.set(matchId, { data, fetchedAt: Date.now() });
+      cappedSet(lineupCache, matchId, { data, fetchedAt: Date.now() }, LINEUP_CACHE_MAX);
       return data;
     }
   }
@@ -651,7 +654,7 @@ export async function getEspnMatchLineup(
   };
 
   if (teams[0].starters.length > 0) {
-    lineupCache.set(matchId, { data: result, fetchedAt: Date.now() });
+    cappedSet(lineupCache, matchId, { data: result, fetchedAt: Date.now() }, LINEUP_CACHE_MAX);
     if (matchId > 0) setCached(`/espn-lineup/${matchId}`, result, FOREVER_TTL_MS);
     console.log(`[matchStats] ESPN lineup cached: ${teams[homeIdx].teamName} ${teams[homeIdx].formation} vs ${teams[awayIdx].teamName} ${teams[awayIdx].formation}`);
   }

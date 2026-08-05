@@ -29,8 +29,14 @@ function norm(s: string): string {
     .trim();
 }
 
+function cappedSet<K, V>(map: Map<K, V>, key: K, value: V, max: number) {
+  if (map.size >= max && !map.has(key)) map.delete(map.keys().next().value!);
+  map.set(key, value);
+}
+
 // In-memory cache: football-data.org teamId → (normalised name → photo URL)
 const teamPhotoCache = new Map<string, Map<string, string>>();
+const TEAM_PHOTO_CACHE_MAX = 200;
 
 async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<Map<string, string>> {
   // L1: in-memory (instant, lives for the server session)
@@ -41,7 +47,7 @@ async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<M
   const dbCached = await getCached(cacheKey);
   if (dbCached) {
     const map = new Map<string, string>(Object.entries(dbCached as Record<string, string>));
-    teamPhotoCache.set(fdoTeamId, map);
+    cappedSet(teamPhotoCache, fdoTeamId, map, TEAM_PHOTO_CACHE_MAX);
     return map;
   }
 
@@ -66,7 +72,7 @@ async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<M
       teams[0]; // best-guess first result
 
     if (!match) {
-      teamPhotoCache.set(fdoTeamId, photoMap);
+      cappedSet(teamPhotoCache, fdoTeamId, photoMap, TEAM_PHOTO_CACHE_MAX);
       return photoMap;
     }
 
@@ -78,7 +84,7 @@ async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<M
       signal: AbortSignal.timeout(5000),
     });
     if (!playersRes.ok) {
-      teamPhotoCache.set(fdoTeamId, photoMap);
+      cappedSet(teamPhotoCache, fdoTeamId, photoMap, TEAM_PHOTO_CACHE_MAX);
       return photoMap;
     }
 

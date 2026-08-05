@@ -67,8 +67,14 @@ function teamsMatch(a: string, b: string): boolean {
   return aWords.length > 0 && aWords.some((w) => bNorm.includes(w));
 }
 
+function cappedSet<K, V>(map: Map<K, V>, key: K, value: V, max: number) {
+  if (map.size >= max && !map.has(key)) map.delete(map.keys().next().value!);
+  map.set(key, value);
+}
+
 // Cache ESPN team IDs to avoid repeated lookups per team
 const espnTeamIdCache = new Map<string, string | null>(); // key: "{leagueSlug}:{teamName}"
+const ESPN_TEAM_ID_CACHE_MAX = 500;
 
 async function findEspnTeamId(teamName: string, leagueSlug: string): Promise<string | null> {
   const cacheKey = `${leagueSlug}:${teamName}`;
@@ -79,7 +85,7 @@ async function findEspnTeamId(teamName: string, leagueSlug: string): Promise<str
 
   const match = teams.find((t: any) => teamsMatch(teamName, t.team?.displayName ?? ""));
   const id: string | null = match?.team?.id ?? null;
-  espnTeamIdCache.set(cacheKey, id);
+  cappedSet(espnTeamIdCache, cacheKey, id, ESPN_TEAM_ID_CACHE_MAX);
   return id;
 }
 
@@ -107,6 +113,7 @@ function toNegativeId(espnEventId: string): number {
 
 // In-memory cache: "{fdTeamId}:{domesticCode}" → matches (valid for 30 min)
 const cupCache = new Map<string, { data: ScheduleMatch[]; fetchedAt: number }>();
+const CUP_CACHE_MAX = 200;
 const CUP_CACHE_TTL_MS = 30 * 60 * 1000;
 
 export async function fetchEspnCupMatches(
@@ -125,7 +132,7 @@ export async function fetchEspnCupMatches(
   const dbCached = await getCached(dbKey);
   if (dbCached) {
     const data = dbCached as ScheduleMatch[];
-    cupCache.set(memKey, { data, fetchedAt: Date.now() });
+    cappedSet(cupCache, memKey, { data, fetchedAt: Date.now() }, CUP_CACHE_MAX);
     return data;
   }
 
@@ -219,7 +226,7 @@ export async function fetchEspnCupMatches(
   }
 
   console.log(`[cupSchedule] ESPN ${cup.name}: ${matches.length} matches for ${teamName}`);
-  cupCache.set(memKey, { data: matches, fetchedAt: Date.now() });
+  cappedSet(cupCache, memKey, { data: matches, fetchedAt: Date.now() }, CUP_CACHE_MAX);
   if (matches.length > 0) setCached(dbKey, matches, CUP_CACHE_TTL_MS);
   return matches;
 }
@@ -319,6 +326,7 @@ function parseTmScore(scoreText: string): {
 
 // In-memory cache for TM club schedule: "{tmClubId}:{season}" → matches
 const tmCupCache = new Map<string, { data: ScheduleMatch[]; fetchedAt: number }>();
+const TM_CUP_CACHE_MAX = 200;
 
 // Find the match table for a competition section identified by <a name="{code}"> anchor.
 // TM page structure: <h2>...<a name="FAC" href="...">...</a>...</h2> followed (in siblings
@@ -452,7 +460,7 @@ export async function fetchTmCupMatches(
   const dbCached = await getCached(dbKey);
   if (dbCached) {
     const data = dbCached as ScheduleMatch[];
-    tmCupCache.set(memKey, { data, fetchedAt: Date.now() });
+    cappedSet(tmCupCache, memKey, { data, fetchedAt: Date.now() }, TM_CUP_CACHE_MAX);
     return data;
   }
 
@@ -484,7 +492,7 @@ export async function fetchTmCupMatches(
     console.log(`[cupSchedule:TM] ${cupInfo.name}: ${cupMatches.length} matches for ${teamName}`);
   }
 
-  tmCupCache.set(memKey, { data: matches, fetchedAt: Date.now() });
+  cappedSet(tmCupCache, memKey, { data: matches, fetchedAt: Date.now() }, TM_CUP_CACHE_MAX);
   if (matches.length > 0) setCached(dbKey, matches, CUP_CACHE_TTL_MS);
   return matches;
 }

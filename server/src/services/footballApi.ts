@@ -58,6 +58,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Deduplicates concurrent live fetches so two requests racing on the same uncached
 // path share one HTTP call instead of both 429-ing.
+// NOTE: deduplication is per-instance only — concurrent cold misses across different
+// Vercel instances can still result in duplicate fd.org calls. At scale, move this
+// coordination into a shared Supabase "claim" row or an upstream caching proxy.
 const inflight = new Map<string, Promise<unknown>>();
 
 // Skip TLS verification for football-data.org — their certificate chain is
