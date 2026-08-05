@@ -132,7 +132,7 @@ router.get("/competitions/:code/seasons", async (req, res) => {
 
 router.get("/competitions/:code/bracket", async (req, res) => {
   const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
-  const cacheKey = `/bracket/v3/${req.params.code}${season ? `/${season}` : ""}`;
+  const cacheKey = `/bracket/v4/${req.params.code}${season ? `/${season}` : ""}`;
   try {
     // Manual SWR so null (bracket not yet available) maps to 404 rather than 200.
     const hit = await getAnyCached(cacheKey);

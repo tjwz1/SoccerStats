@@ -803,8 +803,12 @@ export async function getBracketMatches(competitionCode: string, season?: number
       ttl
     );
   } catch (e: any) {
-    // 403 (tier restriction) or 404 (competition not found) → no bracket available
-    if (/API error (403|404)/.test(e.message)) return null;
+    // 403 (tier restriction) → no bracket available for this competition
+    // 404 → season not registered yet; fall back to previous season if season was inferred
+    if (/API error (403|404)/.test(e.message)) {
+      if (!season && /API error 404/.test(e.message)) return getBracketMatches(competitionCode, seasonYear - 1);
+      return null;
+    }
     throw e;
   }
 
