@@ -6,9 +6,12 @@ import { useFavourites } from "../hooks/useFavourites";
 import { useTheme } from "../contexts/ThemeContext";
 import { useCompetitions } from "../contexts/CompetitionsContext";
 import { useTeamSearch } from "../hooks/useTeamSearch";
+import { useAuth } from "../contexts/AuthContext";
+import { supabase } from "../lib/supabase";
 import TeamSearch from "../components/TeamSearch";
 import FixtureCalendar from "../components/FixtureCalendar";
 import CompetitionLanding from "./CompetitionLanding";
+import AuthModal from "../components/AuthModal";
 
 const SquadView    = lazy(() => import("./team-views/SquadView"));
 const HonoursView  = lazy(() => import("./team-views/HonoursView"));
@@ -41,6 +44,8 @@ export default function MainView() {
   const { code: urlCode, teamId: urlTeamId } = useParams<{ code?: string; teamId?: string }>();
   const { theme, toggle: toggleTheme } = useTheme();
   const { competitions } = useCompetitions();
+  const { user } = useAuth();
+  const [authModalOpen, setAuthModalOpen] = useState(false);
   const [selectedComp, setSelectedComp] = useState<Competition | null>(() => readSession("ss_comp"));
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(() => readSession("ss_team"));
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
@@ -302,6 +307,22 @@ export default function MainView() {
           >
             {theme === "dark" ? "☀️" : "🌙"}
           </button>
+          {user ? (
+            <button
+              onClick={() => supabase.auth.signOut()}
+              title={`Signed in as ${user.email} — click to sign out`}
+              className="w-7 h-7 rounded-full bg-green-700 hover:bg-green-600 flex items-center justify-center text-white text-xs font-bold transition-colors shrink-0"
+            >
+              {(user.email ?? "?")[0].toUpperCase()}
+            </button>
+          ) : (
+            <button
+              onClick={() => setAuthModalOpen(true)}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 transition-colors shrink-0"
+            >
+              Sign in
+            </button>
+          )}
         </div>
 
         {/* Search results dropdown */}
@@ -440,6 +461,7 @@ export default function MainView() {
           )}
         </main>
       </div>
+      <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
     </div>
   );
 }

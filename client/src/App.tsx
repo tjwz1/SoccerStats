@@ -4,6 +4,7 @@ import MainView from "./pages/MainView";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { LiveMatchesProvider } from "./contexts/LiveMatchesContext";
 import { CompetitionsProvider } from "./contexts/CompetitionsContext";
+import { AuthProvider } from "./contexts/AuthContext";
 import { useServerWatchdog } from "./hooks/useServerWatchdog";
 
 const PlayerPage = lazy(() => import("./pages/PlayerPage"));
@@ -44,12 +45,14 @@ function AppInner() {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <CompetitionsProvider>
-        <LiveMatchesProvider>
-          <AppInner />
-        </LiveMatchesProvider>
-      </CompetitionsProvider>
-    </ThemeProvider>
+    <AuthProvider>
+      <ThemeProvider>
+        <CompetitionsProvider>
+          <LiveMatchesProvider>
+            <AppInner />
+          </LiveMatchesProvider>
+        </CompetitionsProvider>
+      </ThemeProvider>
+    </AuthProvider>
   );
 }

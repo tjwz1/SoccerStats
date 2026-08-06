@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import teamsRouter from "./routes/teams";
 import playersRouter from "./routes/players";
+import favouritesRouter from "./routes/favourites";
 import { getClient } from "./db/supabase";
 import { getTeamSquadPlayers } from "./services/footballApi";
 import { fetchPlayerWikiData } from "./services/wikiStats";
@@ -64,6 +65,7 @@ app.use(express.json({ limit: "100kb" }));
 
 app.use("/api", teamsRouter);
 app.use("/api/players", playersRouter);
+app.use("/api/favourites", favouritesRouter);
 
 const SERVER_STARTED_AT = Date.now();
 app.get("/api/health", (_req, res) => {
