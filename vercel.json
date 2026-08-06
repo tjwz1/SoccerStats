@@ -9,6 +9,12 @@
       "maxDuration": 60
     }
   },
+  "crons": [
+    {
+      "path": "/api/admin/cache/expired",
+      "schedule": "0 3 * * *"
+    }
+  ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/index.ts" },
     { "handle": "filesystem" },

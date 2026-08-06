@@ -23,6 +23,8 @@ router.get("/:id", async (req, res) => {
     // SWR: return any cached entry (even stale) immediately, refresh in background.
     // Only treats empty-career entries as misses — allows retries after a first-run scrape failure.
     const hit = await getAnyCached(cacheKey);
+    // Career data is stable within a session — let Vercel CDN cache it for 10 min.
+    res.set("Cache-Control", "public, s-maxage=600, stale-while-revalidate=60");
     if (hit && (hit.data as any)?.career?.length > 0) {
       if (hit.stale && !revalidatingPlayers.has(cacheKey)) {
         revalidatingPlayers.add(cacheKey);

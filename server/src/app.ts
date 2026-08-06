@@ -12,6 +12,7 @@ import { fetchPlayerWikiData } from "./services/wikiStats";
 import { setWikiStats, getWikiStats } from "./db/wikiCareerCache";
 import { setWikiTrophies, getWikiTrophies } from "./db/wikiTrophyCache";
 import { requireAdmin } from "./utils/auth";
+import { SupabaseRateLimitStore } from "./utils/rateLimitStore";
 import { warmL1Cache } from "./utils/warmup";
 
 dotenv.config();
@@ -29,12 +30,16 @@ app.use(compression());
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "http://localhost:5173").split(",").map((o) => o.trim());
 app.use(cors({ origin: allowedOrigins }));
 
-// General API rate limit: 200 requests per minute per IP
+// General API rate limit: 200 requests per minute per IP.
+// Uses a shared Supabase store so the limit is enforced consistently across all
+// Vercel instances. Requires server/migrations/001_rate_limits.sql to be applied.
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const apiLimiter = rateLimit({
-  windowMs: 60 * 1000,
+  windowMs: RATE_LIMIT_WINDOW_MS,
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
+  store: process.env.SUPABASE_URL ? new SupabaseRateLimitStore(RATE_LIMIT_WINDOW_MS) : undefined,
   message: { error: "Too many requests, please slow down." },
 });
 
@@ -236,6 +241,22 @@ app.post("/api/admin/populate-wiki-stats", adminLimiter, requireAdmin, async (re
       console.log(`[populate-wiki] ${teamKey} done: ${done} ok, ${skipped} skipped, ${failed} failed`);
     }
   })();
+});
+
+// Purge expired api_cache rows — called daily by Vercel cron (Authorization: Bearer CRON_SECRET)
+// and manually via DELETE /api/admin/cache/expired with x-admin-secret header.
+app.delete("/api/admin/cache/expired", adminLimiter, requireAdmin, async (_req, res) => {
+  try {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { error, count } = await getClient()
+      .from("api_cache")
+      .delete({ count: "exact" })
+      .lt("expires_at", cutoff);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ deleted: count, cutoff });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.delete("/api/admin/photo-cache/nulls", adminLimiter, requireAdmin, async (_req, res) => {

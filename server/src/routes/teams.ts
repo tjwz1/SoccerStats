@@ -133,6 +133,8 @@ router.get("/competitions/:code/seasons", async (req, res) => {
 router.get("/competitions/:code/bracket", async (req, res) => {
   const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
   const cacheKey = `/bracket/v4/${req.params.code}${season ? `/${season}` : ""}`;
+  // Explicit past-season requests are immutable — allow Vercel CDN to cache them.
+  if (season !== undefined) res.set("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=3600");
   try {
     // Manual SWR so null (bracket not yet available) maps to 404 rather than 200.
     const hit = await getAnyCached(cacheKey);
@@ -172,7 +174,8 @@ router.get("/competitions/:code/standings", async (req, res) => {
   try {
     const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
     if (season) {
-      // Past seasons are immutable — SWR with permanent cache is safe.
+      // Past seasons are immutable — allow Vercel CDN to cache them.
+      res.set("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=3600");
       const cacheKey = `/standings/v5/${req.params.code}/${season}`;
       await serveWithSWR(res, cacheKey, 365 * 24 * 60 * 60 * 1000,
         () => getStandings(req.params.code, season),
@@ -195,6 +198,7 @@ router.get("/competitions/:code/standings", async (req, res) => {
 router.get("/competitions/:code/scorers", async (req, res) => {
   try {
     const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+    if (season) res.set("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=3600");
     const cacheKey = `/scorers/v5/${req.params.code}${season ? `/${season}` : ""}`;
     await serveWithSWR(res, cacheKey, 15 * 60 * 1000,
       async () => {
