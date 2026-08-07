@@ -74,6 +74,9 @@ export default function AuthModal({ isOpen, onClose }: Props) {
             >
               {loading ? "Sending…" : "Send magic link"}
             </button>
+            <p className="text-slate-500 text-xs text-center">
+              By signing in you agree that we store your email to sync your favourites.
+            </p>
           </form>
         )}
       </div>

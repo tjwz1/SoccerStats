@@ -22,13 +22,17 @@ router.get("/", requireAuth, async (req, res) => {
 router.post("/", requireAuth, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
-    const { teamId, competitionCode } = req.body as { teamId?: number; competitionCode?: string };
-    if (!teamId || !competitionCode) {
-      return res.status(400).json({ error: "teamId and competitionCode are required" });
+    const { teamId, competitionCode } = req.body as { teamId?: unknown; competitionCode?: unknown };
+    const teamIdNum = Number(teamId);
+    if (!Number.isInteger(teamIdNum) || teamIdNum <= 0 || teamIdNum > 1_000_000) {
+      return res.status(400).json({ error: "teamId must be a positive integer" });
+    }
+    if (typeof competitionCode !== "string" || !/^[A-Z0-9_]{1,10}$/.test(competitionCode)) {
+      return res.status(400).json({ error: "competitionCode must be 1–10 uppercase alphanumeric characters" });
     }
     const { error } = await getClient()
       .from("favourites")
-      .upsert({ user_id: userId, team_id: teamId, competition_code: competitionCode });
+      .upsert({ user_id: userId, team_id: teamIdNum, competition_code: competitionCode });
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json({ ok: true });
   } catch (e: any) {

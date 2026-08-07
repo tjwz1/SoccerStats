@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { Team } from "../types";
 import { useAuth } from "../contexts/AuthContext";
+import { supabase } from "../lib/supabase";
 
 export type FavTeam = Team & { competitionCode?: string };
 
@@ -14,11 +15,22 @@ function saveLocal(favs: FavTeam[]) {
   localStorage.setItem(LS_KEY, JSON.stringify(favs));
 }
 
-async function apiFetch(path: string, token: string, options?: RequestInit) {
-  return fetch(`/api/favourites${path}`, {
+async function apiFetch(path: string, token: string, options?: RequestInit): Promise<Response> {
+  const res = await fetch(`/api/favourites${path}`, {
     ...options,
     headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", ...options?.headers },
   });
+  // On 401, attempt a token refresh and retry once.
+  if (res.status === 401) {
+    const { data } = await supabase.auth.refreshSession();
+    if (data.session) {
+      return fetch(`/api/favourites${path}`, {
+        ...options,
+        headers: { "Authorization": `Bearer ${data.session.access_token}`, "Content-Type": "application/json", ...options?.headers },
+      });
+    }
+  }
+  return res;
 }
 
 export function useFavourites() {

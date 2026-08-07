@@ -44,8 +44,21 @@ export default function MainView() {
   const { code: urlCode, teamId: urlTeamId } = useParams<{ code?: string; teamId?: string }>();
   const { theme, toggle: toggleTheme } = useTheme();
   const { competitions } = useCompetitions();
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    function handleOutsideClick(e: MouseEvent) {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(e.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [accountMenuOpen]);
   const [selectedComp, setSelectedComp] = useState<Competition | null>(() => readSession("ss_comp"));
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(() => readSession("ss_team"));
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
@@ -176,6 +189,18 @@ export default function MainView() {
       if (comp) setSelectedComp(comp);
     }
   }, [competitions, closeHeaderSearch]);
+
+  async function handleDeleteAccount() {
+    if (!session) return;
+    if (!window.confirm("Permanently delete your account and all synced favourites? This cannot be undone.")) return;
+    setAccountMenuOpen(false);
+    await fetch("/api/account", {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    await supabase.auth.signOut();
+    localStorage.removeItem("ss_favourites");
+  }
 
   const handlePlayerClick = useCallback((player: Player) => {
     if (!player.id) return; // id=0 = TM/wiki supplemented player, no career data
@@ -308,13 +333,32 @@ export default function MainView() {
             {theme === "dark" ? "☀️" : "🌙"}
           </button>
           {user ? (
-            <button
-              onClick={() => supabase.auth.signOut()}
-              title={`Signed in as ${user.email} — click to sign out`}
-              className="w-7 h-7 rounded-full bg-green-700 hover:bg-green-600 flex items-center justify-center text-white text-xs font-bold transition-colors shrink-0"
-            >
-              {(user.email ?? "?")[0].toUpperCase()}
-            </button>
+            <div ref={accountMenuRef} className="relative shrink-0">
+              <button
+                onClick={() => setAccountMenuOpen((o) => !o)}
+                title={`Signed in as ${user.email}`}
+                className="w-7 h-7 rounded-full bg-green-700 hover:bg-green-600 flex items-center justify-center text-white text-xs font-bold transition-colors"
+              >
+                {(user.email ?? "?")[0].toUpperCase()}
+              </button>
+              {accountMenuOpen && (
+                <div className="absolute right-0 top-9 w-48 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 py-1 text-sm">
+                  <div className="px-3 py-2 text-slate-400 text-xs truncate border-b border-slate-800">{user.email}</div>
+                  <button
+                    onClick={() => { setAccountMenuOpen(false); supabase.auth.signOut(); }}
+                    className="w-full text-left px-3 py-2 text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+                  >
+                    Sign out
+                  </button>
+                  <button
+                    onClick={handleDeleteAccount}
+                    className="w-full text-left px-3 py-2 text-red-400 hover:text-red-300 hover:bg-slate-800 transition-colors"
+                  >
+                    Delete account
+                  </button>
+                </div>
+              )}
+            </div>
           ) : (
             <button
               onClick={() => setAuthModalOpen(true)}
