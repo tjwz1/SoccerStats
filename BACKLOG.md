@@ -54,35 +54,37 @@ Candidates for `public, s-maxage=86400`:
 
 ---
 
-## Later (Accounts)
+## When Real Users Arrive
 
-### 4. User accounts and synced favourites
+### 4. Tighten Supabase Auth refresh token lifetime
 
-**Goal:** Allow users to sync their favourited teams across devices. Keep anonymous (localStorage) users working exactly as today — accounts are additive, not a breaking migration.
+**Context:** Accounts are implemented (`feature/accounts` branch). Supabase Auth is used with magic-link sign-in.
 
-**Auth:** Supabase Auth (already the DB; avoids adding a new auth library). Email/password + magic link to start; OAuth (Google) if needed later.
+**Problem:** Supabase refresh tokens default to a rolling unlimited lifetime. A stolen refresh token is valid indefinitely — it can be used to re-authenticate forever without the user knowing.
 
-**Schema:**
-```sql
-CREATE TABLE favourites (
-  user_id  uuid REFERENCES auth.users(id) ON DELETE CASCADE,
-  team_id  integer NOT NULL,
-  competition_code text NOT NULL,
-  added_at timestamptz DEFAULT now(),
-  PRIMARY KEY (user_id, team_id)
-);
-```
+**Fix:** In the Supabase dashboard → Auth → Settings, set the refresh token lifetime to **7 days** (or whatever matches expected session length). Users who haven't opened the app in 7 days will be asked to sign in again — a small UX cost that closes an otherwise open-ended auth window.
 
-This mirrors exactly what `useFavourites.ts` already stores in localStorage.
+**When:** Do this before accounts go live with real users. Low-effort: one dropdown change in the dashboard, no code change required.
 
-**Client integration:** `useFavourites.ts` is the sole integration point. Swap its `localStorage` read/write for API calls when a session exists; fall back to `localStorage` for anonymous users. Nothing else in the client changes since all consumers already go through this hook.
+---
 
-**API surface needed:**
-- `GET /api/favourites` — returns `[{ teamId, competitionCode }]` for the authed user
-- `POST /api/favourites` — adds a team
-- `DELETE /api/favourites/:teamId` — removes a team
+### 5. Token storage: localStorage → httpOnly cookies
 
-**Anonymous → account migration:** On first sign-in, read localStorage favourites and POST them all to the server. Simple one-time sync.
+**Problem:** Supabase stores JWTs in `localStorage` by default. Any XSS vulnerability on the page can read these tokens. `httpOnly` cookies are inaccessible to JavaScript entirely.
+
+**Fix:** Initialise the Supabase client with `auth: { storage: cookieStorage }` and configure the server to handle the `set-cookie` flow. Requires the client and server to share the same domain (already true on Vercel with a custom domain).
+
+**When:** Meaningful only once there is user data worth protecting at scale. Low urgency for a small user base; higher urgency if the app ever handles anything beyond favourites.
+
+---
+
+### 6. Audit log alerts for suspicious auth events
+
+**Problem:** Supabase Auth logs sign-in/sign-out events in `auth.audit_log_entries`, but nothing watches them. Mass magic-link attempts from one IP (email harvesting probe) or a sudden spike in account deletions would go unnoticed.
+
+**Fix:** Set up a Supabase database webhook or a pg_cron job that periodically checks for anomalies (e.g. >10 magic-link requests from one IP in an hour) and sends an alert (email or Slack).
+
+**When:** Only worth doing once there are enough users that abuse is plausible.
 
 ---
 
