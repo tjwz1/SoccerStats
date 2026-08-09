@@ -2045,10 +2045,15 @@ export async function getCompetitionFixtures(
   const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
   const isPast = season !== undefined && season < getCurrentSeason();
   const ttl = isPast ? FOREVER_TTL_MS : 5 * 60 * 1000;
-  const data = await apiFetch(
-    `/competitions/${competitionCode}/matches?season=${seasonYear}`,
-    ttl
-  ) as any;
+  let data: any;
+  try {
+    data = await apiFetch(`/competitions/${competitionCode}/matches?season=${seasonYear}`, ttl);
+  } catch (e: any) {
+    // fd.org returns 404 when the season isn't registered yet (e.g. CL 2026-27 in August).
+    // Treat it as an empty fixture list — no matches scheduled yet.
+    if (/API error 404/.test(e.message)) return [];
+    throw e;
+  }
   const matches: CompetitionFixture[] = (data?.matches ?? [])
     .filter((m: any) => !["CANCELLED", "SUSPENDED"].includes(m.status))
     .map((m: any): CompetitionFixture => ({
