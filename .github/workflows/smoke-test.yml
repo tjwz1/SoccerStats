@@ -63,6 +63,24 @@ jobs:
             echo "$line" | tee -a "$LOGFILE"
           }
 
+          # Verifies that an endpoint correctly rejects unauthenticated requests with 401.
+          # Any other code (including 200) is a FAIL — it means the auth wall is missing.
+          check_auth() {
+            local label="$1" url="$2" method="${3:-GET}" out code line
+            out=$(curl -s -w "\n__STATUS__%{http_code}" \
+              -H "x-vercel-protection-bypass: $BYPASS" \
+              -X "$method" \
+              --max-time 15 \
+              "$url" 2>/dev/null || true)
+            code=$(printf '%s' "$out" | tail -n1 | sed 's/__STATUS__//')
+            case "$code" in
+              401) line="PASS -- $label ($code, correctly requires auth)"; PASS=$((PASS+1)) ;;
+              "")  line="FAIL -- $label (no response / timeout)";          FAIL=$((FAIL+1)) ;;
+              *)   line="FAIL -- $label (HTTP $code, expected 401)";       FAIL=$((FAIL+1)) ;;
+            esac
+            echo "$line" | tee -a "$LOGFILE"
+          }
+
           # Like check() but also accepts 500+timeout as PASS — the player-career
           # endpoint has a 20 s server-side hard cap on first cold load; the
           # background scrape continues and populates Supabase, so "timed out" is
@@ -189,6 +207,11 @@ jobs:
           wait $PLAYER_PRIME_PID
           sleep 10
           check_player "48. Player career (Haaland)" "$BASE/players/38101?competition=PL"
+
+          # ── AUTH WALLS ───────────────────────────────────────────────────────
+          # Verify authenticated endpoints correctly reject unauthenticated requests.
+          check_auth "49. Favourites auth wall"  "$BASE/favourites"
+          check_auth "50. Account auth wall"     "$BASE/account" "DELETE"
 
           # ── SUMMARY ──────────────────────────────────────────────────────────
           SUMMARY="PASS=$PASS SKIP=$SKIP FAIL=$FAIL"
