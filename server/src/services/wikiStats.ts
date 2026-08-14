@@ -146,6 +146,10 @@ async function findSectionIndices(title: string): Promise<{ career: string | nul
       parsed?.parse?.sections ?? [];
     const career =
       (sections.find((s) => s.line.toLowerCase().includes("statistic")) ??
+       sections.find((s) => s.line.toLowerCase().includes("appearances")) ??
+       sections.find((s) => /\bplaying\b/.test(s.line.toLowerCase())) ??
+       sections.find((s) => /\bclub career\b/.test(s.line.toLowerCase())) ??
+       sections.find((s) => /\bprofessional career\b/.test(s.line.toLowerCase())) ??
        sections.find((s) => s.line.toLowerCase().includes("career")))?.index ?? null;
     const honours =
       (sections.find((s) => s.line.toLowerCase().includes("honour")) ??
@@ -230,6 +234,24 @@ function stripWikiStyles(html: string): string {
     .replace(/<link\b[^>]*>/gi, "");
 }
 
+// Scan headers right-to-left for apps/goals/assists columns with a wide alias set.
+// Right-to-left ensures we pick the rightmost (usually "Total") group in multi-group tables.
+function findStatCols(headers: string[]): { appsCol: number; goalsCol: number; assistsCol: number } {
+  let appsCol = -1, goalsCol = -1, assistsCol = -1;
+  for (let c = headers.length - 1; c >= 0; c--) {
+    const h = headers[c].toLowerCase().replace(/\./g, "").trim();
+    if (assistsCol === -1 && (h === "assists" || h === "ast" || h === "asts" || h === "a")) {
+      assistsCol = c;
+    } else if (goalsCol === -1 && (h === "goals" || h === "gls" || h === "g" || h === "scored")) {
+      goalsCol = c;
+    } else if (appsCol === -1 && (h === "apps" || h === "app" || h === "p" || h === "mp" || h === "pld" || h === "played" || h === "appearances")) {
+      appsCol = c;
+      break;
+    }
+  }
+  return { appsCol, goalsCol, assistsCol };
+}
+
 function parseCareerTable(html: string): WikiCareerRow[] {
   const $ = cheerio.load(stripWikiStyles(html));
   const rows: WikiCareerRow[] = [];
@@ -250,21 +272,13 @@ function parseCareerTable(html: string): WikiCareerRow[] {
 
     const leagueCol = findCol(allHeaders, "League", "Division", "Competition");
 
-    // Scan right-to-left for stat columns: goals usually appears before the final assist/total column.
-    // Also detect assists column (present on many but not all Wikipedia career tables).
-    let totalAppsCol = -1;
-    let totalGoalsCol = -1;
-    let totalAssistsCol = -1;
-    for (let c = subHeaders.length - 1; c >= 0; c--) {
-      const h = subHeaders[c].toLowerCase().trim();
-      if (totalAssistsCol === -1 && (h === "assists" || h === "ast" || h === "a")) {
-        totalAssistsCol = c;
-      } else if (totalGoalsCol === -1 && (h === "goals" || h === "gls" || h === "g")) {
-        totalGoalsCol = c;
-      } else if (totalAppsCol === -1 && (h === "apps" || h === "app" || h === "p" || h === "mp" || h === "appearances")) {
-        totalAppsCol = c;
-        break;
-      }
+    // Try subHeaders first (the more specific row in two-row headers), fall back to allHeaders.
+    let { appsCol: totalAppsCol, goalsCol: totalGoalsCol, assistsCol: totalAssistsCol } = findStatCols(subHeaders);
+    if (totalAppsCol === -1 || totalGoalsCol === -1) {
+      const fromAll = findStatCols(allHeaders);
+      if (totalAppsCol === -1) totalAppsCol = fromAll.appsCol;
+      if (totalGoalsCol === -1) totalGoalsCol = fromAll.goalsCol;
+      if (totalAssistsCol === -1) totalAssistsCol = fromAll.assistsCol;
     }
     if (totalAppsCol === -1 || totalGoalsCol === -1) {
       const colCount = Math.max(firstRow.length, secondRow.length);
@@ -272,7 +286,11 @@ function parseCareerTable(html: string): WikiCareerRow[] {
       totalGoalsCol = colCount - 1;
     }
 
-    const headerRowCount = secondRow.some((h) => h.toLowerCase() === "apps" || h.toLowerCase() === "goals") ? 2 : 1;
+    const STAT_KW = ["apps", "goals", "appearances", "assists", "pld", "gls", "mp", "played", "scored"];
+    const secondRowIsHeader = secondRow.some(
+      (h) => STAT_KW.includes(h.toLowerCase().replace(/\./g, "").trim())
+    );
+    const headerRowCount = secondRowIsHeader ? 2 : 1;
     let lastClub = "";
     let lastLeague = "";
 

@@ -271,6 +271,9 @@ export interface TmCareerRow {
   appearances: number;
   goals: number;
   assists: number;
+  minutesPlayed?: number;
+  yellowCards?: number;
+  redCards?: number;
 }
 
 // TM's leistungsdaten page is now client-side rendered (no server-side table).
@@ -313,6 +316,9 @@ async function fetchTmPerformanceJson(
       appearances: apps,
       goals: entry.goalsScored ?? 0,
       assists: entry.assists ?? 0,
+      minutesPlayed: entry.minutesPlayed ?? undefined,
+      yellowCards: entry.yellowCards ?? undefined,
+      redCards: entry.redCards ?? undefined,
     });
   }
   return rows;
