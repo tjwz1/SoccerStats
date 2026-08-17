@@ -133,25 +133,65 @@ async function findClubWikiTitle(teamName: string): Promise<string | null> {
 // sections in a single API call (was two separate calls before).
 // Also returns the resolved title (Wikipedia follows redirects, so "FC Bayern München"
 // resolves to "FC Bayern Munich" — we must use the resolved title for subsequent fetches).
-async function findSectionIndices(title: string): Promise<{ career: string | null; honours: string | null; resolvedTitle: string }> {
+//
+// Wikipedia's action=parse&section=N returns only a single section's content, NOT its
+// subsections. For players like Mbappé whose career table lives in a subsection (e.g.
+// "8.1 Club", "8.2 International"), we must collect the subsection indices and fetch each
+// one separately, then concatenate the HTML before parsing.
+async function findSectionIndices(title: string): Promise<{
+  careerSections: string[];
+  career: string | null;
+  honours: string | null;
+  resolvedTitle: string;
+}> {
   const url =
     `https://en.wikipedia.org/w/api.php?action=parse` +
     `&page=${encodeURIComponent(title)}&prop=sections&format=json&redirects=1`;
   const text = await wikiFetch(url, 8000);
-  if (!text) return { career: null, honours: null, resolvedTitle: title };
+  if (!text) return { careerSections: [], career: null, honours: null, resolvedTitle: title };
   try {
     const parsed = JSON.parse(text) as any;
     const resolvedTitle: string = parsed?.parse?.title ?? title;
-    const sections: Array<{ line: string; index: string }> =
+    const sections: Array<{ line: string; index: string; toclevel: number }> =
       parsed?.parse?.sections ?? [];
-    const career =
-      (sections.find((s) => s.line.toLowerCase().includes("statistic")) ??
-       sections.find((s) => s.line.toLowerCase().includes("career")))?.index ?? null;
+
+    const careerEntry =
+      sections.find((s) => s.line.toLowerCase().includes("statistic")) ??
+      sections.find((s) => s.line.toLowerCase().includes("appearances")) ??
+      sections.find((s) => /\bplaying\b/.test(s.line.toLowerCase())) ??
+      sections.find((s) => /\bclub career\b/.test(s.line.toLowerCase())) ??
+      sections.find((s) => /\bprofessional career\b/.test(s.line.toLowerCase())) ??
+      sections.find((s) => s.line.toLowerCase().includes("career")) ?? null;
+
+    let careerSections: string[] = [];
+    if (careerEntry) {
+      const careerLevel = careerEntry.toclevel ?? 1;
+      const careerPos = sections.indexOf(careerEntry);
+      // Look for immediate h3 subsections with career-related names (Club, International, etc.)
+      const subsections: string[] = [];
+      for (let i = careerPos + 1; i < sections.length; i++) {
+        const s = sections[i];
+        if (s.toclevel <= careerLevel) break;
+        if (s.toclevel === careerLevel + 1) {
+          const lower = s.line.toLowerCase();
+          if (
+            lower.includes("club") || lower.includes("international") ||
+            lower.includes("national") || lower.includes("statistic") ||
+            lower.includes("career")
+          ) {
+            subsections.push(s.index);
+          }
+        }
+      }
+      // Prefer subsections when found — the parent section often has no wikitable itself
+      careerSections = subsections.length > 0 ? subsections : [careerEntry.index];
+    }
+
     const honours =
       (sections.find((s) => s.line.toLowerCase().includes("honour")) ??
        sections.find((s) => s.line.toLowerCase().includes("honor")))?.index ?? null;
-    return { career, honours, resolvedTitle };
-  } catch { return { career: null, honours: null, resolvedTitle: title }; }
+    return { careerSections, career: careerSections[0] ?? null, honours, resolvedTitle };
+  } catch { return { careerSections: [], career: null, honours: null, resolvedTitle: title }; }
 }
 
 // Fetch section HTML (for career-stats table parsing via cheerio).
@@ -230,12 +270,29 @@ function stripWikiStyles(html: string): string {
     .replace(/<link\b[^>]*>/gi, "");
 }
 
+// Scan headers right-to-left for apps/goals/assists columns with a wide alias set.
+// Right-to-left ensures we pick the rightmost (usually "Total") group in multi-group tables.
+function findStatCols(headers: string[]): { appsCol: number; goalsCol: number; assistsCol: number } {
+  let appsCol = -1, goalsCol = -1, assistsCol = -1;
+  for (let c = headers.length - 1; c >= 0; c--) {
+    const h = headers[c].toLowerCase().replace(/\./g, "").trim();
+    if (assistsCol === -1 && (h === "assists" || h === "ast" || h === "asts" || h === "a")) {
+      assistsCol = c;
+    } else if (goalsCol === -1 && (h === "goals" || h === "gls" || h === "g" || h === "scored")) {
+      goalsCol = c;
+    } else if (appsCol === -1 && (h === "apps" || h === "app" || h === "p" || h === "mp" || h === "pld" || h === "played" || h === "appearances")) {
+      appsCol = c;
+      break;
+    }
+  }
+  return { appsCol, goalsCol, assistsCol };
+}
+
 function parseCareerTable(html: string): WikiCareerRow[] {
   const $ = cheerio.load(stripWikiStyles(html));
   const rows: WikiCareerRow[] = [];
 
   $("table.wikitable").each((_, table) => {
-    if (rows.length > 0) return;
     const grid = flattenTable($, table);
     if (grid.length < 3) return;
 
@@ -250,21 +307,13 @@ function parseCareerTable(html: string): WikiCareerRow[] {
 
     const leagueCol = findCol(allHeaders, "League", "Division", "Competition");
 
-    // Scan right-to-left for stat columns: goals usually appears before the final assist/total column.
-    // Also detect assists column (present on many but not all Wikipedia career tables).
-    let totalAppsCol = -1;
-    let totalGoalsCol = -1;
-    let totalAssistsCol = -1;
-    for (let c = subHeaders.length - 1; c >= 0; c--) {
-      const h = subHeaders[c].toLowerCase().trim();
-      if (totalAssistsCol === -1 && (h === "assists" || h === "ast" || h === "a")) {
-        totalAssistsCol = c;
-      } else if (totalGoalsCol === -1 && (h === "goals" || h === "gls" || h === "g")) {
-        totalGoalsCol = c;
-      } else if (totalAppsCol === -1 && (h === "apps" || h === "app" || h === "p" || h === "mp" || h === "appearances")) {
-        totalAppsCol = c;
-        break;
-      }
+    // Try subHeaders first (the more specific row in two-row headers), fall back to allHeaders.
+    let { appsCol: totalAppsCol, goalsCol: totalGoalsCol, assistsCol: totalAssistsCol } = findStatCols(subHeaders);
+    if (totalAppsCol === -1 || totalGoalsCol === -1) {
+      const fromAll = findStatCols(allHeaders);
+      if (totalAppsCol === -1) totalAppsCol = fromAll.appsCol;
+      if (totalGoalsCol === -1) totalGoalsCol = fromAll.goalsCol;
+      if (totalAssistsCol === -1) totalAssistsCol = fromAll.assistsCol;
     }
     if (totalAppsCol === -1 || totalGoalsCol === -1) {
       const colCount = Math.max(firstRow.length, secondRow.length);
@@ -272,7 +321,11 @@ function parseCareerTable(html: string): WikiCareerRow[] {
       totalGoalsCol = colCount - 1;
     }
 
-    const headerRowCount = secondRow.some((h) => h.toLowerCase() === "apps" || h.toLowerCase() === "goals") ? 2 : 1;
+    const STAT_KW = ["apps", "goals", "appearances", "assists", "pld", "gls", "mp", "played", "scored"];
+    const secondRowIsHeader = secondRow.some(
+      (h) => STAT_KW.includes(h.toLowerCase().replace(/\./g, "").trim())
+    );
+    const headerRowCount = secondRowIsHeader ? 2 : 1;
     let lastClub = "";
     let lastLeague = "";
 
@@ -293,9 +346,6 @@ function parseCareerTable(html: string): WikiCareerRow[] {
       const normSeason = season
         .replace(/[–—]/g, "/").replace("-", "/")
         .replace(/(\d{4})\/(\d{4})/, (_, y1, y2) => `${y1}/${y2.slice(2)}`);
-
-      // Skip international-career rows that sometimes appear in the club career table
-      if (isNationalTeam(club)) continue;
 
       rows.push({ season: normSeason, team: club, league, appearances: apps, goals, assists });
       lastClub = club;
@@ -665,25 +715,28 @@ export async function fetchPlayerWikiData(
   }
 
   await sleep(WIKI_SLEEP_MS);
-  const { career: careerIdx, honours: honoursIdx, resolvedTitle } = await findSectionIndices(title);
+  const { careerSections, honours: honoursIdx, resolvedTitle } = await findSectionIndices(title);
 
-  if (!careerIdx && !honoursIdx) return { career: [], trophies: [] };
+  if (careerSections.length === 0 && !honoursIdx) return { career: [], trophies: [] };
 
   await sleep(WIKI_SLEEP_MS);
 
   // Use resolvedTitle for subsequent fetches — Wikipedia may redirect (e.g. "FC Bayern München" → "FC Bayern Munich").
-  const [careerHtml, honoursWikitext] = await Promise.all([
-    needsCareer && careerIdx ? fetchPageHtml(resolvedTitle, careerIdx) : Promise.resolve(null),
+  // Fetch all career sections (may be multiple for players with Club + International subsections)
+  // and the honours wikitext in parallel.
+  const [honoursWikitext, ...careerHtmlParts] = await Promise.all([
     needsHonours && honoursIdx ? fetchPageWikitext(resolvedTitle, honoursIdx) : Promise.resolve(null),
+    ...(needsCareer ? careerSections.map((idx) => fetchPageHtml(resolvedTitle, idx)) : []),
   ]);
+  const careerHtml = careerHtmlParts.filter(Boolean).join("\n") || null;
 
   let career: WikiCareerRow[] = [];
   if (needsCareer && careerHtml) {
     career = parseCareerTable(careerHtml);
-    // Fallback: section had no table — try the full page once.
-    if (career.length === 0 && careerIdx) {
+    // Fallback: sections had no usable table — try the full page once.
+    if (career.length === 0) {
       await sleep(WIKI_SLEEP_MS);
-      const fullHtml = await fetchPageHtml(title);
+      const fullHtml = await fetchPageHtml(resolvedTitle);
       if (fullHtml) career = parseCareerTable(fullHtml);
     }
     console.log(`[wikiStats] ${playerName} → ${career.length} career rows from "${title}"`);

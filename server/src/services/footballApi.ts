@@ -9,6 +9,7 @@ import { getWikiStats, getWikiStatsBatch, setWikiStats } from "../db/wikiCareerC
 import { getWikiTrophies, setWikiTrophies, getTmCupChecked, setTmCupChecked } from "../db/wikiTrophyCache";
 import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus, getWcR16Pairings } from "./wikiStats";
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, resolvePlayerRef, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
+import { fetchWorldFootballCareer, type WfCareerRow } from "./worldFootball";
 import type { ClubTrophy as TmClubTrophy, KnockoutStatus } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
 import {
@@ -1571,6 +1572,7 @@ export interface StandingRow {
   goalsAgainst?: number;
   form: string | null;
   knockoutStatus?: "Q" | "E" | "3rd" | null;
+  description?: string;
 }
 
 export interface StandingsGroup {
@@ -1603,6 +1605,10 @@ function mapStandingRow(e: any): StandingRow {
     goalsFor: e.goalsFor ?? undefined,
     goalsAgainst: e.goalsAgainst ?? undefined,
     form: e.form ?? null,
+    // "description" in e: fd.org always includes this key (sometimes null).
+    // Convert null → "" so the client knows fd.org said "no zone", vs undefined
+    // which means the field was absent entirely (ESPN-sourced leagues).
+    description: "description" in e ? (e.description ?? "") : undefined,
   };
 }
 
@@ -2479,16 +2485,15 @@ export async function getTeamSquadPlayers(teamId: string): Promise<Array<{ id: n
   return (data.squad ?? []).map((p: any) => ({ id: p.id as number, name: p.name as string }));
 }
 
-// Merge Transfermarkt career rows with Wikipedia career rows.
-// TM provides per-competition granularity; Wiki provides season-aggregate totals.
-// Strategy: for any season Transfermarkt covers, prefer TM rows entirely
-// (more granular and accurate). Wiki rows fill in seasons TM missed.
+// Merge career rows from TM (most granular), Wikipedia, and WorldFootball.net.
+// Priority: TM (per-competition, accurate) → Wiki (historical aggregate) → WF (deep history fallback).
+// For any season TM covers, TM rows win entirely. Wiki fills gaps TM misses.
+// WF fills gaps neither TM nor Wiki covers.
 function mergeCareerSources(
   wikiRows: Array<{ season: string; team: string; league: string; appearances: number; goals: number; assists: number }>,
-  tmRows: TmCareerRow[]
+  tmRows: TmCareerRow[],
+  wfRows: WfCareerRow[] = []
 ): Array<{ season: string; team: string; league: string; appearances: number; goals: number; assists: number }> {
-  if (tmRows.length === 0) return wikiRows;
-
   const tmSeasons = new Set(tmRows.map((r) => r.season));
   const tmConverted = tmRows.map((r) => ({
     season: r.season,
@@ -2499,10 +2504,22 @@ function mergeCareerSources(
     assists: r.assists,
   }));
 
-  // Wiki rows only for seasons Transfermarkt doesn't cover
   const wikiGap = wikiRows.filter((r) => !tmSeasons.has(r.season));
 
-  return [...tmConverted, ...wikiGap];
+  // WF fills seasons neither TM nor Wiki covers
+  const coveredSeasons = new Set([...tmSeasons, ...wikiGap.map((r) => r.season)]);
+  const wfGap = wfRows
+    .filter((r) => !coveredSeasons.has(r.season))
+    .map((r) => ({
+      season: r.season,
+      team: r.team,
+      league: r.competition,
+      appearances: r.appearances,
+      goals: r.goals,
+      assists: 0,
+    }));
+
+  return [...tmConverted, ...wikiGap, ...wfGap];
 }
 
 // Normalise a trophy name for cross-source matching:
@@ -2562,21 +2579,25 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // Current season string e.g. "2025/26"
   const currentSeasonStr = `${getCurrentSeason()}/${String(getCurrentSeason() + 1).slice(2)}`;
 
-  // Re-scrape TM if: (a) no cache at all, or (b) cache exists with current-season league/UEFA
-  // rows but NO cup rows — i.e. cached before cup integration.
-  // A row is a "cup row" if its competition doesn't normalise to a known league/UEFA code.
-  // Throttled to at most once per day to avoid slow loads for players without cup appearances.
+  // Re-scrape TM if: (a) no cache at all, or (b) cache lacks current-season cup rows.
+  // "Cup row" = a competition that doesn't normalise to a known league/UEFA code.
+  // Also fires when the player has a current team but zero current-season rows in cache
+  // (TM was blocked on the first load, leaving only historical wiki data — cups would
+  // never be retried under the old `cachedCurrentSeasonRows.length > 0` guard).
+  // Throttled via tmCupChecked: set for 24h when TM returns data, or when the player
+  // has no active team (retired/injured) to avoid daily spam for inactive players.
   const canonicalValues = new Set(Object.values(COMP_CANONICAL));
   const cachedCurrentSeasonRows = (cachedStats ?? []).filter(r => r.season === currentSeasonStr);
   const cachedHasCupRows = cachedCurrentSeasonRows.some(
     r => !canonicalValues.has(normalizeComp(r.league ?? ""))
   );
+  const hasCurrentTeam = !!personData.currentTeam?.id;
   const needsCareer = cachedStats === null;
   const needsCurrentSeasonCups =
     !needsCareer &&
-    cachedCurrentSeasonRows.length > 0 &&
-    !cachedHasCupRows &&
-    !tmCupChecked; // skip if TM was already checked within the last 24h
+    hasCurrentTeam &&       // skip for retired/inactive players (no team)
+    !cachedHasCupRows &&    // skip if cup rows are already cached
+    !tmCupChecked;          // skip if TM was checked today
   const needsTrophies = cachedTrophies === null;
 
   // Phase 2: scorer API + wiki + Transfermarkt all run in parallel.
@@ -2584,7 +2605,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // International tournaments (WC/EC) run in the calendar year of the tournament,
   // not the club-season year (e.g. WC 2026 uses season=2026, not getCurrentSeason()=2025).
   const INTL_SEASON = new Date().getFullYear();
-  const [currentSeasonHits, freshWiki, tmCareer, tmHonours] = await Promise.all([
+  const [currentSeasonHits, freshWiki, tmCareer, tmHonours, wfCareer] = await Promise.all([
     Promise.all(
       probeComps.map(async (code) => {
         const seasonYear = INTERNATIONAL_COMP_CODES.has(code) ? INTL_SEASON : getCurrentSeason();
@@ -2602,19 +2623,33 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     needsTrophies
       ? scrapeTransfermarktPlayerHonours(personData.name, id).catch(() => [] as TmClubTrophy[])
       : Promise.resolve([] as TmClubTrophy[]),
+    // WorldFootball.net: historical fallback for seasons TM + Wiki both miss.
+    // Only fetched on a full career cache miss to avoid adding latency on cache hits.
+    needsCareer
+      ? fetchWorldFootballCareer(personData.name).catch(() => [] as WfCareerRow[])
+      : Promise.resolve([] as WfCareerRow[]),
   ]);
 
-  // Merge TM (granular, has cup data) with wiki/cache (gap-filler for older seasons).
+  // Merge TM (granular, has cup data) → Wiki/cache (historical gap-filler) → WF (deep history fallback).
   // On cup re-scrape (needsCurrentSeasonCups), use cachedStats as the "wiki" base so
   // historical rows are preserved and only new TM cup rows are added.
-  const mergedCareer = mergeCareerSources(
-    freshWiki?.career ?? (needsCurrentSeasonCups ? (cachedStats ?? []) : []),
-    tmCareer
-  );
+  // Use freshWiki.career only when it actually has rows — an empty array returned when
+  // wiki was fetched solely for trophies must not suppress the cachedStats fallback.
+  const wikiBase = freshWiki?.career?.length
+    ? freshWiki.career
+    : (needsCurrentSeasonCups ? (cachedStats ?? []) : []);
+  const mergedCareer = mergeCareerSources(wikiBase, tmCareer, wfCareer);
   if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer);
-  // Mark that TM cup check has run so we don't re-scrape on every request for
-  // players who have no cup appearances this season.
-  if (needsCurrentSeasonCups) setTmCupChecked(id);
+  // Mark TM cup check done for 24h when:
+  //   (a) TM returned data (cups found or legitimately none), OR
+  //   (b) TM returned nothing AND the player has no current-season rows in cache
+  //       (they may be mid-season with no apps yet; daily retry is enough).
+  // Do NOT mark when TM returned [] but the player has current-season league rows —
+  // that means TM is bot-blocked and we want to retry every request until it works.
+  const noCurrentSeasonCache = cachedCurrentSeasonRows.length === 0;
+  if (needsCurrentSeasonCups && (tmCareer.length > 0 || noCurrentSeasonCache)) {
+    setTmCupChecked(id);
+  }
 
   // Merge TM player honours with Wikipedia trophies; TM fills entries wiki missed.
   const mergedTrophies = mergePlayerTrophies(freshWiki?.trophies ?? [], tmHonours);

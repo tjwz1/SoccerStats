@@ -11,10 +11,12 @@ const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
 
 // Map football-data.org domestic code → ESPN cup slug + display name
 const DOMESTIC_CUP_MAP: Record<string, { slug: string; name: string }> = {
-  PD:  { slug: "esp.copa_del_rey", name: "Copa del Rey" },
-  BL1: { slug: "ger.dfb_pokal",    name: "DFB-Pokal" },
-  SA:  { slug: "ita.coppa_italia", name: "Coppa Italia" },
-  DED: { slug: "ned.cup",          name: "KNVB Beker" },
+  PD:  { slug: "esp.copa_del_rey",       name: "Copa del Rey" },
+  BL1: { slug: "ger.dfb_pokal",          name: "DFB-Pokal" },
+  SA:  { slug: "ita.coppa_italia",        name: "Coppa Italia" },
+  DED: { slug: "ned.cup",                name: "KNVB Beker" },
+  FL1: { slug: "fra.coupe_de_france",    name: "Coupe de France" },
+  PPL: { slug: "por.cup",               name: "Taça de Portugal" },
 };
 
 // Map domestic league slug to ESPN league slug (for team ID lookup)
@@ -23,6 +25,8 @@ const DOMESTIC_LEAGUE_SLUG: Record<string, string> = {
   BL1: "ger.1",
   SA:  "ita.1",
   DED: "ned.1",
+  FL1: "fra.1",
+  PPL: "por.1",
 };
 
 // Cup slugs also need to work in the existing COMP_MAP inside matchStatsScraper
@@ -370,7 +374,6 @@ function parseTmMatchRows(
   teamName: string,
   cupInfo: { name: string; code: string }
 ): ScheduleMatch[] {
-  const DATE_PAT = /\d{2}\/\d{2}\/\d{4}/;
   const rows: ScheduleMatch[] = [];
 
   table.find("tbody tr").each((_: any, tr: any) => {

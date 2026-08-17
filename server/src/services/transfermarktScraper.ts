@@ -271,6 +271,9 @@ export interface TmCareerRow {
   appearances: number;
   goals: number;
   assists: number;
+  minutesPlayed?: number;
+  yellowCards?: number;
+  redCards?: number;
 }
 
 // TM's leistungsdaten page is now client-side rendered (no server-side table).
@@ -281,7 +284,7 @@ async function fetchTmPerformanceJson(
   teamName: string
 ): Promise<TmCareerRow[]> {
   const url = `${BASE}/ceapi/player/${playerId}/performance`;
-  const text = await fetch(url, {
+  const res = await fetch(url, {
     headers: {
       ...HEADERS,
       Accept: "application/json, text/plain, */*",
@@ -289,9 +292,11 @@ async function fetchTmPerformanceJson(
     },
     signal: AbortSignal.timeout(6_000),
     redirect: "follow",
-  }).then((r) => (r.ok ? r.text() : null)).catch(() => null);
+  }).catch(() => null);
 
-  if (!text) return [];
+  if (!res) { console.warn(`[transfermarkt] ceapi network error for player ${playerId}`); return []; }
+  if (!res.ok) { console.warn(`[transfermarkt] ceapi HTTP ${res.status} for player ${playerId}`); return []; }
+  const text = await res.text();
 
   let data: Record<string, any>;
   try { data = JSON.parse(text); } catch { return []; }
@@ -313,6 +318,9 @@ async function fetchTmPerformanceJson(
       appearances: apps,
       goals: entry.goalsScored ?? 0,
       assists: entry.assists ?? 0,
+      minutesPlayed: entry.minutesPlayed ?? undefined,
+      yellowCards: entry.yellowCards ?? undefined,
+      redCards: entry.redCards ?? undefined,
     });
   }
   return rows;

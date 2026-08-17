@@ -184,7 +184,8 @@ router.get("/competitions/:code/standings", async (req, res) => {
     } else {
       // Current season: 90s route-level SWR so standings reflect live match
       // outcomes within two polling cycles (client polls every 60s).
-      const cacheKey = `/standings/v9/${req.params.code}/current`;
+      // v11: description null→"" fix so empty-zone rows don't fall back to config
+      const cacheKey = `/standings/v11/${req.params.code}/current`;
       await serveWithSWR(res, cacheKey, 90 * 1000,
         () => getStandings(req.params.code, season),
         cacheWhen.hasStandings
@@ -860,7 +861,8 @@ router.get("/teams/:id/schedule", async (req, res) => {
 
     // SWR: serve stale assembled schedule immediately on cache expiry (background refresh).
     // Prevents Vercel timeouts caused by blocking on 4 parallel fd.org fetches + cup scraping.
-    const assembledKey = `/team-schedule-full/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
+    // v2: includes domestic cup matches (ESPN + TM) merged with league matches
+    const assembledKey = `/team-schedule-full/v2/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
     const ASSEMBLED_TTL = 30 * 60 * 1000; // 30 min — aligned with SCHEDULE_TTL_MS in footballApi
 
     await serveWithSWR(res, assembledKey, ASSEMBLED_TTL,
