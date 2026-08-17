@@ -2624,15 +2624,16 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // Merge TM (granular, has cup data) → Wiki/cache (historical gap-filler) → WF (deep history fallback).
   // On cup re-scrape (needsCurrentSeasonCups), use cachedStats as the "wiki" base so
   // historical rows are preserved and only new TM cup rows are added.
-  const mergedCareer = mergeCareerSources(
-    freshWiki?.career ?? (needsCurrentSeasonCups ? (cachedStats ?? []) : []),
-    tmCareer,
-    wfCareer
-  );
+  // Use freshWiki.career only when it actually has rows — an empty array returned when
+  // wiki was fetched solely for trophies must not suppress the cachedStats fallback.
+  const wikiBase = freshWiki?.career?.length
+    ? freshWiki.career
+    : (needsCurrentSeasonCups ? (cachedStats ?? []) : []);
+  const mergedCareer = mergeCareerSources(wikiBase, tmCareer, wfCareer);
   if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer);
-  // Mark that TM cup check has run so we don't re-scrape on every request for
-  // players who have no cup appearances this season.
-  if (needsCurrentSeasonCups) setTmCupChecked(id);
+  // Mark that TM cup check has run. Only set the flag when TM returned data — if it
+  // returned nothing (bot-blocked), don't lock out retries for the next 24h.
+  if (needsCurrentSeasonCups && tmCareer.length > 0) setTmCupChecked(id);
 
   // Merge TM player honours with Wikipedia trophies; TM fills entries wiki missed.
   const mergedTrophies = mergePlayerTrophies(freshWiki?.trophies ?? [], tmHonours);

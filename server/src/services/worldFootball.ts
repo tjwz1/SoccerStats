@@ -3,7 +3,7 @@ import * as cheerio from "cheerio";
 import { getCached, setCached } from "../db/apiCache";
 
 const BASE = "https://www.worldfootball.net";
-const WF_SLEEP_MS = 1500;
+const WF_SLEEP_MS = 500;
 const WF_CAREER_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const HEADERS = {
@@ -34,7 +34,7 @@ async function wfFetch(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
       headers: HEADERS,
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(3_000),
       redirect: "follow",
     });
     if (!res.ok) {
