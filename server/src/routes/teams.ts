@@ -860,7 +860,8 @@ router.get("/teams/:id/schedule", async (req, res) => {
 
     // SWR: serve stale assembled schedule immediately on cache expiry (background refresh).
     // Prevents Vercel timeouts caused by blocking on 4 parallel fd.org fetches + cup scraping.
-    const assembledKey = `/team-schedule-full/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
+    // v2: includes domestic cup matches (ESPN + TM) merged with league matches
+    const assembledKey = `/team-schedule-full/v2/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
     const ASSEMBLED_TTL = 30 * 60 * 1000; // 30 min — aligned with SCHEDULE_TTL_MS in footballApi
 
     await serveWithSWR(res, assembledKey, ASSEMBLED_TTL,
