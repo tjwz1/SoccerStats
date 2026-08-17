@@ -1572,6 +1572,7 @@ export interface StandingRow {
   goalsAgainst?: number;
   form: string | null;
   knockoutStatus?: "Q" | "E" | "3rd" | null;
+  description?: string;
 }
 
 export interface StandingsGroup {
@@ -1604,6 +1605,10 @@ function mapStandingRow(e: any): StandingRow {
     goalsFor: e.goalsFor ?? undefined,
     goalsAgainst: e.goalsAgainst ?? undefined,
     form: e.form ?? null,
+    // "description" in e: fd.org always includes this key (sometimes null).
+    // Convert null → "" so the client knows fd.org said "no zone", vs undefined
+    // which means the field was absent entirely (ESPN-sourced leagues).
+    description: "description" in e ? (e.description ?? "") : undefined,
   };
 }
 

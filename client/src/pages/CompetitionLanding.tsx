@@ -32,7 +32,7 @@ type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel";
 const ZONE_OVERRIDES: Record<string, [number, number, Zone][]> = {
   PL:  [[1,4,"ucl"], [5,5,"uel"], [6,6,"ecl"], [18,20,"rel"]],
   BL1: [[1,4,"ucl"], [5,5,"uel"], [6,6,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
-  PD:  [[1,4,"ucl"], [5,5,"uel"], [6,7,"ecl"], [18,20,"rel"]],
+  PD:  [[1,5,"ucl"], [6,6,"uel"], [7,7,"ecl"], [18,20,"rel"]],
   SA:  [[1,4,"ucl"], [5,6,"uel"], [7,7,"ecl"], [18,20,"rel"]],
   FL1: [[1,2,"ucl"], [3,3,"uel"], [4,4,"ecl"], [17,17,"playoff"], [18,20,"rel"]],
   DED: [[1,2,"ucl"], [3,4,"uel"], [5,5,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
@@ -75,7 +75,28 @@ const ZONE_LABEL: Record<Zone, string> = {
   rel:     "Relegation",
 };
 
-function getZone(compCode: string, position: number, totalTeams: number): Zone | null {
+// Parse fd.org's description field (e.g. "Promotion - Champions League (Group Stage: 1st)")
+// into a Zone. Returns null when the description doesn't indicate a zone.
+function zoneFromDescription(desc: string | undefined): Zone | null {
+  if (!desc) return null;
+  const d = desc.toLowerCase();
+  if (d.includes("champions league")) return "ucl";
+  if (d.includes("europa league"))   return "uel";
+  if (d.includes("conference"))      return "ecl";
+  if (d.includes("playoff"))         return "playoff";
+  if (d.includes("relegation"))      return "rel";
+  return null;
+}
+
+function getZone(compCode: string, position: number, totalTeams: number, description?: string): Zone | null {
+  // When fd.org provides a description field (even empty ""), use it as sole source of truth.
+  //   description="" means fd.org explicitly says no zone for this position → null
+  //   description="Promotion - Champions League..." → ucl, etc.
+  // Only fall back to the hardcoded config when description is completely absent (undefined),
+  // which happens for ESPN-sourced leagues that don't provide this field.
+  if (description !== undefined) {
+    return zoneFromDescription(description);
+  }
   for (const [min, max, zone] of getZoneRanges(compCode, totalTeams)) {
     if (position >= min && position <= max) return zone;
   }
@@ -646,7 +667,12 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
 
         {/* Rows */}
         {projectedRows.map((row, i) => {
-          const zone = isIntlMultiGroup ? null : getZone(comp.code, row.position, rows.length);
+          // When many teams share the same position (early season, lots of 0-pt ties),
+          // zone bars become meaningless noise. Suppress them above threshold of 5.
+          const teamsAtSamePos = rows.filter((r) => r.position === row.position).length;
+          const zone = isIntlMultiGroup || teamsAtSamePos > 5
+            ? null
+            : getZone(comp.code, row.position, rows.length, row.description);
           const intlBarColor = isIntlMultiGroup
             ? row.position <= 2 ? "bg-green-500"
             : row.position === 3 ? "bg-amber-500"
@@ -794,9 +820,16 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
           </div>
         </div>
       ) : (() => {
-        const zoneRanges = getZoneRanges(comp.code, rows.length);
-        if (zoneRanges.length === 0) return null;
-        const uniqueZones = zoneRanges.map(([,, z]) => z).filter((z, i, a) => a.indexOf(z) === i) as Zone[];
+        // Prefer zones actually present in the data (description-driven) over hardcoded config.
+        // Apply the same tie-count threshold so legend only shows zones that are actually displayed.
+        const dataZones = rows
+          .filter((r) => rows.filter((r2) => r2.position === r.position).length <= 5)
+          .map((r) => getZone(comp.code, r.position, rows.length, r.description))
+          .filter((z): z is Zone => z !== null);
+        const uniqueZones = dataZones.length > 0
+          ? [...new Set(dataZones)]
+          : (getZoneRanges(comp.code, rows.length).map(([,, z]) => z).filter((z, i, a) => a.indexOf(z) === i) as Zone[]);
+        if (uniqueZones.length === 0) return null;
         return (
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 px-1">
             {uniqueZones.map((zone) => (

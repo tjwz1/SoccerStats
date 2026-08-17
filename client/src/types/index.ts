@@ -30,6 +30,7 @@ export interface StandingRow {
   goalsAgainst?: number;
   form: string | null;
   knockoutStatus?: "Q" | "E" | "3rd" | null;
+  description?: string;
 }
 
 export interface CompetitionSeason {
