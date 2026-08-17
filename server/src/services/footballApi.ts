@@ -2574,21 +2574,25 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // Current season string e.g. "2025/26"
   const currentSeasonStr = `${getCurrentSeason()}/${String(getCurrentSeason() + 1).slice(2)}`;
 
-  // Re-scrape TM if: (a) no cache at all, or (b) cache exists with current-season league/UEFA
-  // rows but NO cup rows — i.e. cached before cup integration.
-  // A row is a "cup row" if its competition doesn't normalise to a known league/UEFA code.
-  // Throttled to at most once per day to avoid slow loads for players without cup appearances.
+  // Re-scrape TM if: (a) no cache at all, or (b) cache lacks current-season cup rows.
+  // "Cup row" = a competition that doesn't normalise to a known league/UEFA code.
+  // Also fires when the player has a current team but zero current-season rows in cache
+  // (TM was blocked on the first load, leaving only historical wiki data — cups would
+  // never be retried under the old `cachedCurrentSeasonRows.length > 0` guard).
+  // Throttled via tmCupChecked: set for 24h when TM returns data, or when the player
+  // has no active team (retired/injured) to avoid daily spam for inactive players.
   const canonicalValues = new Set(Object.values(COMP_CANONICAL));
   const cachedCurrentSeasonRows = (cachedStats ?? []).filter(r => r.season === currentSeasonStr);
   const cachedHasCupRows = cachedCurrentSeasonRows.some(
     r => !canonicalValues.has(normalizeComp(r.league ?? ""))
   );
+  const hasCurrentTeam = !!personData.currentTeam?.id;
   const needsCareer = cachedStats === null;
   const needsCurrentSeasonCups =
     !needsCareer &&
-    cachedCurrentSeasonRows.length > 0 &&
-    !cachedHasCupRows &&
-    !tmCupChecked; // skip if TM was already checked within the last 24h
+    hasCurrentTeam &&       // skip for retired/inactive players (no team)
+    !cachedHasCupRows &&    // skip if cup rows are already cached
+    !tmCupChecked;          // skip if TM was checked today
   const needsTrophies = cachedTrophies === null;
 
   // Phase 2: scorer API + wiki + Transfermarkt all run in parallel.
@@ -2631,9 +2635,16 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     : (needsCurrentSeasonCups ? (cachedStats ?? []) : []);
   const mergedCareer = mergeCareerSources(wikiBase, tmCareer, wfCareer);
   if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer);
-  // Mark that TM cup check has run. Only set the flag when TM returned data — if it
-  // returned nothing (bot-blocked), don't lock out retries for the next 24h.
-  if (needsCurrentSeasonCups && tmCareer.length > 0) setTmCupChecked(id);
+  // Mark TM cup check done for 24h when:
+  //   (a) TM returned data (cups found or legitimately none), OR
+  //   (b) TM returned nothing AND the player has no current-season rows in cache
+  //       (they may be mid-season with no apps yet; daily retry is enough).
+  // Do NOT mark when TM returned [] but the player has current-season league rows —
+  // that means TM is bot-blocked and we want to retry every request until it works.
+  const noCurrentSeasonCache = cachedCurrentSeasonRows.length === 0;
+  if (needsCurrentSeasonCups && (tmCareer.length > 0 || noCurrentSeasonCache)) {
+    setTmCupChecked(id);
+  }
 
   // Merge TM player honours with Wikipedia trophies; TM fills entries wiki missed.
   const mergedTrophies = mergePlayerTrophies(freshWiki?.trophies ?? [], tmHonours);
