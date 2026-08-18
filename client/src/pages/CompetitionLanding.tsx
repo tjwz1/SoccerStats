@@ -32,7 +32,7 @@ type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel";
 const ZONE_OVERRIDES: Record<string, [number, number, Zone][]> = {
   PL:  [[1,4,"ucl"], [5,5,"uel"], [6,6,"ecl"], [18,20,"rel"]],
   BL1: [[1,4,"ucl"], [5,5,"uel"], [6,6,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
-  PD:  [[1,5,"ucl"], [6,6,"uel"], [7,7,"ecl"], [18,20,"rel"]],
+  PD:  [[1,4,"ucl"], [5,5,"uel"], [6,6,"ecl"], [18,20,"rel"]],
   SA:  [[1,4,"ucl"], [5,6,"uel"], [7,7,"ecl"], [18,20,"rel"]],
   FL1: [[1,2,"ucl"], [3,3,"uel"], [4,4,"ecl"], [17,17,"playoff"], [18,20,"rel"]],
   DED: [[1,2,"ucl"], [3,4,"uel"], [5,5,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
