@@ -25,7 +25,7 @@ interface FixtureMatch {
 // International group tournaments where top 2 advance + best 3rd-placed teams
 const INTL_GROUP_CODES = new Set(["WC", "EC"]);
 
-type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel";
+type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel" | "promo";
 
 // [minPos, maxPos, zone] — inclusive position bounds
 // Exact overrides for competitions where the specific rules are known
@@ -39,8 +39,10 @@ const ZONE_OVERRIDES: Record<string, [number, number, Zone][]> = {
   PPL: [[1,2,"ucl"], [3,3,"uel"], [4,4,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
   SCO: [[1,1,"ucl"], [2,3,"uel"], [4,4,"ecl"], [11,12,"rel"]],
   TUR: [[1,2,"ucl"], [3,4,"uel"], [5,5,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
-  // ESPN-sourced leagues with no European competition zones
-  MLS: [], MX1: [], ARG: [], JPN: [],
+  // Championship: promotion/relegation league — no European zones
+  ELC: [[1,2,"promo"], [3,6,"playoff"], [22,24,"rel"]],
+  // Non-European leagues: suppress the generic deriveZones output (would show wrong UCL/UEL)
+  BSA: [], MLS: [], MX1: [], ARG: [], JPN: [],
 };
 
 // For competitions without exact rules, derive reasonable zones from team count
@@ -57,7 +59,7 @@ function deriveZones(totalTeams: number): [number, number, Zone][] {
 
 // Convert server-provided {zone: [min,max]} into the [min,max,zone][] tuple format.
 function serverRangesToList(serverRanges: Record<string, [number, number]>): [number, number, Zone][] {
-  const VALID: Set<string> = new Set(["ucl","uel","ecl","playoff","rel"]);
+  const VALID: Set<string> = new Set(["ucl","uel","ecl","playoff","rel","promo"]);
   return Object.entries(serverRanges)
     .filter(([z]) => VALID.has(z))
     .map(([z, [min, max]]) => [min, max, z as Zone]);
@@ -80,6 +82,7 @@ const ZONE_DOT: Record<Zone, string> = {
   ecl:     "bg-lime-500",
   playoff: "bg-yellow-500",
   rel:     "bg-red-500",
+  promo:   "bg-green-500",
 };
 
 const ZONE_LABEL: Record<Zone, string> = {
@@ -88,6 +91,7 @@ const ZONE_LABEL: Record<Zone, string> = {
   ecl:     "Conference League",
   playoff: "Playoff",
   rel:     "Relegation",
+  promo:   "Promotion",
 };
 
 // Parse fd.org's description field (e.g. "Promotion - Champions League (Group Stage: 1st)")
