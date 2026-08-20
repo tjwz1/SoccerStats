@@ -686,9 +686,12 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
           // When many teams share the same position (early season, lots of 0-pt ties),
           // zone bars become meaningless noise. Suppress them above threshold of 5.
           const teamsAtSamePos = rows.filter((r) => r.position === row.position).length;
+          // Use row index (i+1) as the table position for zone lookup.
+          // fd.org's row.position skips numbers when teams tie (e.g. two teams at pos=5 → next is pos=7),
+          // so the config range [6,6,"ecl"] would never match. Row index always maps 1:1 to league place.
           const zone = isIntlMultiGroup || teamsAtSamePos > 5
             ? null
-            : getZone(comp.code, row.position, rows.length, row.description, standings?.zoneRanges);
+            : getZone(comp.code, i + 1, rows.length, row.description, standings?.zoneRanges);
           const intlBarColor = isIntlMultiGroup
             ? row.position <= 2 ? "bg-green-500"
             : row.position === 3 ? "bg-amber-500"
@@ -837,10 +840,12 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         </div>
       ) : (() => {
         // Prefer zones actually present in the data (description-driven) over hardcoded config.
-        // Apply the same tie-count threshold so legend only shows zones that are actually displayed.
+        // Use row index (i+1) for zone lookup — same logic as the table rows above.
         const dataZones = rows
-          .filter((r) => rows.filter((r2) => r2.position === r.position).length <= 5)
-          .map((r) => getZone(comp.code, r.position, rows.length, r.description, standings?.zoneRanges))
+          .map((r, i) => {
+            if (rows.filter((r2) => r2.position === r.position).length > 5) return null;
+            return getZone(comp.code, i + 1, rows.length, r.description, standings?.zoneRanges);
+          })
           .filter((z): z is Zone => z !== null);
         const uniqueZones = dataZones.length > 0
           ? [...new Set(dataZones)]
