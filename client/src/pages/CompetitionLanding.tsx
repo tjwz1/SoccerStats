@@ -25,11 +25,12 @@ interface FixtureMatch {
 // International group tournaments where top 2 advance + best 3rd-placed teams
 const INTL_GROUP_CODES = new Set(["WC", "EC"]);
 
-type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel" | "promo";
+type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel" | "promo" | "lib" | "libq" | "sud" | "ccc" | "afc";
 
 // [minPos, maxPos, zone] — inclusive position bounds
 // Exact overrides for competitions where the specific rules are known
 const ZONE_OVERRIDES: Record<string, [number, number, Zone][]> = {
+  // UEFA leagues
   PL:  [[1,4,"ucl"], [5,5,"uel"], [6,6,"ecl"], [18,20,"rel"]],
   BL1: [[1,4,"ucl"], [5,5,"uel"], [6,6,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
   PD:  [[1,4,"ucl"], [5,5,"uel"], [6,6,"ecl"], [18,20,"rel"]],
@@ -39,10 +40,19 @@ const ZONE_OVERRIDES: Record<string, [number, number, Zone][]> = {
   PPL: [[1,2,"ucl"], [3,3,"uel"], [4,4,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
   SCO: [[1,1,"ucl"], [2,3,"uel"], [4,4,"ecl"], [11,12,"rel"]],
   TUR: [[1,2,"ucl"], [3,4,"uel"], [5,5,"ecl"], [16,16,"playoff"], [17,18,"rel"]],
-  // Championship: promotion/relegation league — no European zones
+  // Championship: promotion/relegation — no European spots
   ELC: [[1,2,"promo"], [3,6,"playoff"], [22,24,"rel"]],
-  // Non-European leagues: suppress the generic deriveZones output (would show wrong UCL/UEL)
-  BSA: [], MLS: [], MX1: [], ARG: [], JPN: [],
+  // CONMEBOL leagues (Copa Libertadores / Copa Sudamericana)
+  // BSA: 1-4 group stage, 5 qualifier, 6-11 Sudamericana, 17-20 relegated (4 teams)
+  BSA: [[1,4,"lib"], [5,5,"libq"], [6,11,"sud"], [17,20,"rel"]],
+  // ARG: 6 Libertadores group-stage spots (via Apertura/Clausura/Copa/aggregate) + Sudamericana
+  // No single-season relegation — Argentina uses multi-season promedio points average
+  ARG: [[1,6,"lib"], [7,12,"sud"]],
+  // CONCACAF leagues (Champions Cup) — no relegation in MLS/Liga MX (closed leagues)
+  MLS: [[1,9,"ccc"]],   // 9 MLS clubs in 2026 CONCACAF Champions Cup
+  MX1: [[1,5,"ccc"]],   // ~5 Liga MX clubs in 2026 CONCACAF Champions Cup
+  // AFC leagues (Champions League Elite) — J1 has 20 teams, bottom 3 relegated
+  JPN: [[1,3,"afc"], [18,20,"rel"]],
 };
 
 // For competitions without exact rules, derive reasonable zones from team count
@@ -59,7 +69,7 @@ function deriveZones(totalTeams: number): [number, number, Zone][] {
 
 // Convert server-provided {zone: [min,max]} into the [min,max,zone][] tuple format.
 function serverRangesToList(serverRanges: Record<string, [number, number]>): [number, number, Zone][] {
-  const VALID: Set<string> = new Set(["ucl","uel","ecl","playoff","rel","promo"]);
+  const VALID: Set<string> = new Set(["ucl","uel","ecl","playoff","rel","promo","lib","libq","sud","ccc","afc"]);
   return Object.entries(serverRanges)
     .filter(([z]) => VALID.has(z))
     .map(([z, [min, max]]) => [min, max, z as Zone]);
@@ -83,6 +93,12 @@ const ZONE_DOT: Record<Zone, string> = {
   playoff: "bg-yellow-500",
   rel:     "bg-red-500",
   promo:   "bg-green-500",
+  // Continental equivalents for non-UEFA leagues
+  lib:     "bg-blue-700",      // Copa Libertadores group stage (CONMEBOL primary)
+  libq:    "bg-blue-400",      // Copa Libertadores qualifying round
+  sud:     "bg-orange-400",    // Copa Sudamericana (CONMEBOL secondary)
+  ccc:     "bg-purple-500",    // CONCACAF Champions Cup
+  afc:     "bg-sky-500",       // AFC Champions League
 };
 
 const ZONE_LABEL: Record<Zone, string> = {
@@ -92,6 +108,11 @@ const ZONE_LABEL: Record<Zone, string> = {
   playoff: "Playoff",
   rel:     "Relegation",
   promo:   "Promotion",
+  lib:     "Copa Libertadores",
+  libq:    "Copa Libertadores (Q)",
+  sud:     "Copa Sudamericana",
+  ccc:     "CONCACAF Champions Cup",
+  afc:     "AFC Champions League",
 };
 
 // Parse fd.org's description field (e.g. "Promotion - Champions League (Group Stage: 1st)")
