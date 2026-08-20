@@ -1889,33 +1889,12 @@ export async function getStandings(competitionCode: string, season?: number): Pr
     }
   }
 
-  // Build zoneRanges from fd.org description fields so clients can show accurate zone bars
-  // without relying solely on hardcoded ZONE_OVERRIDES.
-  // For domestic leagues (fd.org): try current season descriptions first, then fall back to
-  // the previous completed season (whose descriptions are always fully populated at end-of-season).
-  // International multi-group comps don't use zone bars — skip them.
-  if (result.groups.length > 0 && result.groups.length === 1) {
-    const allRows = result.groups[0].rows;
-    let zoneRanges = extractZoneRanges(allRows);
-
-    if (!zoneRanges && isCurrentSeason) {
-      // No descriptions yet (common at season start) — fetch previous season as template.
-      // Previous season data is cached forever so this is a cache-hit after the first load.
-      const prevSeason = (isIntl ? new Date().getFullYear() : getCurrentSeason()) - 1;
-      try {
-        const prevData = await apiFetch(
-          `/competitions/${competitionCode}/standings?season=${prevSeason}`,
-          FOREVER_TTL_MS
-        ) as any;
-        const prevAll: any[] = prevData.standings ?? [];
-        const prevTable =
-          (prevAll.find((s: any) => s.type === "TOTAL") ?? prevAll.find((s: any) => s.table?.length > 0))?.table ?? [];
-        zoneRanges = extractZoneRanges(prevTable.map(mapStandingRow));
-      } catch {
-        // Ignore — client falls back to ZONE_OVERRIDES
-      }
-    }
-
+  // Build zoneRanges from fd.org description fields so the client can use live zone data
+  // instead of relying solely on ZONE_OVERRIDES. Only extracted when fd.org has populated
+  // descriptions (typically mid-season onward). Single-group domestic leagues only —
+  // multi-group international tournaments don't use zone bars.
+  if (result.groups.length === 1) {
+    const zoneRanges = extractZoneRanges(result.groups[0].rows);
     if (zoneRanges) result.zoneRanges = zoneRanges;
   }
 
