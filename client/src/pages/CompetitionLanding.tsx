@@ -55,7 +55,22 @@ function deriveZones(totalTeams: number): [number, number, Zone][] {
   ];
 }
 
-function getZoneRanges(compCode: string, totalTeams: number): [number, number, Zone][] {
+// Convert server-provided {zone: [min,max]} into the [min,max,zone][] tuple format.
+function serverRangesToList(serverRanges: Record<string, [number, number]>): [number, number, Zone][] {
+  const VALID: Set<string> = new Set(["ucl","uel","ecl","playoff","rel"]);
+  return Object.entries(serverRanges)
+    .filter(([z]) => VALID.has(z))
+    .map(([z, [min, max]]) => [min, max, z as Zone]);
+}
+
+// Server-provided zoneRanges take priority over ZONE_OVERRIDES (they reflect actual fd.org data).
+// ZONE_OVERRIDES is the fallback for ESPN-sourced leagues that never get descriptions.
+function getZoneRanges(
+  compCode: string,
+  totalTeams: number,
+  serverRanges?: Record<string, [number, number]>
+): [number, number, Zone][] {
+  if (serverRanges && Object.keys(serverRanges).length > 0) return serverRangesToList(serverRanges);
   return ZONE_OVERRIDES[compCode] ?? deriveZones(totalTeams);
 }
 
@@ -88,16 +103,17 @@ function zoneFromDescription(desc: string | undefined): Zone | null {
   return null;
 }
 
-function getZone(compCode: string, position: number, totalTeams: number, description?: string): Zone | null {
-  // When fd.org provides a description field (even empty ""), use it as sole source of truth.
-  //   description="" means fd.org explicitly says no zone for this position → null
-  //   description="Promotion - Champions League..." → ucl, etc.
-  // Only fall back to the hardcoded config when description is completely absent (undefined),
-  // which happens for ESPN-sourced leagues that don't provide this field.
-  if (description !== undefined) {
-    return zoneFromDescription(description);
-  }
-  for (const [min, max, zone] of getZoneRanges(compCode, totalTeams)) {
+function getZone(
+  compCode: string,
+  position: number,
+  totalTeams: number,
+  description?: string,
+  serverRanges?: Record<string, [number, number]>
+): Zone | null {
+  // Row-level description (fd.org current-season live data) takes highest priority.
+  if (description !== undefined) return zoneFromDescription(description);
+  // Fall back to zone ranges (server-derived from prev season or ZONE_OVERRIDES for ESPN leagues).
+  for (const [min, max, zone] of getZoneRanges(compCode, totalTeams, serverRanges)) {
     if (position >= min && position <= max) return zone;
   }
   return null;
@@ -672,7 +688,7 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
           const teamsAtSamePos = rows.filter((r) => r.position === row.position).length;
           const zone = isIntlMultiGroup || teamsAtSamePos > 5
             ? null
-            : getZone(comp.code, row.position, rows.length, row.description);
+            : getZone(comp.code, row.position, rows.length, row.description, standings?.zoneRanges);
           const intlBarColor = isIntlMultiGroup
             ? row.position <= 2 ? "bg-green-500"
             : row.position === 3 ? "bg-amber-500"
@@ -824,11 +840,11 @@ export default function CompetitionLanding({ comp, onSelectTeam, selectedSeason,
         // Apply the same tie-count threshold so legend only shows zones that are actually displayed.
         const dataZones = rows
           .filter((r) => rows.filter((r2) => r2.position === r.position).length <= 5)
-          .map((r) => getZone(comp.code, r.position, rows.length, r.description))
+          .map((r) => getZone(comp.code, r.position, rows.length, r.description, standings?.zoneRanges))
           .filter((z): z is Zone => z !== null);
         const uniqueZones = dataZones.length > 0
           ? [...new Set(dataZones)]
-          : (getZoneRanges(comp.code, rows.length).map(([,, z]) => z).filter((z, i, a) => a.indexOf(z) === i) as Zone[]);
+          : (getZoneRanges(comp.code, rows.length, standings?.zoneRanges).map(([,, z]) => z).filter((z, i, a) => a.indexOf(z) === i) as Zone[]);
         if (uniqueZones.length === 0) return null;
         return (
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 px-1">

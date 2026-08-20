@@ -1584,6 +1584,10 @@ export interface StandingsGroup {
 export interface StandingsData {
   groups: StandingsGroup[];
   seasonNotStarted?: boolean;
+  // Derived from fd.org description field (current season) or previous season fallback.
+  // Keys are zone slugs ("ucl","uel","ecl","playoff","rel") → [minPos, maxPos] inclusive.
+  // Absent for ESPN-sourced leagues and international tournaments.
+  zoneRanges?: Record<string, [number, number]>;
 }
 
 function mapStandingRow(e: any): StandingRow {
@@ -1710,6 +1714,32 @@ async function computeStatsFromMatches(
     form.set(id, [...results].reverse().join(","));
   }
   return { form, gd: teamGD };
+}
+
+function descToZoneKey(desc: string): string | null {
+  const d = desc.toLowerCase();
+  if (d.includes("champions league")) return "ucl";
+  if (d.includes("conference"))       return "ecl";
+  if (d.includes("europa league"))    return "uel";
+  if (d.includes("relegation"))       return "rel";
+  if (d.includes("playoff") || d.includes("play-off")) return "playoff";
+  return null;
+}
+
+function extractZoneRanges(rows: StandingRow[]): Record<string, [number, number]> | null {
+  const zones: Record<string, [number, number]> = {};
+  for (const row of rows) {
+    if (!row.description) continue;
+    const zk = descToZoneKey(row.description);
+    if (!zk) continue;
+    const pos = row.position;
+    if (!(zk in zones)) {
+      zones[zk] = [pos, pos];
+    } else {
+      zones[zk] = [Math.min(zones[zk][0], pos), Math.max(zones[zk][1], pos)];
+    }
+  }
+  return Object.keys(zones).length > 0 ? zones : null;
 }
 
 export async function getStandings(competitionCode: string, season?: number): Promise<StandingsData> {
@@ -1857,6 +1887,36 @@ export async function getStandings(competitionCode: string, season?: number): Pr
     } catch (e) {
       console.warn("[standings] WC knockout status fetch failed:", (e as Error).message);
     }
+  }
+
+  // Build zoneRanges from fd.org description fields so clients can show accurate zone bars
+  // without relying solely on hardcoded ZONE_OVERRIDES.
+  // For domestic leagues (fd.org): try current season descriptions first, then fall back to
+  // the previous completed season (whose descriptions are always fully populated at end-of-season).
+  // International multi-group comps don't use zone bars — skip them.
+  if (result.groups.length > 0 && result.groups.length === 1) {
+    const allRows = result.groups[0].rows;
+    let zoneRanges = extractZoneRanges(allRows);
+
+    if (!zoneRanges && isCurrentSeason) {
+      // No descriptions yet (common at season start) — fetch previous season as template.
+      // Previous season data is cached forever so this is a cache-hit after the first load.
+      const prevSeason = (isIntl ? new Date().getFullYear() : getCurrentSeason()) - 1;
+      try {
+        const prevData = await apiFetch(
+          `/competitions/${competitionCode}/standings?season=${prevSeason}`,
+          FOREVER_TTL_MS
+        ) as any;
+        const prevAll: any[] = prevData.standings ?? [];
+        const prevTable =
+          (prevAll.find((s: any) => s.type === "TOTAL") ?? prevAll.find((s: any) => s.table?.length > 0))?.table ?? [];
+        zoneRanges = extractZoneRanges(prevTable.map(mapStandingRow));
+      } catch {
+        // Ignore — client falls back to ZONE_OVERRIDES
+      }
+    }
+
+    if (zoneRanges) result.zoneRanges = zoneRanges;
   }
 
   return result;

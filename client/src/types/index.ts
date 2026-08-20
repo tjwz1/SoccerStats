@@ -49,6 +49,7 @@ export interface StandingsGroup {
 export interface StandingsData {
   groups: StandingsGroup[];
   seasonNotStarted?: boolean;
+  zoneRanges?: Record<string, [number, number]>;
 }
 
 export interface Player {

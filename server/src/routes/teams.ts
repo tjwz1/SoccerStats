@@ -184,8 +184,8 @@ router.get("/competitions/:code/standings", async (req, res) => {
     } else {
       // Current season: 90s route-level SWR so standings reflect live match
       // outcomes within two polling cycles (client polls every 60s).
-      // v11: description null→"" fix so empty-zone rows don't fall back to config
-      const cacheKey = `/standings/v11/${req.params.code}/current`;
+      // v12: zoneRanges derived from fd.org descriptions (current or prev season fallback)
+      const cacheKey = `/standings/v12/${req.params.code}/current`;
       await serveWithSWR(res, cacheKey, 90 * 1000,
         () => getStandings(req.params.code, season),
         cacheWhen.hasStandings
