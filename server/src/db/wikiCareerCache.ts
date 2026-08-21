@@ -63,6 +63,54 @@ export async function getWikiStatsBatch(playerIds: number[]): Promise<Map<number
   }
 }
 
+// Delete cached career rows for players whose assists look wrong from the old broken parser:
+// goals >= 10 across all rows but assists = 0 across all rows, with 3+ seasons cached.
+// Safe to run after the findStatCols fix — re-scrape on next profile visit will store
+// correct values. Goalkeepers (goals=0, assists=0) are unaffected by the goals >= 10 guard.
+export async function clearStaleAssists(): Promise<{ deleted: number }> {
+  try {
+    const client = getClient();
+    // Identify player_ids with the broken-parser signature.
+    const { data: suspects, error: selErr } = await client
+      .from("player_seasons")
+      .select("player_id, goals, assists")
+      .gte("goals", 0);
+
+    if (selErr || !suspects) return { deleted: 0 };
+
+    // Aggregate in JS (Supabase free tier has no GROUP BY in REST API).
+    const totals = new Map<number, { goals: number; assists: number; seasons: number }>();
+    for (const r of suspects) {
+      const id = r.player_id as number;
+      const t = totals.get(id) ?? { goals: 0, assists: 0, seasons: 0 };
+      t.goals   += r.goals   as number;
+      t.assists += r.assists as number;
+      t.seasons += 1;
+      totals.set(id, t);
+    }
+
+    const staleIds = [...totals.entries()]
+      .filter(([, t]) => t.goals >= 10 && t.assists === 0 && t.seasons >= 3)
+      .map(([id]) => id);
+
+    if (staleIds.length === 0) return { deleted: 0 };
+
+    const { error: delErr } = await client
+      .from("player_seasons")
+      .delete()
+      .in("player_id", staleIds);
+
+    if (delErr) {
+      console.error("[clearStaleAssists] delete failed:", delErr.message);
+      return { deleted: 0 };
+    }
+    return { deleted: staleIds.length };
+  } catch (e: unknown) {
+    console.error("[clearStaleAssists] failed:", (e as Error).message);
+    return { deleted: 0 };
+  }
+}
+
 export async function setWikiStats(
   playerId: number,
   playerName: string,

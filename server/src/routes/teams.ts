@@ -6,6 +6,7 @@ import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoa
 import { fetchEspnCupMatches, fetchTmCupMatches, DOMESTIC_CUP_MAP, TM_CUP_LEAGUES } from "../services/cupSchedule";
 import { fetchTeamNews } from "../services/newsService";
 import { getAnyCached, setCached, clearMemCache, clearAllCache, FOREVER_TTL_MS } from "../db/apiCache";
+import { clearStaleAssists } from "../db/wikiCareerCache";
 import { requireAdmin } from "../utils/auth";
 import { isIndexComplete, searchTeamIndex, addCompToIndex, setKnownCompCodes, exportIndexData, hydrateIndex } from "../utils/teamIndex";
 import type { Response } from "express";
@@ -417,6 +418,18 @@ router.get("/live-matches", async (_req, res) => {
 router.post("/admin/cache/clear", requireAdmin, async (_req, res) => {
   await clearAllCache();
   res.status(204).send();
+});
+
+// Flush player_seasons rows whose assists are 0 despite significant goal-scoring careers —
+// the signature left by the old broken Wikipedia parser. Re-scrape happens automatically
+// on next profile visit with the fixed findStatCols logic.
+router.post("/admin/player-stats/clear-stale-assists", requireAdmin, async (_req, res) => {
+  try {
+    const result = await clearStaleAssists();
+    res.json({ ok: true, playersCleared: result.deleted });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 const TEAM_INDEX_CACHE_KEY = "/team-index/v1";

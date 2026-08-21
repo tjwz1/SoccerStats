@@ -272,12 +272,20 @@ function stripWikiStyles(html: string): string {
 
 // Scan headers right-to-left for apps/goals/assists columns with a wide alias set.
 // Right-to-left ensures we pick the rightmost (usually "Total") group in multi-group tables.
-function findStatCols(headers: string[]): { appsCol: number; goalsCol: number; assistsCol: number } {
-  let appsCol = -1, goalsCol = -1, assistsCol = -1;
+//
+// Many Wikipedia career tables for top players (e.g. Messi) have per-competition sub-groups
+// (La Liga | Copa del Rey | CL) followed by a "Total" column that has Apps + Goals but NO
+// Assists. The right-to-left scan breaks at the Total "Apps" column before ever reaching
+// any "A" column to its left.  We handle this with a two-pass strategy:
+//   Pass 1 (right-to-left, break at Apps): finds the Total group's Assists column if present.
+//   Pass 2 (left-to-right, up to appsCol): when pass 1 found no assists column, collects ALL
+//           sub-group "A" columns so each row's assists can be summed across competitions.
+function findStatCols(headers: string[]): { appsCol: number; goalsCol: number; assistsCols: number[] } {
+  let appsCol = -1, goalsCol = -1, primaryAssistsCol = -1;
   for (let c = headers.length - 1; c >= 0; c--) {
     const h = headers[c].toLowerCase().replace(/\./g, "").trim();
-    if (assistsCol === -1 && (h === "assists" || h === "ast" || h === "asts" || h === "a")) {
-      assistsCol = c;
+    if (primaryAssistsCol === -1 && (h === "assists" || h === "ast" || h === "asts" || h === "a")) {
+      primaryAssistsCol = c;
     } else if (goalsCol === -1 && (h === "goals" || h === "gls" || h === "g" || h === "scored")) {
       goalsCol = c;
     } else if (appsCol === -1 && (h === "apps" || h === "app" || h === "p" || h === "mp" || h === "pld" || h === "played" || h === "appearances")) {
@@ -285,7 +293,22 @@ function findStatCols(headers: string[]): { appsCol: number; goalsCol: number; a
       break;
     }
   }
-  return { appsCol, goalsCol, assistsCol };
+
+  // Pass 1 found a Total-group assists column (to the right of appsCol, or apps not found).
+  if (primaryAssistsCol !== -1 && (appsCol === -1 || primaryAssistsCol > appsCol)) {
+    return { appsCol, goalsCol, assistsCols: [primaryAssistsCol] };
+  }
+
+  // No Total assists column — scan left of appsCol for all per-competition "A" columns.
+  const assistsCols: number[] = [];
+  const limit = appsCol !== -1 ? appsCol : headers.length;
+  for (let c = 0; c < limit; c++) {
+    const h = headers[c].toLowerCase().replace(/\./g, "").trim();
+    if (h === "assists" || h === "ast" || h === "asts" || h === "a") {
+      assistsCols.push(c);
+    }
+  }
+  return { appsCol, goalsCol, assistsCols };
 }
 
 function parseCareerTable(html: string): WikiCareerRow[] {
@@ -308,12 +331,12 @@ function parseCareerTable(html: string): WikiCareerRow[] {
     const leagueCol = findCol(allHeaders, "League", "Division", "Competition");
 
     // Try subHeaders first (the more specific row in two-row headers), fall back to allHeaders.
-    let { appsCol: totalAppsCol, goalsCol: totalGoalsCol, assistsCol: totalAssistsCol } = findStatCols(subHeaders);
+    let { appsCol: totalAppsCol, goalsCol: totalGoalsCol, assistsCols: totalAssistsCols } = findStatCols(subHeaders);
     if (totalAppsCol === -1 || totalGoalsCol === -1) {
       const fromAll = findStatCols(allHeaders);
       if (totalAppsCol === -1) totalAppsCol = fromAll.appsCol;
       if (totalGoalsCol === -1) totalGoalsCol = fromAll.goalsCol;
-      if (totalAssistsCol === -1) totalAssistsCol = fromAll.assistsCol;
+      if (totalAssistsCols.length === 0) totalAssistsCols = fromAll.assistsCols;
     }
     if (totalAppsCol === -1 || totalGoalsCol === -1) {
       const colCount = Math.max(firstRow.length, secondRow.length);
@@ -340,8 +363,9 @@ function parseCareerTable(html: string): WikiCareerRow[] {
 
       const apps = parseInt((row[totalAppsCol]?.replace(/[^0-9]/g, "") ?? "0") || "0", 10);
       const goals = parseInt((row[totalGoalsCol]?.replace(/[^0-9]/g, "") ?? "0") || "0", 10);
-      const assists = totalAssistsCol !== -1
-        ? parseInt((row[totalAssistsCol]?.replace(/[^0-9]/g, "") ?? "0") || "0", 10)
+      const assists = totalAssistsCols.length > 0
+        ? totalAssistsCols.reduce((sum, col) =>
+            sum + parseInt((row[col]?.replace(/[^0-9]/g, "") ?? "0") || "0", 10), 0)
         : 0;
       const normSeason = season
         .replace(/[–—]/g, "/").replace("-", "/")
