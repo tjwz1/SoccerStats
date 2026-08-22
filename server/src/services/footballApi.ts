@@ -5,11 +5,12 @@ import { fetchPhotos } from "./theSportsDb";
 import { fetchFplPhotos } from "./fplPhotos";
 import { fetchSofaScorePhotos } from "./sofaScorePhotos";
 import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
-import { getWikiStats, getWikiStatsBatch, setWikiStats, clearPlayerCareer } from "../db/wikiCareerCache";
+import { getWikiStats, getWikiStatsBatch, setWikiStats, type WikiCareerRow } from "../db/wikiCareerCache";
 import { getWikiTrophies, setWikiTrophies, getTmCupChecked, setTmCupChecked } from "../db/wikiTrophyCache";
 import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus, getWcR16Pairings } from "./wikiStats";
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, resolvePlayerRef, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
 import { fetchWorldFootballCareer, type WfCareerRow } from "./worldFootball";
+import { fetchSofaScoreCareer } from "./sofaScoreCareer";
 import type { ClubTrophy as TmClubTrophy, KnockoutStatus } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
 import {
@@ -2632,6 +2633,14 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   );
   const hasCurrentTeam = !!personData.currentTeam?.id;
   const needsCareer = cachedStats === null;
+  // Re-fetch career from SofaScore when cached data is missing the current season/year entirely.
+  // This handles the case where a player's career was cached before a new season or tournament
+  // (e.g. World Cup) started and Wikipedia/SofaScore now have new rows to add.
+  const currentYear = new Date().getFullYear().toString();
+  const cachedHasCurrentPeriod = (cachedStats ?? []).some(
+    r => r.season === currentSeasonStr || r.season === currentYear
+  );
+  const needsSofaRefresh = !needsCareer && hasCurrentTeam && !cachedHasCurrentPeriod;
   const needsCurrentSeasonCups =
     !needsCareer &&
     hasCurrentTeam &&       // skip for retired/inactive players (no team)
@@ -2644,7 +2653,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // International tournaments (WC/EC) run in the calendar year of the tournament,
   // not the club-season year (e.g. WC 2026 uses season=2026, not getCurrentSeason()=2025).
   const INTL_SEASON = new Date().getFullYear();
-  const [currentSeasonHits, freshWiki, tmCareer, tmHonours, wfCareer] = await Promise.all([
+  const [currentSeasonHits, freshWiki, tmCareer, tmHonours, wfCareer, sofaCareer] = await Promise.all([
     Promise.all(
       probeComps.map(async (code) => {
         const seasonYear = INTERNATIONAL_COMP_CODES.has(code) ? INTL_SEASON : getCurrentSeason();
@@ -2667,35 +2676,25 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     needsCareer
       ? fetchWorldFootballCareer(personData.name).catch(() => [] as WfCareerRow[])
       : Promise.resolve([] as WfCareerRow[]),
+    // SofaScore: primary career source — has assists per season/competition across full career.
+    // Also runs when cached data is missing the current season (needsSofaRefresh) to pick up
+    // new rows from ongoing tournaments (e.g. World Cup, current league season).
+    needsCareer || needsSofaRefresh
+      ? fetchSofaScoreCareer(personData.name, id).catch(() => [] as WikiCareerRow[])
+      : Promise.resolve([] as WikiCareerRow[]),
   ]);
 
-  // Merge TM (granular, has cup data) → Wiki/cache (historical gap-filler) → WF (deep history fallback).
-  // On cup re-scrape (needsCurrentSeasonCups), use cachedStats as the "wiki" base so
-  // historical rows are preserved and only new TM cup rows are added.
-  // Use freshWiki.career only when it actually has rows — an empty array returned when
-  // wiki was fetched solely for trophies must not suppress the cachedStats fallback.
-  const wikiBase = freshWiki?.career?.length
-    ? freshWiki.career
-    : (needsCurrentSeasonCups ? (cachedStats ?? []) : []);
+  // Career base priority: SofaScore (has assists) → Wikipedia (historical fallback) → cached rows.
+  // On cup re-scrape (needsCurrentSeasonCups), use cachedStats as the base so historical rows
+  // are preserved and only new TM cup rows are added.
+  // On needsSofaRefresh: SofaScore returns full career, so it supersedes cachedStats.
+  const wikiBase = sofaCareer.length > 0
+    ? sofaCareer
+    : freshWiki?.career?.length
+      ? freshWiki.career
+      : ((needsCurrentSeasonCups || needsSofaRefresh) ? (cachedStats ?? []) : []);
   const mergedCareer = mergeCareerSources(wikiBase, tmCareer, wfCareer);
-
-  // TM validator: if TM's current-season assists alone exceed the Wikipedia career total,
-  // the career data is clearly stale (old broken parser). Clear and let next request re-scrape.
-  // Only trigger when data came from cache (!needsCareer) to avoid infinite re-scrape loops.
-  let skipWikiStorage = false;
-  if (!needsCareer && (cachedStats?.length ?? 0) >= 3 && tmCareer.length > 0) {
-    const tmSeasonAssists = tmCareer.reduce((sum, r) => sum + r.assists, 0);
-    const wikiTotalAssists = (cachedStats ?? []).reduce((sum, r) => sum + r.assists, 0);
-    if (tmSeasonAssists > 0 && tmSeasonAssists > wikiTotalAssists) {
-      skipWikiStorage = true;
-      console.warn(
-        `[validate] ${personData.name}: TM season assists (${tmSeasonAssists}) > wiki career total (${wikiTotalAssists}) — clearing stale career data`
-      );
-      clearPlayerCareer([id]).catch(() => {});
-    }
-  }
-
-  if (mergedCareer.length && !skipWikiStorage) setWikiStats(id, personData.name, mergedCareer);
+  if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer);
   // Mark TM cup check done for 24h when:
   //   (a) TM returned data (cups found or legitimately none), OR
   //   (b) TM returned nothing AND the player has no current-season rows in cache
