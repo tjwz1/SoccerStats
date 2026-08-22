@@ -2375,15 +2375,13 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
 
   // Background pre-warm: fetch career/trophies + resolve TM slug for starters/bench not yet
   // cached, so clicking a player is instant rather than 3-7s cold.
-  // Career priority matches getPlayer(): SofaScore (has real assists) wins when available,
-  // falling back to Wikipedia (whose club tables lack an Assists column) otherwise. Writing
-  // Wikipedia-only rows here would populate player_seasons with the same broken-assists data
-  // getPlayer() is built to avoid — and since any cached row makes getPlayer() treat the player
-  // as already scraped, that bad data would stick until it happened to match the stale-signature
-  // heuristic, rather than ever getting SofaScore's real numbers.
-  // Batches of 3 with 200ms between batches to avoid hammering either source.
-  // TM slug resolution is fire-and-forget per player: it's a lightweight Supabase lookup
-  // followed by a single TM search request only when the slug isn't already stored.
+  // Career priority matches getPlayer(): SofaScore (real assists, full history) primary,
+  // Transfermarkt (current season only — its full history is paywalled) backup. Wikipedia is
+  // NEVER used for career here: its club tables have no Assists column, and since any cached
+  // player_seasons row makes getPlayer() treat the player as already-scraped, writing
+  // Wikipedia's assists-less rows here would silently lock in broken data for most players
+  // before they ever visit a profile page — this is what caused the original bug to recur.
+  // Batches of 3 with 200ms between batches to avoid hammering any of the sources.
   (async () => {
     const displayed = [
       ...xi.map(({ player: p }) => ({ id: p.id as number, name: p.name as string })),
@@ -2393,12 +2391,14 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     for (let i = 0; i < displayed.length; i += BATCH) {
       await Promise.all(displayed.slice(i, i + BATCH).map(async (p) => {
         try {
-          const [wikiData, sofaCareer] = await Promise.all([
-            fetchPlayerWikiData(p.name, true, true),
+          const [wikiData, sofaCareer, tmCareer] = await Promise.all([
+            fetchPlayerWikiData(p.name, false, true),
             fetchSofaScoreCareer(p.name, p.id).catch(() => [] as WikiCareerRow[]),
-            resolvePlayerRef(p.id, p.name).catch(() => null),
+            scrapeTransfermarktPlayerStats(p.name, "", p.id).catch(() => [] as TmCareerRow[]),
           ]);
-          const career = sofaCareer.length > 0 ? sofaCareer : wikiData.career;
+          const career = sofaCareer.length > 0
+            ? sofaCareer
+            : tmCareer.map((r) => ({ season: r.season, team: r.team, league: r.competition, appearances: r.appearances, goals: r.goals, assists: r.assists }));
           if (career.length > 0) setWikiStats(p.id, p.name, career);
           if (wikiData.trophies.length > 0) setWikiTrophies(p.id, p.name, wikiData.trophies);
         } catch {}
@@ -2686,8 +2686,10 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
         return entry ? { code, entry, seasonYear } : null;
       })
     ).then((r) => r.filter(Boolean) as Array<{ code: string; entry: ScorerEntry; seasonYear: number }>),
-    (needsCareer || needsTrophies)
-      ? fetchPlayerWikiData(personData.name, needsCareer, needsTrophies)
+    // Wikipedia is only used for trophies now — its club career tables have no Assists
+    // column, so it must never be a career-stats source (primary or fallback).
+    needsTrophies
+      ? fetchPlayerWikiData(personData.name, false, needsTrophies)
       : Promise.resolve(null),
     needsCareer || needsCurrentSeasonCups
       ? scrapeTransfermarktPlayerStats(personData.name, personData.currentTeam?.name ?? "", id).catch(() => [] as TmCareerRow[])
@@ -2696,7 +2698,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     needsTrophies
       ? scrapeTransfermarktPlayerHonours(personData.name, id).catch(() => [] as TmClubTrophy[])
       : Promise.resolve([] as TmClubTrophy[]),
-    // WorldFootball.net: historical fallback for seasons TM + Wiki both miss.
+    // WorldFootball.net: historical fallback for seasons TM + SofaScore both miss.
     // Only fetched on a full career cache miss to avoid adding latency on cache hits.
     needsCareer
       ? fetchWorldFootballCareer(personData.name).catch(() => [] as WfCareerRow[])
@@ -2709,15 +2711,18 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
       : Promise.resolve([] as WikiCareerRow[]),
   ]);
 
-  // Career base priority: SofaScore (has assists) → Wikipedia (historical fallback) → cached rows.
-  // On cup re-scrape (needsCurrentSeasonCups), use cachedStats as the base so historical rows
-  // are preserved and only new TM cup rows are added.
-  // On needsSofaRefresh: SofaScore returns full career, so it supersedes cachedStats.
+  // Career base priority: SofaScore (primary — real assists, full history) → cached rows.
+  // Wikipedia is deliberately excluded: its club career tables have no Assists column, so
+  // using it as a fallback silently collapses assists to 0/near-0. Transfermarkt is the
+  // backup instead — mergeCareerSources below already gives TM's own rows priority over
+  // wikiBase for any (season, competition) it covers, so when SofaScore is empty, TM's
+  // current-season data (its only available granularity — its full history is paywalled)
+  // still comes through via tmCareer even though wikiBase itself is empty.
+  // On cup re-scrape (needsCurrentSeasonCups) or needsSofaRefresh, use cachedStats as the
+  // base so historical rows are preserved and only new rows are added/superseded.
   const wikiBase = sofaCareer.length > 0
     ? sofaCareer
-    : freshWiki?.career?.length
-      ? freshWiki.career
-      : ((needsCurrentSeasonCups || needsSofaRefresh) ? (cachedStats ?? []) : []);
+    : ((needsCurrentSeasonCups || needsSofaRefresh) ? (cachedStats ?? []) : []);
   const mergedCareer = mergeCareerSources(wikiBase, tmCareer, wfCareer);
   if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer);
   // Mark TM cup check done for 24h when:

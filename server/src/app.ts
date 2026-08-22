@@ -12,6 +12,7 @@ import { getClient } from "./db/supabase";
 import { getTeamSquadPlayers } from "./services/footballApi";
 import { fetchPlayerWikiData } from "./services/wikiStats";
 import { fetchSofaScoreCareer } from "./services/sofaScoreCareer";
+import { scrapeTransfermarktPlayerStats, type TmCareerRow } from "./services/transfermarktScraper";
 import { setWikiStats, getWikiStats, type WikiCareerRow } from "./db/wikiCareerCache";
 import { setWikiTrophies, getWikiTrophies } from "./db/wikiTrophyCache";
 import { requireAdmin } from "./utils/auth";
@@ -238,14 +239,21 @@ app.post("/api/admin/populate-wiki-stats", adminLimiter, requireAdmin, async (re
             : existingHonours === null;
           if (skipExisting && !needsCareer && !needsHonours) { skipped++; continue; }
           try {
-            const [{ career: wikiCareer, trophies }, sofaCareer] = await Promise.all([
-              fetchPlayerWikiData(player.name, needsCareer, needsHonours),
+            // SofaScore primary (real assists, full history), Transfermarkt backup
+            // (current season only — TM's full history is paywalled). Wikipedia is never
+            // used for career: its club tables have no Assists column.
+            const [{ trophies }, sofaCareer, tmCareer] = await Promise.all([
+              fetchPlayerWikiData(player.name, false, needsHonours),
               needsCareer
                 ? fetchSofaScoreCareer(player.name, player.id).catch(() => [] as WikiCareerRow[])
                 : Promise.resolve([] as WikiCareerRow[]),
+              needsCareer
+                ? scrapeTransfermarktPlayerStats(player.name, "", player.id).catch(() => [] as TmCareerRow[])
+                : Promise.resolve([] as TmCareerRow[]),
             ]);
-            // SofaScore has real assists; Wikipedia's club tables don't, so prefer it when available.
-            const career = sofaCareer.length > 0 ? sofaCareer : wikiCareer;
+            const career: WikiCareerRow[] = sofaCareer.length > 0
+              ? sofaCareer
+              : tmCareer.map((r) => ({ season: r.season, team: r.team, league: r.competition, appearances: r.appearances, goals: r.goals, assists: r.assists }));
             await Promise.all([
               needsCareer ? setWikiStats(player.id, player.name, career) : Promise.resolve(),
               needsHonours ? setWikiTrophies(player.id, player.name, trophies) : Promise.resolve(),
