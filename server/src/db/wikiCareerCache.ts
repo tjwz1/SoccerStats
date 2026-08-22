@@ -63,8 +63,11 @@ export async function getWikiStatsBatch(playerIds: number[]): Promise<Map<number
   }
 }
 
-// Delete cached career rows for players whose assists look wrong from the old broken parser:
-// goals >= 10 across all rows but assists = 0 across all rows, with 3+ seasons cached.
+// Delete cached career rows for players whose assists look wrong from the old broken parser.
+// Two patterns detected:
+//   1. goals >= 10, assists = 0, seasons >= 3 (parser found no assists at all)
+//   2. goals >= 200, assists <= 20, seasons >= 8 (parser found some but far too few —
+//      e.g. Messi showing 13 assists, Mbappé showing 7, despite hundreds of real assists)
 // Safe to run after the findStatCols fix — re-scrape on next profile visit will store
 // correct values. Goalkeepers (goals=0, assists=0) are unaffected by the goals >= 10 guard.
 export async function clearStaleAssists(): Promise<{ deleted: number }> {
@@ -90,7 +93,10 @@ export async function clearStaleAssists(): Promise<{ deleted: number }> {
     }
 
     const staleIds = [...totals.entries()]
-      .filter(([, t]) => t.goals >= 10 && t.assists === 0 && t.seasons >= 3)
+      .filter(([, t]) =>
+        (t.goals >= 10 && t.assists === 0 && t.seasons >= 3) ||
+        (t.goals >= 200 && t.assists <= 20 && t.seasons >= 8)
+      )
       .map(([id]) => id);
 
     if (staleIds.length === 0) return { deleted: 0 };
@@ -107,6 +113,21 @@ export async function clearStaleAssists(): Promise<{ deleted: number }> {
     return { deleted: staleIds.length };
   } catch (e: unknown) {
     console.error("[clearStaleAssists] failed:", (e as Error).message);
+    return { deleted: 0 };
+  }
+}
+
+export async function clearPlayerCareer(playerIds: number[]): Promise<{ deleted: number }> {
+  if (playerIds.length === 0) return { deleted: 0 };
+  try {
+    const { error } = await getClient().from("player_seasons").delete().in("player_id", playerIds);
+    if (error) {
+      console.error("[clearPlayerCareer] failed:", error.message);
+      return { deleted: 0 };
+    }
+    return { deleted: playerIds.length };
+  } catch (e: unknown) {
+    console.error("[clearPlayerCareer] failed:", (e as Error).message);
     return { deleted: 0 };
   }
 }

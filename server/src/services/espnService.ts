@@ -1,4 +1,7 @@
 import { safeFetch as fetch } from "../utils/httpClient";
+import { exec } from "child_process";
+import { promisify } from "util";
+const execAsync = promisify(exec);
 import { getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
 import type {
   StandingsData, StandingRow, StandingsGroup,
@@ -8,9 +11,9 @@ import type {
 const ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
 const ESPN_CORE = "https://site.api.espn.com/apis/v2/sports/soccer";
 
-const ESPN_LIVE_TTL   = 2 * 60 * 1000;
-const ESPN_MED_TTL    = 30 * 60 * 1000;
-const ESPN_STATIC_TTL = 6 * 60 * 60 * 1000;
+const ESPN_LIVE_TTL     = 2 * 60 * 1000;
+const ESPN_MED_TTL      = 4 * 60 * 60 * 1000; // 4h — long enough to survive Vercel IP blocks
+const ESPN_STATIC_TTL   = 6 * 60 * 60 * 1000;
 
 // Keys currently being revalidated in the background — prevents duplicate background
 // fetches when two ESPN requests arrive simultaneously for the same stale entry.
@@ -60,7 +63,7 @@ export const ESPN_LEAGUES: Record<string, EspnLeagueConfig> = {
     calendarYear: true,
   },
   JPN: {
-    slug: "jpn.j1",
+    slug: "jpn.1",
     name: "J1 League",
     area: "Japan",
     emblem: "",
@@ -112,6 +115,13 @@ function statVal(stats: any[], name: string): number {
   return parseFloat(s.displayValue ?? "0") || 0;
 }
 
+// ESPN's CDN (Akamai) blocks node-fetch via TLS fingerprinting but allows curl.
+// curl is available on both Linux (Vercel) and Windows (local dev via Git Bash).
+async function espnCurlFetch(url: string): Promise<any> {
+  const { stdout } = await execAsync(`curl -sf --max-time 15 "${url}"`, { timeout: 20000 });
+  return JSON.parse(stdout);
+}
+
 async function espnFetch(url: string, ttlMs: number): Promise<any> {
   const key = `/espn/${url.replace(/^https?:\/\/[^/]+/, "")}`;
   const hit = await getAnyCached(key);
@@ -120,17 +130,14 @@ async function espnFetch(url: string, ttlMs: number): Promise<any> {
     // Consistent with the serveWithSWR pattern used throughout teams.ts.
     if (hit.stale && !revalidatingEspn.has(key)) {
       revalidatingEspn.add(key);
-      fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } })
-        .then((r) => r.ok ? r.json() : Promise.reject(new Error(`ESPN HTTP ${r.status}`)))
+      espnCurlFetch(url)
         .then((data) => setCached(key, data, ttlMs))
         .catch(() => {})
         .finally(() => revalidatingEspn.delete(key));
     }
     return hit.data;
   }
-  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-  if (!res.ok) throw new Error(`ESPN HTTP ${res.status} for ${url}`);
-  const data = await res.json();
+  const data = await espnCurlFetch(url);
   setCached(key, data, ttlMs).catch(() => {});
   return data;
 }

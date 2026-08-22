@@ -74,6 +74,15 @@ export function clearMemCache(): void {
   memCache.clear();
 }
 
+export async function deleteCached(path: string): Promise<void> {
+  memCache.delete(path);
+  try {
+    await getClient().from("api_cache").delete().eq("path", path);
+  } catch (e: unknown) {
+    console.error("[apiCache] delete failed:", (e as Error).message);
+  }
+}
+
 export async function clearAllCache(): Promise<void> {
   memCache.clear();
   try {

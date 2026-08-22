@@ -4,9 +4,10 @@ import { fetchClubHonours, type ClubTrophy } from "../services/wikiStats";
 import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transfermarktScraper";
 import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoalEvents, getMatchBookingsAndSubs, teamsMatch, type EspnLineupPlayer } from "../services/matchStatsScraper";
 import { fetchEspnCupMatches, fetchTmCupMatches, DOMESTIC_CUP_MAP, TM_CUP_LEAGUES } from "../services/cupSchedule";
+import { ESPN_LEAGUES, getEspnStandings } from "../services/espnService";
 import { fetchTeamNews } from "../services/newsService";
-import { getAnyCached, setCached, clearMemCache, clearAllCache, FOREVER_TTL_MS } from "../db/apiCache";
-import { clearStaleAssists } from "../db/wikiCareerCache";
+import { getAnyCached, setCached, clearMemCache, clearAllCache, deleteCached, FOREVER_TTL_MS } from "../db/apiCache";
+import { clearStaleAssists, clearPlayerCareer } from "../db/wikiCareerCache";
 import { requireAdmin } from "../utils/auth";
 import { isIndexComplete, searchTeamIndex, addCompToIndex, setKnownCompCodes, exportIndexData, hydrateIndex } from "../utils/teamIndex";
 import type { Response } from "express";
@@ -420,13 +421,43 @@ router.post("/admin/cache/clear", requireAdmin, async (_req, res) => {
   res.status(204).send();
 });
 
-// Flush player_seasons rows whose assists are 0 despite significant goal-scoring careers —
+// Fetch fresh standings from ESPN for all ESPN-backed leagues and store in Supabase cache.
+// Run this from your LOCAL server when Vercel can't reach ESPN — it seeds Supabase so
+// production instances serve from the cached data instead of failing.
+router.post("/admin/espn/warm-standings", requireAdmin, async (_req, res) => {
+  const results: Record<string, string> = {};
+  for (const [code, config] of Object.entries(ESPN_LEAGUES)) {
+    try {
+      const data = await getEspnStandings(config);
+      results[code] = data.groups.length > 0 ? `ok (${data.groups.flatMap((g) => g.rows).length} rows)` : (data.seasonNotStarted ? "seasonNotStarted" : "empty");
+    } catch (e: any) {
+      results[code] = `error: ${e.message}`;
+    }
+  }
+  res.json({ results });
+});
+
+// Flush player_seasons rows whose assists are 0 (or suspiciously low for high-scorers) —
 // the signature left by the old broken Wikipedia parser. Re-scrape happens automatically
 // on next profile visit with the fixed findStatCols logic.
 router.post("/admin/player-stats/clear-stale-assists", requireAdmin, async (_req, res) => {
   try {
     const result = await clearStaleAssists();
     res.json({ ok: true, playersCleared: result.deleted });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Clear career stats for specific player IDs (comma-separated ?ids=1,2,3).
+// Also clears the assembled player response from api_cache so the profile page re-scrapes.
+router.delete("/admin/player-stats/career", requireAdmin, async (req, res) => {
+  try {
+    const rawIds = (req.query.ids as string ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter(Boolean);
+    if (rawIds.length === 0) return res.status(400).json({ error: "Provide ?ids=1,2,3" });
+    const result = await clearPlayerCareer(rawIds);
+    await Promise.all(rawIds.map((id) => deleteCached(`player_response:${id}`)));
+    res.json({ ok: true, cleared: rawIds, rowsDeleted: result.deleted });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
