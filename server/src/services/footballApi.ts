@@ -2534,7 +2534,11 @@ function mergeCareerSources(
   tmRows: TmCareerRow[],
   wfRows: WfCareerRow[] = []
 ): Array<{ season: string; team: string; league: string; appearances: number; goals: number; assists: number }> {
-  const tmSeasons = new Set(tmRows.map((r) => r.season));
+  // Keyed by (season, competition), not season alone — TM's coverage of a season is often
+  // partial (e.g. it has a player's club rows but not their international caps for the same
+  // year), so excluding by season alone would drop other sources' rows for competitions TM
+  // never actually scraped.
+  const tmKeys = new Set(tmRows.map((r) => `${r.season}|${normalizeComp(r.competition)}`));
   const tmConverted = tmRows.map((r) => ({
     season: r.season,
     team: r.team,
@@ -2544,12 +2548,15 @@ function mergeCareerSources(
     assists: r.assists,
   }));
 
-  const wikiGap = wikiRows.filter((r) => !tmSeasons.has(r.season));
+  const wikiGap = wikiRows.filter((r) => !tmKeys.has(`${r.season}|${normalizeComp(r.league || "")}`));
 
-  // WF fills seasons neither TM nor Wiki covers
-  const coveredSeasons = new Set([...tmSeasons, ...wikiGap.map((r) => r.season)]);
+  // WF fills (season, competition) pairs neither TM nor Wiki/SofaScore covers
+  const coveredKeys = new Set([
+    ...tmKeys,
+    ...wikiGap.map((r) => `${r.season}|${normalizeComp(r.league || "")}`),
+  ]);
   const wfGap = wfRows
-    .filter((r) => !coveredSeasons.has(r.season))
+    .filter((r) => !coveredKeys.has(`${r.season}|${normalizeComp(r.competition)}`))
     .map((r) => ({
       season: r.season,
       team: r.team,
