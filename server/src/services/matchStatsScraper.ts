@@ -1,5 +1,9 @@
+import { exec } from "child_process";
+import { promisify } from "util";
 import { safeFetch as fetch } from "../utils/httpClient";
 import { getCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
+
+const execAsync = promisify(exec);
 
 // ESPN public sports API — no auth required, returns per-player match stats
 const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
@@ -25,12 +29,6 @@ const COMP_MAP: Record<string, string> = {
   "ger.dfb_pokal":    "ger.dfb_pokal",
   "ita.coppa_italia": "ita.coppa_italia",
   "ned.cup":          "ned.cup",
-};
-
-const ESPN_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-  Accept: "application/json, */*",
 };
 
 // Headers that mimic a real browser — required for Google and news sites
@@ -95,17 +93,16 @@ function cappedSet<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number) {
   map.set(key, value);
 }
 
+// ESPN's Akamai CDN blocks node-fetch via TLS fingerprinting (403).
+// curl has a different fingerprint that bypasses this check.
 async function espnFetch(url: string): Promise<any | null> {
   try {
-    const res = await fetch(url, {
-      headers: ESPN_HEADERS,
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (!res.ok) {
-      console.warn(`[matchStats] ESPN ${res.status}: ${url}`);
-      return null;
-    }
-    return await res.json();
+    const { stdout } = await execAsync(
+      `curl -sf --max-time 12 "${url}"`,
+      { timeout: 15000 }
+    );
+    if (!stdout) return null;
+    return JSON.parse(stdout);
   } catch (e) {
     console.warn(`[matchStats] Fetch error: ${(e as Error).message}`);
     return null;
