@@ -2373,9 +2373,15 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
 
   const photos = allSquadPhotos;
 
-  // Background pre-warm: fetch Wikipedia career/trophies + resolve TM slug for starters/bench
-  // not yet cached, so clicking a player is instant rather than 3-7s cold.
-  // Wikipedia uses batches of 3 with 200ms between batches to avoid hammering.
+  // Background pre-warm: fetch career/trophies + resolve TM slug for starters/bench not yet
+  // cached, so clicking a player is instant rather than 3-7s cold.
+  // Career priority matches getPlayer(): SofaScore (has real assists) wins when available,
+  // falling back to Wikipedia (whose club tables lack an Assists column) otherwise. Writing
+  // Wikipedia-only rows here would populate player_seasons with the same broken-assists data
+  // getPlayer() is built to avoid — and since any cached row makes getPlayer() treat the player
+  // as already scraped, that bad data would stick until it happened to match the stale-signature
+  // heuristic, rather than ever getting SofaScore's real numbers.
+  // Batches of 3 with 200ms between batches to avoid hammering either source.
   // TM slug resolution is fire-and-forget per player: it's a lightweight Supabase lookup
   // followed by a single TM search request only when the slug isn't already stored.
   (async () => {
@@ -2387,11 +2393,13 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     for (let i = 0; i < displayed.length; i += BATCH) {
       await Promise.all(displayed.slice(i, i + BATCH).map(async (p) => {
         try {
-          const [wikiData] = await Promise.all([
+          const [wikiData, sofaCareer] = await Promise.all([
             fetchPlayerWikiData(p.name, true, true),
+            fetchSofaScoreCareer(p.name, p.id).catch(() => [] as WikiCareerRow[]),
             resolvePlayerRef(p.id, p.name).catch(() => null),
           ]);
-          if (wikiData.career.length > 0) setWikiStats(p.id, p.name, wikiData.career);
+          const career = sofaCareer.length > 0 ? sofaCareer : wikiData.career;
+          if (career.length > 0) setWikiStats(p.id, p.name, career);
           if (wikiData.trophies.length > 0) setWikiTrophies(p.id, p.name, wikiData.trophies);
         } catch {}
       }));

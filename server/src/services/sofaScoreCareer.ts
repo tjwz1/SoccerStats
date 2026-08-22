@@ -20,6 +20,26 @@ function normName(s: string): string {
     .trim();
 }
 
+// Each curl call is a separate OS process. A single player's full career can be 70-80+
+// (tournament, season) pairs, and this function runs concurrently for multiple players at
+// once (e.g. the squad lineup pre-warm fetches 3 players in parallel) — unbounded Promise.all
+// here has caused 100+ simultaneous curl spawns, which fails widely under that load. Cap
+// concurrency so one player's fetch stays fast while total in-flight processes stay bounded.
+const SS_FETCH_CONCURRENCY = 12;
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 async function ssFetch<T>(path: string): Promise<T | null> {
   try {
     const { stdout } = await execAsync(
@@ -117,12 +137,10 @@ export async function fetchSofaScoreCareer(
     return [];
   }
 
-  const seasonStats = await Promise.all(
-    pairs.map((p) =>
-      ssFetch<any>(`/api/v1/player/${ssId}/unique-tournament/${p.tournamentId}/season/${p.seasonId}/statistics/overall`)
-        .then((data) => (data ? { pair: p, data } : null))
-        .catch(() => null)
-    )
+  const seasonStats = await mapWithConcurrency(pairs, SS_FETCH_CONCURRENCY, (p) =>
+    ssFetch<any>(`/api/v1/player/${ssId}/unique-tournament/${p.tournamentId}/season/${p.seasonId}/statistics/overall`)
+      .then((data) => (data ? { pair: p, data } : null))
+      .catch(() => null)
   );
 
   const rows: WikiCareerRow[] = seasonStats
