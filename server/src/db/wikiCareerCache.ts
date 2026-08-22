@@ -63,13 +63,25 @@ export async function getWikiStatsBatch(playerIds: number[]): Promise<Map<number
   }
 }
 
-// Delete cached career rows for players whose assists look wrong from the old broken parser.
-// Two patterns detected:
+// Detects the broken-parser signature in one player's cached rows. Two patterns:
 //   1. goals >= 10, assists = 0, seasons >= 3 (parser found no assists at all)
 //   2. goals >= 200, assists <= 20, seasons >= 8 (parser found some but far too few —
 //      e.g. Messi showing 13 assists, Mbappé showing 7, despite hundreds of real assists)
+// Goalkeepers (goals=0, assists=0) are unaffected by the goals >= 10 guard.
+export function hasStaleAssistSignature(rows: WikiCareerRow[]): boolean {
+  const totals = rows.reduce(
+    (acc, r) => ({ goals: acc.goals + r.goals, assists: acc.assists + r.assists, seasons: acc.seasons + 1 }),
+    { goals: 0, assists: 0, seasons: 0 }
+  );
+  return (
+    (totals.goals >= 10 && totals.assists === 0 && totals.seasons >= 3) ||
+    (totals.goals >= 200 && totals.assists <= 20 && totals.seasons >= 8)
+  );
+}
+
+// Delete cached career rows for players whose assists look wrong from the old broken parser.
 // Safe to run after the findStatCols fix — re-scrape on next profile visit will store
-// correct values. Goalkeepers (goals=0, assists=0) are unaffected by the goals >= 10 guard.
+// correct values.
 export async function clearStaleAssists(): Promise<{ deleted: number }> {
   try {
     const client = getClient();
@@ -82,21 +94,16 @@ export async function clearStaleAssists(): Promise<{ deleted: number }> {
     if (selErr || !suspects) return { deleted: 0 };
 
     // Aggregate in JS (Supabase free tier has no GROUP BY in REST API).
-    const totals = new Map<number, { goals: number; assists: number; seasons: number }>();
+    const rowsById = new Map<number, WikiCareerRow[]>();
     for (const r of suspects) {
       const id = r.player_id as number;
-      const t = totals.get(id) ?? { goals: 0, assists: 0, seasons: 0 };
-      t.goals   += r.goals   as number;
-      t.assists += r.assists as number;
-      t.seasons += 1;
-      totals.set(id, t);
+      const list = rowsById.get(id) ?? [];
+      list.push({ season: "", team: "", league: "", appearances: 0, goals: r.goals as number, assists: r.assists as number });
+      rowsById.set(id, list);
     }
 
-    const staleIds = [...totals.entries()]
-      .filter(([, t]) =>
-        (t.goals >= 10 && t.assists === 0 && t.seasons >= 3) ||
-        (t.goals >= 200 && t.assists <= 20 && t.seasons >= 8)
-      )
+    const staleIds = [...rowsById.entries()]
+      .filter(([, rows]) => hasStaleAssistSignature(rows))
       .map(([id]) => id);
 
     if (staleIds.length === 0) return { deleted: 0 };

@@ -4,8 +4,8 @@ import { MOCK_COMPETITIONS, MOCK_TEAMS, MOCK_LINEUP, MOCK_PLAYER_STATS } from ".
 import { fetchPhotos } from "./theSportsDb";
 import { fetchFplPhotos } from "./fplPhotos";
 import { fetchSofaScorePhotos } from "./sofaScorePhotos";
-import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
-import { getWikiStats, getWikiStatsBatch, setWikiStats, type WikiCareerRow } from "../db/wikiCareerCache";
+import { getCached, getAnyCached, setCached, deleteCached, FOREVER_TTL_MS } from "../db/apiCache";
+import { getWikiStats, getWikiStatsBatch, setWikiStats, clearPlayerCareer, hasStaleAssistSignature, type WikiCareerRow } from "../db/wikiCareerCache";
 import { getWikiTrophies, setWikiTrophies, getTmCupChecked, setTmCupChecked } from "../db/wikiTrophyCache";
 import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus, getWcR16Pairings } from "./wikiStats";
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, resolvePlayerRef, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
@@ -2632,7 +2632,17 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     r => !canonicalValues.has(normalizeComp(r.league ?? ""))
   );
   const hasCurrentTeam = !!personData.currentTeam?.id;
-  const needsCareer = cachedStats === null;
+  // A cached row set can carry the old broken-parser signature (assists missing/near-zero
+  // despite real goals) — e.g. a partial Wikipedia scrape that never picked up the Club
+  // section. Treat that the same as a full cache miss so SofaScore gets a real chance to run.
+  const cacheIsStale = cachedStats !== null && hasStaleAssistSignature(cachedStats);
+  const needsCareer = cachedStats === null || cacheIsStale;
+  if (cacheIsStale) {
+    await Promise.all([
+      clearPlayerCareer([id]),
+      deleteCached(`/ss-career/${id}`),
+    ]);
+  }
   // Re-fetch career from SofaScore when cached data is missing the current season/year entirely.
   // This handles the case where a player's career was cached before a new season or tournament
   // (e.g. World Cup) started and Wikipedia/SofaScore now have new rows to add.
@@ -2717,6 +2727,16 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   const wikiRows = mergedCareer.length > 0 ? mergedCareer : cachedStats;
   const trophies = (cachedTrophies ?? mergedTrophies).filter(validtrophy);
 
+  // football-data.org's free-tier /scorers endpoint reports assists=0 for most historical
+  // seasons even when goals are correct. When that happens, backfill from SofaScore/Wikipedia's
+  // real assist count for the same (season, competition) rather than silently keeping the zero.
+  const wikiAssistsByKey = new Map<string, number>();
+  for (const r of wikiRows ?? []) {
+    if (r.assists > 0) wikiAssistsByKey.set(`${r.season}|${normalizeComp(r.league || "")}`, r.assists);
+  }
+  const resolveAssists = (season: string, competition: string, apiAssists: number) =>
+    apiAssists || wikiAssistsByKey.get(`${season}|${normalizeComp(competition)}`) || 0;
+
   // Past seasons: only probe competitions where the player actually appeared this season.
   // CL/EL are added only if the player had scorer entries there in the current season.
   // This cuts worst-case API calls from 30 to ~10 for a typical domestic-only player.
@@ -2751,24 +2771,32 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   const fallbackTeam = personData.currentTeam?.name ?? "";
 
   const apiCareer: CareerRow[] = [
-    ...currentSeasonHits.map(({ code, entry, seasonYear }) => ({
-      season: INTERNATIONAL_COMP_CODES.has(code)
+    ...currentSeasonHits.map(({ code, entry, seasonYear }) => {
+      const season = INTERNATIONAL_COMP_CODES.has(code)
         ? `${seasonYear}`
-        : `${getCurrentSeason()}/${String(getCurrentSeason() + 1).slice(2)}`,
-      team: entry.team ?? fallbackTeam,
-      competition: COMP_DISPLAY[code] ?? code,
-      appearances: entry.appearances,
-      goals: entry.goals,
-      assists: entry.assists,
-    })),
-    ...pastSeasonHits.map(({ code, season, entry }) => ({
-      season: `${season}/${String(season + 1).slice(2)}`,
-      team: entry.team ?? fallbackTeam,
-      competition: COMP_DISPLAY[code] ?? code,
-      appearances: entry.appearances,
-      goals: entry.goals,
-      assists: entry.assists,
-    })),
+        : `${getCurrentSeason()}/${String(getCurrentSeason() + 1).slice(2)}`;
+      const competition = COMP_DISPLAY[code] ?? code;
+      return {
+        season,
+        team: entry.team ?? fallbackTeam,
+        competition,
+        appearances: entry.appearances,
+        goals: entry.goals,
+        assists: resolveAssists(season, competition, entry.assists),
+      };
+    }),
+    ...pastSeasonHits.map(({ code, season: seasonYear, entry }) => {
+      const season = `${seasonYear}/${String(seasonYear + 1).slice(2)}`;
+      const competition = COMP_DISPLAY[code] ?? code;
+      return {
+        season,
+        team: entry.team ?? fallbackTeam,
+        competition,
+        appearances: entry.appearances,
+        goals: entry.goals,
+        assists: resolveAssists(season, competition, entry.assists),
+      };
+    }),
   ];
 
   // Merge Wikipedia career rows for any (season, competition) not already covered by the API.
@@ -2807,7 +2835,10 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
       currentSeasonHits.reduce((a, { entry: e }) => a + e.goals, 0) +
       currentSeasonWikiRows.reduce((a, r) => a + r.goals, 0),
     assists:
-      currentSeasonHits.reduce((a, { entry: e }) => a + e.assists, 0) +
+      currentSeasonHits.reduce((a, { code, entry: e, seasonYear }) => {
+        const season = INTERNATIONAL_COMP_CODES.has(code) ? `${seasonYear}` : currentSeasonStr;
+        return a + resolveAssists(season, COMP_DISPLAY[code] ?? code, e.assists);
+      }, 0) +
       currentSeasonWikiRows.reduce((a, r) => a + r.assists, 0),
     minutesPlayed: 0,
   };
