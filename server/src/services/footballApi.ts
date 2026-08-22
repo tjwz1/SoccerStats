@@ -5,7 +5,7 @@ import { fetchPhotos } from "./theSportsDb";
 import { fetchFplPhotos } from "./fplPhotos";
 import { fetchSofaScorePhotos } from "./sofaScorePhotos";
 import { getCached, getAnyCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
-import { getWikiStats, getWikiStatsBatch, setWikiStats } from "../db/wikiCareerCache";
+import { getWikiStats, getWikiStatsBatch, setWikiStats, clearPlayerCareer } from "../db/wikiCareerCache";
 import { getWikiTrophies, setWikiTrophies, getTmCupChecked, setTmCupChecked } from "../db/wikiTrophyCache";
 import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnockoutStatus, getWcR16Pairings } from "./wikiStats";
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, resolvePlayerRef, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
@@ -2678,7 +2678,24 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     ? freshWiki.career
     : (needsCurrentSeasonCups ? (cachedStats ?? []) : []);
   const mergedCareer = mergeCareerSources(wikiBase, tmCareer, wfCareer);
-  if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer);
+
+  // TM validator: if TM's current-season assists alone exceed the Wikipedia career total,
+  // the career data is clearly stale (old broken parser). Clear and let next request re-scrape.
+  // Only trigger when data came from cache (!needsCareer) to avoid infinite re-scrape loops.
+  let skipWikiStorage = false;
+  if (!needsCareer && (cachedStats?.length ?? 0) >= 3 && tmCareer.length > 0) {
+    const tmSeasonAssists = tmCareer.reduce((sum, r) => sum + r.assists, 0);
+    const wikiTotalAssists = (cachedStats ?? []).reduce((sum, r) => sum + r.assists, 0);
+    if (tmSeasonAssists > 0 && tmSeasonAssists > wikiTotalAssists) {
+      skipWikiStorage = true;
+      console.warn(
+        `[validate] ${personData.name}: TM season assists (${tmSeasonAssists}) > wiki career total (${wikiTotalAssists}) — clearing stale career data`
+      );
+      clearPlayerCareer([id]).catch(() => {});
+    }
+  }
+
+  if (mergedCareer.length && !skipWikiStorage) setWikiStats(id, personData.name, mergedCareer);
   // Mark TM cup check done for 24h when:
   //   (a) TM returned data (cups found or legitimately none), OR
   //   (b) TM returned nothing AND the player has no current-season rows in cache
