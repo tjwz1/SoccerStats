@@ -117,6 +117,24 @@ export async function clearStaleAssists(): Promise<{ deleted: number }> {
   }
 }
 
+export async function clearAllPlayerCareer(): Promise<{ deleted: number }> {
+  try {
+    const { data, error } = await getClient()
+      .from("player_seasons")
+      .delete()
+      .neq("player_id", 0)
+      .select("player_id");
+    if (error) {
+      console.error("[clearAllPlayerCareer] failed:", error.message);
+      return { deleted: 0 };
+    }
+    return { deleted: data?.length ?? 0 };
+  } catch (e: unknown) {
+    console.error("[clearAllPlayerCareer] failed:", (e as Error).message);
+    return { deleted: 0 };
+  }
+}
+
 export async function clearPlayerCareer(playerIds: number[]): Promise<{ deleted: number }> {
   if (playerIds.length === 0) return { deleted: 0 };
   try {

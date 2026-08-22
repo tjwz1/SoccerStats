@@ -74,6 +74,17 @@ export function clearMemCache(): void {
   memCache.clear();
 }
 
+export async function deleteCachedByPrefix(prefix: string): Promise<void> {
+  for (const key of memCache.keys()) {
+    if (key.startsWith(prefix)) memCache.delete(key);
+  }
+  try {
+    await getClient().from("api_cache").delete().like("path", `${prefix}%`);
+  } catch (e: unknown) {
+    console.error("[apiCache] deleteCachedByPrefix failed:", (e as Error).message);
+  }
+}
+
 export async function deleteCached(path: string): Promise<void> {
   memCache.delete(path);
   try {

@@ -1,17 +1,12 @@
-import { safeFetch as fetch } from "../utils/httpClient";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { getCached, setCached } from "../db/apiCache";
 import type { WikiCareerRow } from "../db/wikiCareerCache";
 
+const execAsync = promisify(exec);
 const SS_BASE = "https://www.sofascore.com";
 const SS_ID_TTL_MS   = 30 * 24 * 60 * 60 * 1000; // 30 days — player IDs are stable
 const SS_CAREER_TTL_MS = 24 * 60 * 60 * 1000;     // 24h — refresh daily for current-season rows
-
-const HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-  "Accept": "application/json, text/plain, */*",
-  "Referer": "https://www.sofascore.com/",
-  "Origin": "https://www.sofascore.com",
-};
 
 function normName(s: string): string {
   return s
@@ -27,15 +22,12 @@ function normName(s: string): string {
 
 async function ssFetch<T>(path: string): Promise<T | null> {
   try {
-    const res = await fetch(`${SS_BASE}${path}`, {
-      headers: HEADERS,
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) {
-      console.warn(`[ssCareer] HTTP ${res.status} for ${path}`);
-      return null;
-    }
-    return await res.json() as T;
+    const { stdout } = await execAsync(
+      `curl -sf --max-time 12 -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36" -H "Referer: https://www.sofascore.com/" "${SS_BASE}${path}"`,
+      { timeout: 15000 }
+    );
+    if (!stdout) return null;
+    return JSON.parse(stdout) as T;
   } catch (e) {
     console.warn(`[ssCareer] Fetch error: ${(e as Error).message}`);
     return null;

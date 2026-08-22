@@ -6,8 +6,8 @@ import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoa
 import { fetchEspnCupMatches, fetchTmCupMatches, DOMESTIC_CUP_MAP, TM_CUP_LEAGUES } from "../services/cupSchedule";
 import { ESPN_LEAGUES, getEspnStandings } from "../services/espnService";
 import { fetchTeamNews } from "../services/newsService";
-import { getAnyCached, setCached, clearMemCache, clearAllCache, deleteCached, FOREVER_TTL_MS } from "../db/apiCache";
-import { clearStaleAssists, clearPlayerCareer } from "../db/wikiCareerCache";
+import { getAnyCached, setCached, clearMemCache, clearAllCache, deleteCached, deleteCachedByPrefix, FOREVER_TTL_MS } from "../db/apiCache";
+import { clearStaleAssists, clearPlayerCareer, clearAllPlayerCareer } from "../db/wikiCareerCache";
 import { requireAdmin } from "../utils/auth";
 import { isIndexComplete, searchTeamIndex, addCompToIndex, setKnownCompCodes, exportIndexData, hydrateIndex } from "../utils/teamIndex";
 import type { Response } from "express";
@@ -451,6 +451,20 @@ router.post("/admin/player-stats/clear-stale-assists", requireAdmin, async (_req
 
 // Clear career stats for specific player IDs (comma-separated ?ids=1,2,3).
 // Also clears the assembled player response from api_cache so the profile page re-scrapes.
+router.delete("/admin/player-stats/career-all", requireAdmin, async (req, res) => {
+  try {
+    const [careerResult] = await Promise.all([
+      clearAllPlayerCareer(),
+      deleteCachedByPrefix("player_response:"),
+      deleteCachedByPrefix("/ss-career/"),
+      deleteCachedByPrefix("/ss-player-id/"),
+    ]);
+    res.json({ ok: true, rowsDeleted: careerResult.deleted });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.delete("/admin/player-stats/career", requireAdmin, async (req, res) => {
   try {
     const rawIds = (req.query.ids as string ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter(Boolean);
