@@ -70,6 +70,33 @@ function cappedSet<K, V>(map: Map<K, V>, key: K, value: V, max: number) {
   map.set(key, value);
 }
 
+function normalizeSearchName(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// TM's search page can list several same-named people/clubs (e.g. "Bernardo Silva" matches
+// both the Man City international and an unrelated lower-league player). Blindly taking the
+// first result risks silently attributing one player's career data to a completely different
+// person. Prefer an exact normalized-name match; fall back to one name containing the other
+// (handles TM listing a fuller legal name); otherwise refuse to guess.
+function pickBestMatch(query: string, candidates: EntityRef[]): EntityRef | null {
+  if (candidates.length === 0) return null;
+  const target = normalizeSearchName(query);
+  const exact = candidates.find((c) => normalizeSearchName(c.name) === target);
+  if (exact) return exact;
+  const partial = candidates.find((c) => {
+    const cand = normalizeSearchName(c.name);
+    return cand.includes(target) || target.includes(cand);
+  });
+  return partial ?? null;
+}
+
 // In-process search cache: avoids re-querying TM for the same name within one
 // server lifetime (club/player names are stable; this is safe to cache forever).
 const tmSearchCache = new Map<string, EntityRef | null>();
@@ -101,18 +128,21 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
   if (!html) { cappedSet(tmSearchCache, cacheKey, null, TM_SEARCH_CACHE_MAX); return null; }
 
   const $ = cheerio.load(html);
-  let best: EntityRef | null = null;
+  const candidates: EntityRef[] = [];
 
-  // Walk every anchor; stop at the first match for the requested entity type.
+  // Collect every anchor matching the requested entity type — TM's search page often lists
+  // several same-named people/clubs, and the first hit isn't necessarily the one we asked for
+  // (e.g. a common name like "Bernardo Silva" can match an unrelated lower-league player).
   $("a[href]").each((_, el) => {
-    if (best) return;
     const href = $(el).attr("href") ?? "";
     const m = href.match(hrefPattern);
     if (!m) return;
     const name = $(el).text().trim();
     if (!name) return;
-    best = { slug: m[1], id: m[2], name };
+    candidates.push({ slug: m[1], id: m[2], name });
   });
+
+  const best = pickBestMatch(query, candidates);
 
   cappedSet(tmSearchCache, cacheKey, best, TM_SEARCH_CACHE_MAX);
   // Only persist non-null results — a null from an SSL/network failure shouldn't

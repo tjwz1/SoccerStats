@@ -63,11 +63,17 @@ export async function getWikiStatsBatch(playerIds: number[]): Promise<Map<number
   }
 }
 
-// Detects the broken-parser signature in one player's cached rows. Two patterns:
+// Detects a broken/fragmentary cached-career signature. Three patterns:
 //   1. goals >= 10, assists = 0, seasons >= 3 (parser found no assists at all)
 //   2. goals >= 200, assists <= 20, seasons >= 8 (parser found some but far too few —
 //      e.g. Messi showing 13 assists, Mbappé showing 7, despite hundreds of real assists)
-// Goalkeepers (goals=0, assists=0) are unaffected by the goals >= 10 guard.
+//   3. rows.length <= 2 and every row is a blank 0-goal/0-assist stub — the signature left by
+//      a mostly-failed source fetch (e.g. SofaScore rate-limited mid-fetch) that still returned
+//      one or two rows, which then get cached as if they were the player's whole career. A
+//      real player's cached history is essentially never just 1-2 all-zero rows once they have
+//      a "current team" (the only reason this gets checked at all — see needsSofaRefresh).
+// Goalkeepers with many all-zero rows are unaffected by patterns 1/2 (goals >= 10 guard) and
+// by pattern 3 once they have more than 2 cached rows, which any real keeper accumulates fast.
 export function hasStaleAssistSignature(rows: WikiCareerRow[]): boolean {
   const totals = rows.reduce(
     (acc, r) => ({ goals: acc.goals + r.goals, assists: acc.assists + r.assists, seasons: acc.seasons + 1 }),
@@ -75,7 +81,8 @@ export function hasStaleAssistSignature(rows: WikiCareerRow[]): boolean {
   );
   return (
     (totals.goals >= 10 && totals.assists === 0 && totals.seasons >= 3) ||
-    (totals.goals >= 200 && totals.assists <= 20 && totals.seasons >= 8)
+    (totals.goals >= 200 && totals.assists <= 20 && totals.seasons >= 8) ||
+    (rows.length > 0 && rows.length <= 2 && totals.goals === 0 && totals.assists === 0)
   );
 }
 

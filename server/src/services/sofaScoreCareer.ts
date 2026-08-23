@@ -143,6 +143,18 @@ export async function fetchSofaScoreCareer(
       .catch(() => null)
   );
 
+  // If most individual season fetches failed (e.g. SofaScore rate-limited us mid-fetch), the
+  // handful that did succeed would otherwise get cached as if they were this player's whole
+  // career — a single surviving row (often a national-team cap with near-zero stats) then
+  // blocks any future re-scrape because it satisfies the "has a current-period row" cache-hit
+  // check. Treat a low completion rate as a failed fetch entirely rather than caching a
+  // misleadingly partial result.
+  const successCount = seasonStats.filter((r) => r !== null).length;
+  if (pairs.length >= 3 && successCount / pairs.length < 0.5) {
+    console.warn(`[ssCareer] "${playerName}" → only ${successCount}/${pairs.length} season fetches succeeded (ss=${ssId}); treating as failed, not caching`);
+    return [];
+  }
+
   const rows: WikiCareerRow[] = seasonStats
     .filter((r): r is { pair: SsSeasonPair; data: any } => !!r && (r.data.statistics?.appearances ?? 0) > 0)
     .map(({ pair, data }) => ({
