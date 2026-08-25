@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Player, PlayerGameStats } from "../types";
-import { proxyPhotoUrl } from "../utils/photoUrl";
+import { isSofaScorePhoto } from "../utils/photoUrl";
 
 interface Props {
   bench: Player[];
@@ -67,8 +67,7 @@ export default function Bench({ bench, onClick, onHover, playerStats }: Props) {
 function BenchAvatar({ player, subbedIn }: { player: Player; subbedIn: boolean }) {
   const [imgError, setImgError] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
-  const photoSrc = proxyPhotoUrl(player.photo);
-  const showPhoto = !!photoSrc && !imgError;
+  const showPhoto = !!player.photo && !imgError;
   const initials = player.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 
   const COLORS: Record<string, string> = {
@@ -92,7 +91,8 @@ function BenchAvatar({ player, subbedIn }: { player: Player; subbedIn: boolean }
         <>
           {!imgLoaded && <div className="absolute inset-0 rounded-full animate-pulse bg-slate-600" />}
           <img
-            src={photoSrc!}
+            src={player.photo!}
+            referrerPolicy={isSofaScorePhoto(player.photo) ? "no-referrer" : undefined}
             alt={player.name}
             className={`w-full h-full object-cover object-top transition-opacity duration-200 ${imgLoaded ? "opacity-100" : "opacity-0"}`}
             onLoad={() => setImgLoaded(true)}

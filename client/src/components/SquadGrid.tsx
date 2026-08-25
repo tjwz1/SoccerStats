@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, memo } from "react";
 import type { Player } from "../types";
 import PlayerTooltip from "./PlayerTooltip";
-import { proxyPhotoUrl } from "../utils/photoUrl";
+import { isSofaScorePhoto } from "../utils/photoUrl";
 
 interface Props {
   starters: Player[];
@@ -29,8 +29,7 @@ const PlayerCard = memo(function PlayerCard({
 }) {
   const [imgError, setImgError] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
-  const photoSrc = proxyPhotoUrl(player.photo);
-  const showPhoto = !!photoSrc && !imgError;
+  const showPhoto = !!player.photo && !imgError;
   const initials = player.name
     .split(" ")
     .map((w) => w[0])
@@ -62,8 +61,9 @@ const PlayerCard = memo(function PlayerCard({
               <div className="absolute inset-0 animate-pulse bg-gradient-to-b from-slate-600/40 to-slate-700/40" />
             )}
             <img
-              src={photoSrc!}
+              src={player.photo!}
               alt={player.name}
+              referrerPolicy={isSofaScorePhoto(player.photo) ? "no-referrer" : undefined}
               onLoad={() => setImgLoaded(true)}
               onError={() => setImgError(true)}
               className={`w-full h-full object-contain object-bottom transition-opacity duration-300 ${imgLoaded ? "opacity-100" : "opacity-0"}`}

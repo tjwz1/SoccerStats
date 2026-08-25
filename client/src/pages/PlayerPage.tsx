@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useParams, useSearchParams, useNavigate, useLocation } from "react-router-dom";
 import type { Player, PlayerDetail, Trophy } from "../types";
 import { useApi } from "../hooks/useApi";
-import { proxyPhotoUrl } from "../utils/photoUrl";
+import { isSofaScorePhoto } from "../utils/photoUrl";
 
 export default function PlayerPage() {
   const { id } = useParams<{ id: string }>();
@@ -21,7 +21,7 @@ export default function PlayerPage() {
   const displayName = data?.name ?? statePlayer?.name ?? "Player";
   // Prefer the API-fetched photo (available on direct navigation) over the navigation-state
   // photo (only present when navigating from a squad view). Falls back to initials if neither exists.
-  const photo = proxyPhotoUrl(data?.photo ?? statePlayer?.photo ?? null);
+  const photo = data?.photo ?? statePlayer?.photo ?? null;
 
   const age = (dob: string | undefined) => {
     if (!dob) return null;
@@ -317,5 +317,5 @@ function PlayerPhoto({ src, name }: { src: string; name: string }) {
       </span>
     );
   }
-  return <img src={src} alt={name} className="w-full h-full object-contain object-bottom" onError={() => setError(true)} />;
+  return <img src={src} alt={name} referrerPolicy={isSofaScorePhoto(src) ? "no-referrer" : undefined} className="w-full h-full object-contain object-bottom" onError={() => setError(true)} />;
 }

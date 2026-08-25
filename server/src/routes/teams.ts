@@ -91,15 +91,18 @@ router.get("/player-photo/:sofaId", async (req, res) => {
   try {
     const upstream = await safeFetch(
       `https://api.sofascore.com/api/v1/player/${sofaId}/image`,
-      { headers: SS_IMAGE_HEADERS, signal: AbortSignal.timeout(5000) }
+      { headers: SS_IMAGE_HEADERS, signal: AbortSignal.timeout(8000) }
     );
     if (!upstream.ok) return res.status(upstream.status).end();
 
     const contentType = upstream.headers.get("content-type") ?? "image/png";
+    // Buffer the full image before sending — streaming via body.pipe() fails
+    // silently in Vercel's serverless runtime.
+    const imageBuffer = Buffer.from(await upstream.arrayBuffer());
     res.set("Content-Type", contentType);
     // Let Vercel CDN cache the proxied image for 24 hours; browser for 1 hour
     res.set("Cache-Control", "public, s-maxage=86400, max-age=3600");
-    upstream.body.pipe(res);
+    res.send(imageBuffer);
   } catch {
     res.status(502).end();
   }
