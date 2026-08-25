@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { safeFetch } from "../utils/httpClient";
 import { getCompetitions, getTeams, getTeamLineup, getTeamSchedule, getMatchDetail, getMatchLineups, getStandings, getCompetitionSeasons, getTopScorers, getTeamCleanSheets, getBracketMatches, getLiveMatches, getPositionHistory, getUpcomingFixtures, getH2HMatches, isInternationalComp, getFinishedMatchList, getCompetitionFixtures, type FinishedMatchRef, type StandingsData, type MatchGoalEvent } from "../services/footballApi";
 import { fetchClubHonours, type ClubTrophy } from "../services/wikiStats";
 import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transfermarktScraper";
@@ -72,6 +73,37 @@ function parseId(raw: string): number | null {
 function safeStr(raw: string | undefined, maxLen = 100): string {
   return (raw ?? "").trim().slice(0, maxLen);
 }
+
+// Proxy SofaScore player images with proper Referer headers.
+// The SofaScore image CDN blocks requests where Referer isn't sofascore.com,
+// which means <img> tags loading directly from the browser fail in prod.
+const SS_IMAGE_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+  "Referer": "https://www.sofascore.com/",
+  "Origin": "https://www.sofascore.com",
+  "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+};
+
+router.get("/player-photo/:sofaId", async (req, res) => {
+  const sofaId = parseInt(req.params.sofaId, 10);
+  if (isNaN(sofaId) || sofaId <= 0 || sofaId > 99_999_999) return res.status(400).end();
+
+  try {
+    const upstream = await safeFetch(
+      `https://api.sofascore.com/api/v1/player/${sofaId}/image`,
+      { headers: SS_IMAGE_HEADERS, signal: AbortSignal.timeout(5000) }
+    );
+    if (!upstream.ok) return res.status(upstream.status).end();
+
+    const contentType = upstream.headers.get("content-type") ?? "image/png";
+    res.set("Content-Type", contentType);
+    // Let Vercel CDN cache the proxied image for 24 hours; browser for 1 hour
+    res.set("Cache-Control", "public, s-maxage=86400, max-age=3600");
+    upstream.body.pipe(res);
+  } catch {
+    res.status(502).end();
+  }
+});
 
 router.get("/fixtures", async (req, res) => {
   try {

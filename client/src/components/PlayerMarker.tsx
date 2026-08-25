@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Player } from "../types";
+import { proxyPhotoUrl } from "../utils/photoUrl";
 
 interface Props {
   player: Player;
@@ -30,7 +31,8 @@ export default function PlayerMarker({ player, x, y, size = "normal", subbedOut 
   const color = POSITION_COLORS[player.position] ?? "#94a3b8";
   const bg = POSITION_BG[player.position] ?? "bg-slate-400";
   const initials = player.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-  const showPhoto = !!player.photo && !imgError;
+  const photoSrc = proxyPhotoUrl(player.photo);
+  const showPhoto = !!photoSrc && !imgError;
 
   const avatarSize = size === "small" ? "w-8 h-8 text-[10px]" : "w-10 h-10 text-xs";
   const lastName = player.name.split(" ").pop() ?? player.name;
@@ -51,7 +53,7 @@ export default function PlayerMarker({ player, x, y, size = "normal", subbedOut 
         >
           {showPhoto ? (
             <img
-              src={player.photo!}
+              src={photoSrc!}
               alt={player.name}
               className="w-full h-full object-cover object-top"
               onError={() => setImgError(true)}
