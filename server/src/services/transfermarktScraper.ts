@@ -370,6 +370,16 @@ export async function scrapeTransfermarktPlayerStats(
   currentTeam = "",
   playerId?: number
 ): Promise<TmCareerRow[]> {
+  // No reliable club name to label rows with — never fall back to the player's own name
+  // (that produced rows like team: "Javi Galán") or the caller's best guess at "current
+  // team" when it's actually missing (that produced rows like team: "Spain" for Premier
+  // League fixtures, when fd.org briefly reports a player's national team as their
+  // "currentTeam" around international windows). No trustworthy label means no TM fallback.
+  if (!currentTeam) {
+    console.log(`[transfermarkt] No reliable team name for "${playerName}" — skipping TM fallback`);
+    return [];
+  }
+
   const player = await resolvePlayerRef(playerId, playerName);
   if (!player) {
     console.log(`[transfermarkt] Player not found for "${playerName}"`);
@@ -381,7 +391,7 @@ export async function scrapeTransfermarktPlayerStats(
 
   // Use TM's JSON API which returns current-season stats across all competitions
   // (including domestic cups that the football-data.org scorers endpoint misses).
-  const rows = await fetchTmPerformanceJson(player.id, currentTeam || player.name);
+  const rows = await fetchTmPerformanceJson(player.id, currentTeam);
   console.log(`[transfermarkt] ${playerName} → ${rows.length} current-season rows via ceapi`);
   return rows;
 }

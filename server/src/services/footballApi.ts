@@ -53,7 +53,14 @@ const BASE_URL = "https://api.football-data.org/v4";
 function apiKey() { return process.env.FOOTBALL_API_KEY; }
 function useMock() { return !apiKey(); }
 
-const SQUAD_TTL_MS = 24 * 60 * 60 * 1000;       // 24 h — squad composition changes at most weekly
+// During transfer windows (June–September and January) squad data changes frequently;
+// use a 4h TTL so departing/arriving players appear within a few hours of fd.org updating.
+// Outside windows, 24h is fine — squads are stable.
+function getSquadTTL(): number {
+  const m = new Date().getMonth() + 1; // 1–12
+  return (m >= 6 && m <= 9) || m === 1 ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+}
+const SQUAD_TTL_MS = getSquadTTL();
 const SCORERS_CURRENT_TTL_MS = 2 * 60 * 1000;   // 2 min — fd.org updates scorers every ~2-5 min during live matches
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -2394,7 +2401,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
           const [wikiData, sofaCareer, tmCareer] = await Promise.all([
             fetchPlayerWikiData(p.name, false, true),
             fetchSofaScoreCareer(p.name, p.id).catch(() => [] as WikiCareerRow[]),
-            scrapeTransfermarktPlayerStats(p.name, "", p.id).catch(() => [] as TmCareerRow[]),
+            scrapeTransfermarktPlayerStats(p.name, data.name, p.id).catch(() => [] as TmCareerRow[]),
           ]);
           const career = sofaCareer.length > 0
             ? sofaCareer
@@ -2527,10 +2534,13 @@ async function fetchScorerStats(
   }
 }
 
-export async function getTeamSquadPlayers(teamId: string): Promise<Array<{ id: number; name: string }>> {
-  if (useMock()) return [];
+export async function getTeamSquadPlayers(teamId: string): Promise<{ teamName: string; players: Array<{ id: number; name: string }> }> {
+  if (useMock()) return { teamName: "", players: [] };
   const data = await apiFetch(`/teams/${teamId}`, SQUAD_TTL_MS) as any;
-  return (data.squad ?? []).map((p: any) => ({ id: p.id as number, name: p.name as string }));
+  return {
+    teamName: data.name ?? "",
+    players: (data.squad ?? []).map((p: any) => ({ id: p.id as number, name: p.name as string })),
+  };
 }
 
 // Merge career rows from TM (most granular), Wikipedia, and WorldFootball.net.
@@ -2678,6 +2688,14 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // International tournaments (WC/EC) run in the calendar year of the tournament,
   // not the club-season year (e.g. WC 2026 uses season=2026, not getCurrentSeason()=2025).
   const INTL_SEASON = new Date().getFullYear();
+  // fd.org's /persons currentTeam occasionally reports a player's national team instead of
+  // their club around international windows (e.g. currentTeam.name === "Spain"). Passing that
+  // straight through as Transfermarkt's row label produced nonsense like team: "Spain" on
+  // Premier League rows — treat a currentTeam matching the player's own nationality as
+  // unreliable rather than trusting it.
+  const reliableClubName = personData.currentTeam?.name && personData.currentTeam.name !== personData.nationality
+    ? personData.currentTeam.name
+    : "";
   const [currentSeasonHits, freshWiki, tmCareer, tmHonours, wfCareer, sofaCareer] = await Promise.all([
     Promise.all(
       probeComps.map(async (code) => {
@@ -2692,7 +2710,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
       ? fetchPlayerWikiData(personData.name, false, needsTrophies)
       : Promise.resolve(null),
     needsCareer || needsCurrentSeasonCups
-      ? scrapeTransfermarktPlayerStats(personData.name, personData.currentTeam?.name ?? "", id).catch(() => [] as TmCareerRow[])
+      ? scrapeTransfermarktPlayerStats(personData.name, reliableClubName, id).catch(() => [] as TmCareerRow[])
       : Promise.resolve([] as TmCareerRow[]),
     // TM player honours run in parallel with career stats on a trophy cache miss
     needsTrophies

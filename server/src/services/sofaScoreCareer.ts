@@ -25,7 +25,7 @@ function normName(s: string): string {
 // once (e.g. the squad lineup pre-warm fetches 3 players in parallel) — unbounded Promise.all
 // here has caused 100+ simultaneous curl spawns, which fails widely under that load. Cap
 // concurrency so one player's fetch stays fast while total in-flight processes stay bounded.
-const SS_FETCH_CONCURRENCY = 12;
+const SS_FETCH_CONCURRENCY = 5;
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -150,7 +150,7 @@ export async function fetchSofaScoreCareer(
   // check. Treat a low completion rate as a failed fetch entirely rather than caching a
   // misleadingly partial result.
   const successCount = seasonStats.filter((r) => r !== null).length;
-  if (pairs.length >= 3 && successCount / pairs.length < 0.5) {
+  if (pairs.length >= 3 && successCount / pairs.length < 0.75) {
     console.warn(`[ssCareer] "${playerName}" → only ${successCount}/${pairs.length} season fetches succeeded (ss=${ssId}); treating as failed, not caching`);
     return [];
   }

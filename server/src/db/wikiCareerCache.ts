@@ -67,11 +67,14 @@ export async function getWikiStatsBatch(playerIds: number[]): Promise<Map<number
 //   1. goals >= 10, assists = 0, seasons >= 3 (parser found no assists at all)
 //   2. goals >= 200, assists <= 20, seasons >= 8 (parser found some but far too few —
 //      e.g. Messi showing 13 assists, Mbappé showing 7, despite hundreds of real assists)
-//   3. rows.length <= 2 and every row is a blank 0-goal/0-assist stub — the signature left by
-//      a mostly-failed source fetch (e.g. SofaScore rate-limited mid-fetch) that still returned
-//      one or two rows, which then get cached as if they were the player's whole career. A
-//      real player's cached history is essentially never just 1-2 all-zero rows once they have
-//      a "current team" (the only reason this gets checked at all — see needsSofaRefresh).
+//   3. exactly 1 cached row, or 2 rows that are both blank 0-goal/0-assist stubs — the
+//      signature left by a mostly-failed source fetch (e.g. SofaScore rate-limited mid-fetch,
+//      or Transfermarkt's current-season-only fallback being the sole contributor) that still
+//      returned a row or two, which then get cached as if they were the player's whole career.
+//      A real player's cached history is essentially never just 1 row once they have a
+//      "current team" (the only reason this gets checked at all — see needsSofaRefresh); a
+//      lone row is accepted with nonzero stats too since even a genuine day-one debutant's
+//      single row costs nothing extra to re-verify on the next visit.
 // Goalkeepers with many all-zero rows are unaffected by patterns 1/2 (goals >= 10 guard) and
 // by pattern 3 once they have more than 2 cached rows, which any real keeper accumulates fast.
 export function hasStaleAssistSignature(rows: WikiCareerRow[]): boolean {
@@ -82,7 +85,8 @@ export function hasStaleAssistSignature(rows: WikiCareerRow[]): boolean {
   return (
     (totals.goals >= 10 && totals.assists === 0 && totals.seasons >= 3) ||
     (totals.goals >= 200 && totals.assists <= 20 && totals.seasons >= 8) ||
-    (rows.length > 0 && rows.length <= 2 && totals.goals === 0 && totals.assists === 0)
+    rows.length === 1 ||
+    (rows.length === 2 && totals.goals === 0 && totals.assists === 0)
   );
 }
 

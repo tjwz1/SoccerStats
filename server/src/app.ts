@@ -13,7 +13,7 @@ import { getTeamSquadPlayers } from "./services/footballApi";
 import { fetchPlayerWikiData } from "./services/wikiStats";
 import { fetchSofaScoreCareer } from "./services/sofaScoreCareer";
 import { scrapeTransfermarktPlayerStats, type TmCareerRow } from "./services/transfermarktScraper";
-import { setWikiStats, getWikiStats, type WikiCareerRow } from "./db/wikiCareerCache";
+import { setWikiStats, getWikiStats, clearPlayerCareer, type WikiCareerRow } from "./db/wikiCareerCache";
 import { setWikiTrophies, getWikiTrophies } from "./db/wikiTrophyCache";
 import { requireAdmin } from "./utils/auth";
 import { SupabaseRateLimitStore } from "./utils/rateLimitStore";
@@ -228,7 +228,7 @@ app.post("/api/admin/populate-wiki-stats", adminLimiter, requireAdmin, async (re
       let skipped = 0;
       let failed = 0;
       try {
-        const players = await getTeamSquadPlayers(teamId!);
+        const { teamName, players } = await getTeamSquadPlayers(teamId!);
         for (const player of players) {
           const [existingStats, existingHonours] = skipExisting
             ? await Promise.all([getWikiStats(player.id), getWikiTrophies(player.id)])
@@ -248,7 +248,7 @@ app.post("/api/admin/populate-wiki-stats", adminLimiter, requireAdmin, async (re
                 ? fetchSofaScoreCareer(player.name, player.id).catch(() => [] as WikiCareerRow[])
                 : Promise.resolve([] as WikiCareerRow[]),
               needsCareer
-                ? scrapeTransfermarktPlayerStats(player.name, "", player.id).catch(() => [] as TmCareerRow[])
+                ? scrapeTransfermarktPlayerStats(player.name, teamName, player.id).catch(() => [] as TmCareerRow[])
                 : Promise.resolve([] as TmCareerRow[]),
             ]);
             const career: WikiCareerRow[] = sofaCareer.length > 0
@@ -289,6 +289,34 @@ app.delete("/api/admin/cache/expired", adminLimiter, requireAdmin, async (_req, 
   }
 });
 
+// Force-refresh squad data for specific team(s) by deleting their api_cache entries.
+// Useful during transfer windows when fd.org data changes but the 24h TTL hasn't expired yet.
+// Query params: teamId (fd.org team ID) and/or competitionCode (e.g. "PD", "PL").
+// Deletes /teams/{teamId} and /competitions/{competitionCode}/teams cache keys.
+app.delete("/api/admin/cache/squad", adminLimiter, requireAdmin, async (req, res) => {
+  const teamId = req.query.teamId as string | undefined;
+  const competitionCode = (req.query.competitionCode as string | undefined)?.toUpperCase();
+
+  const paths: string[] = [];
+  if (teamId) paths.push(`/teams/${teamId}`);
+  if (competitionCode) paths.push(`/competitions/${competitionCode}/teams`);
+
+  if (paths.length === 0) {
+    return res.status(400).json({ error: "Provide at least one of: teamId, competitionCode" });
+  }
+
+  try {
+    const { error, count } = await getClient()
+      .from("api_cache")
+      .delete({ count: "exact" })
+      .in("path", paths);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ deleted: count, paths });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.delete("/api/admin/photo-cache/nulls", adminLimiter, requireAdmin, async (_req, res) => {
   try {
     const { error, count } = await getClient()
@@ -297,6 +325,34 @@ app.delete("/api/admin/photo-cache/nulls", adminLimiter, requireAdmin, async (_r
       .is("photo_url", null);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ deleted: count });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Clear career cache for specific players (by fd.org player ID).
+// Deletes player_seasons rows + SofaScore career/ID lookup keys from api_cache.
+// Forces a clean re-fetch from SofaScore on next profile view.
+// Query: ?playerIds=123,456,789
+app.delete("/api/admin/cache/career", adminLimiter, requireAdmin, async (req, res) => {
+  const raw = req.query.playerIds as string | undefined;
+  if (!raw?.trim()) {
+    return res.status(400).json({ error: "Provide playerIds as comma-separated fd.org player IDs" });
+  }
+  const ids = raw.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+  if (ids.length === 0) return res.status(400).json({ error: "No valid player IDs" });
+
+  try {
+    const ssPaths = ids.flatMap((id) => [`/ss-career/${id}`, `/ss-player-id/${id}`]);
+    const [careerResult, cacheResult] = await Promise.all([
+      clearPlayerCareer(ids),
+      getClient().from("api_cache").delete({ count: "exact" }).in("path", ssPaths),
+    ]);
+    res.json({
+      playerIds: ids,
+      playerSeasonsDeleted: careerResult.deleted,
+      apiCacheDeleted: cacheResult.count ?? 0,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
