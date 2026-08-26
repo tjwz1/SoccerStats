@@ -42,22 +42,21 @@ async function lookupPhoto(player: { id: number; name: string }): Promise<string
       (p) => p.idAPIfootball && Number(p.idAPIfootball) === player.id
     );
 
-    // 2nd choice: only one result returned — no ambiguity
-    const unique = !matched && players.length === 1 ? players[0] : null;
-
-    // 3rd choice: result name is a close enough match (normalise accents/case)
+    // 2nd choice: exact name match after accent/case normalisation.
+    // Note: we intentionally do NOT have a "unique result → use it" fallback — a
+    // single-result search like "Rodri" can return a completely different player
+    // ("Jay Rodriguez"), and using it would show the wrong person's photo.
     const normalize = (s: string) =>
       s.toLowerCase()
         .replace(/ø/g, "o").replace(/ð/g, "d").replace(/þ/g, "th").replace(/ł/g, "l")
         .replace(/ß/g, "ss").replace(/æ/g, "ae").replace(/œ/g, "oe")
         .normalize("NFD").replace(/[̀-ͯ]/g, "");
     const queryNorm = normalize(player.name);
-    const nameMatch =
-      !matched && !unique
-        ? (players.find((p) => normalize(p.strPlayer ?? "") === queryNorm) ?? null)
-        : null;
+    const nameMatch = !matched
+      ? (players.find((p) => normalize(p.strPlayer ?? "") === queryNorm) ?? null)
+      : null;
 
-    const best = matched ?? unique ?? nameMatch ?? null;
+    const best = matched ?? nameMatch ?? null;
     const url: string | null = best?.strCutout || best?.strThumb || null;
 
     // Only cache definitive API responses (found or confirmed not found)

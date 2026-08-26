@@ -103,7 +103,10 @@ async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<M
   }
 
   teamPhotoCache.set(fdoTeamId, photoMap);
-  if (photoMap.size > 0) setCached(cacheKey, Object.fromEntries(photoMap), SOFA_PHOTOS_TTL_MS);
+  // Always cache — even an empty result, at a short TTL (1h), so Vercel instances
+  // don't repeatedly hit a blocked/unavailable SofaScore endpoint.
+  const ttl = photoMap.size > 0 ? SOFA_PHOTOS_TTL_MS : 60 * 60 * 1000;
+  setCached(cacheKey, Object.fromEntries(photoMap), ttl);
   return photoMap;
 }
 
