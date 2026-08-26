@@ -292,13 +292,17 @@ app.delete("/api/admin/cache/expired", adminLimiter, requireAdmin, async (_req, 
 // Force-refresh squad data for specific team(s) by deleting their api_cache entries.
 // Useful during transfer windows when fd.org data changes but the 24h TTL hasn't expired yet.
 // Query params: teamId (fd.org team ID) and/or competitionCode (e.g. "PD", "PL").
-// Deletes /teams/{teamId} and /competitions/{competitionCode}/teams cache keys.
+// Deletes /teams/{teamId}, /competitions/{competitionCode}/teams, the SofaScore photo map,
+// and all lineup cache entries for the team (across competitions).
 app.delete("/api/admin/cache/squad", adminLimiter, requireAdmin, async (req, res) => {
   const teamId = req.query.teamId as string | undefined;
   const competitionCode = (req.query.competitionCode as string | undefined)?.toUpperCase();
 
   const paths: string[] = [];
-  if (teamId) paths.push(`/teams/${teamId}`);
+  if (teamId) {
+    paths.push(`/teams/${teamId}`);
+    paths.push(`/sofa-photos/${teamId}`);
+  }
   if (competitionCode) paths.push(`/competitions/${competitionCode}/teams`);
 
   if (paths.length === 0) {
@@ -306,12 +310,26 @@ app.delete("/api/admin/cache/squad", adminLimiter, requireAdmin, async (req, res
   }
 
   try {
-    const { error, count } = await getClient()
+    const db = getClient();
+    // Delete exact-keyed entries
+    const { error: e1, count: c1 } = await db
       .from("api_cache")
       .delete({ count: "exact" })
       .in("path", paths);
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ deleted: count, paths });
+    if (e1) return res.status(500).json({ error: e1.message });
+
+    // Delete all lineup entries for this team across all competitions (prefix match)
+    let c2 = 0;
+    if (teamId) {
+      const { error: e2, count } = await db
+        .from("api_cache")
+        .delete({ count: "exact" })
+        .like("path", `/team-lineup/v3/${teamId}/%`);
+      if (e2) return res.status(500).json({ error: e2.message });
+      c2 = count ?? 0;
+    }
+
+    res.json({ deleted: (c1 ?? 0) + c2, paths, lineupPrefix: teamId ? `/team-lineup/v3/${teamId}/` : null });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

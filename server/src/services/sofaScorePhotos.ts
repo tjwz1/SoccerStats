@@ -105,6 +105,43 @@ async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<M
   return photoMap;
 }
 
+// Multi-strategy lookup: exact → prefix → initials+surname.
+// fd.org names are often shorter than SofaScore's full legal names, so exact
+// matching misses players like "Rodrigo Hernández" (fd.org) vs
+// "Rodrigo Hernández Cascante" (SofaScore full name).
+function findPhoto(photoMap: Map<string, string>, fdName: string): string | null {
+  const q = norm(fdName);
+
+  // 1. Exact match
+  const exact = photoMap.get(q);
+  if (exact) return exact;
+
+  // 2. Prefix: fd.org name is a prefix of a SofaScore name (and the next char is a space).
+  //    Only accepted when unambiguous (exactly one key qualifies).
+  if (q.length >= 5) {
+    let hit: string | null = null;
+    let ambiguous = false;
+    for (const [key, url] of photoMap) {
+      if (key !== q && key.startsWith(q) && (key[q.length] === " " || key.length === q.length)) {
+        if (hit !== null) { ambiguous = true; break; }
+        hit = url;
+      }
+    }
+    if (hit && !ambiguous) return hit;
+  }
+
+  // 3. Initials+surname abbreviation: "F. de Jong" style keys.
+  //    Build the abbreviated form of the fd.org name and look it up directly.
+  const parts = q.split(" ");
+  if (parts.length >= 2) {
+    const abbreviated = `${parts[0][0]} ${parts.slice(1).join(" ")}`;
+    const abbr = photoMap.get(abbreviated);
+    if (abbr) return abbr;
+  }
+
+  return null;
+}
+
 export async function fetchSofaScorePhotos(
   players: Array<{ id: number; name: string }>,
   teamName: string,
@@ -113,9 +150,6 @@ export async function fetchSofaScorePhotos(
   const photoMap = await buildTeamPhotoMap(teamName, fdoTeamId);
 
   return Object.fromEntries(
-    players.map((p) => {
-      const url = photoMap.get(norm(p.name)) ?? null;
-      return [p.id, url];
-    })
+    players.map((p) => [p.id, findPhoto(photoMap, p.name)])
   );
 }
