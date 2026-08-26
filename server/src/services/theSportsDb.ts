@@ -42,21 +42,29 @@ async function lookupPhoto(player: { id: number; name: string }): Promise<string
       (p) => p.idAPIfootball && Number(p.idAPIfootball) === player.id
     );
 
-    // 2nd choice: exact name match after accent/case normalisation.
-    // Note: we intentionally do NOT have a "unique result → use it" fallback — a
-    // single-result search like "Rodri" can return a completely different player
-    // ("Jay Rodriguez"), and using it would show the wrong person's photo.
     const normalize = (s: string) =>
       s.toLowerCase()
         .replace(/ø/g, "o").replace(/ð/g, "d").replace(/þ/g, "th").replace(/ł/g, "l")
         .replace(/ß/g, "ss").replace(/æ/g, "ae").replace(/œ/g, "oe")
         .normalize("NFD").replace(/[̀-ͯ]/g, "");
     const queryNorm = normalize(player.name);
+
+    // 2nd choice: exact name match after normalisation.
     const nameMatch = !matched
       ? (players.find((p) => normalize(p.strPlayer ?? "") === queryNorm) ?? null)
       : null;
 
-    const best = matched ?? nameMatch ?? null;
+    // 3rd choice: single result where every query word appears as a complete word
+    // in the result name — handles mononyms (fd.org "Alisson" → TSDB "Alisson Becker")
+    // while rejecting false positives ("Rodri" → "Jay Rodriguez": "rodri" ∉ result words;
+    // "Pedri" → "Pedrinho": "pedri" ∉ word set of "pedrinho").
+    const qWords = queryNorm.split(" ");
+    const unique = !matched && !nameMatch && players.length === 1
+      && qWords.every(w => normalize(players[0].strPlayer ?? "").split(" ").includes(w))
+      ? players[0]
+      : null;
+
+    const best = matched ?? nameMatch ?? unique ?? null;
     const url: string | null = best?.strCutout || best?.strThumb || null;
 
     // Only cache definitive API responses (found or confirmed not found)

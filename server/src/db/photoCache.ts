@@ -3,7 +3,8 @@ import { getClient } from "./supabase";
 // undefined = not in cache (never looked up)
 // null      = cached negative (looked up, no photo found)
 // string    = photo URL
-const NULL_PHOTO_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-fetch failed lookups after 7 days
+const NULL_PHOTO_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // re-fetch failed lookups after 7 days
+const PHOTO_TTL_MS      = 90 * 24 * 60 * 60 * 1000; // re-fetch successful lookups after 90 days
 
 export async function getPhoto(name: string): Promise<string | null | undefined> {
   const { data, error } = await getClient()
@@ -15,11 +16,9 @@ export async function getPhoto(name: string): Promise<string | null | undefined>
   if (error) return undefined;
   if (!data) return undefined;
 
-  // Null entries expire — TheSportsDB coverage improves over time
-  if (data.photo_url === null) {
-    const age = Date.now() - new Date(data.fetched_at as string).getTime();
-    if (age > NULL_PHOTO_TTL_MS) return undefined;
-  }
+  const age = Date.now() - new Date(data.fetched_at as string).getTime();
+  if (data.photo_url === null && age > NULL_PHOTO_TTL_MS) return undefined; // re-fetch negatives after 7d
+  if (data.photo_url !== null && age > PHOTO_TTL_MS)     return undefined; // re-fetch positives after 90d
 
   return data.photo_url as string | null;
 }
