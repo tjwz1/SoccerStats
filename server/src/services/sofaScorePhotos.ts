@@ -93,8 +93,10 @@ async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<M
       const p = entry.player ?? entry;
       if (!p?.id) continue;
       const photoUrl = `${SS_PHOTO}${p.id}/image`;
-      if (p.name) photoMap.set(norm(p.name), photoUrl);
-      if (p.shortName && p.shortName !== p.name) photoMap.set(norm(p.shortName), photoUrl);
+      // Don't overwrite: the first (most prominent) entry for a name wins.
+      if (p.name && !photoMap.has(norm(p.name))) photoMap.set(norm(p.name), photoUrl);
+      const sn = norm(p.shortName ?? "");
+      if (sn && sn !== norm(p.name ?? "") && !photoMap.has(sn)) photoMap.set(sn, photoUrl);
     }
   } catch {
     // Network/parse error — return empty map, fall back to TheSportsDB
@@ -116,13 +118,18 @@ function findPhoto(photoMap: Map<string, string>, fdName: string): string | null
   const exact = photoMap.get(q);
   if (exact) return exact;
 
-  // 2. Prefix: fd.org name is a prefix of a SofaScore name (and the next char is a space).
-  //    Only accepted when unambiguous (exactly one key qualifies).
-  if (q.length >= 5) {
+  // 2. Prefix: fd.org name (must be ≥2 words) is a word-boundary prefix of a SofaScore name.
+  //    e.g. "rodrigo hernandez" → "rodrigo hernandez cascante".
+  //    Requiring ≥2 words prevents short nicknames ("Rodri", "Pedri") from false-matching
+  //    unrelated players whose names happen to start with the same letters.
+  //    Only accepted when exactly one SofaScore key qualifies.
+  const qWords = q.split(" ");
+  if (qWords.length >= 2) {
+    const prefix = q + " ";
     let hit: string | null = null;
     let ambiguous = false;
     for (const [key, url] of photoMap) {
-      if (key !== q && key.startsWith(q) && (key[q.length] === " " || key.length === q.length)) {
+      if (key.startsWith(prefix)) {
         if (hit !== null) { ambiguous = true; break; }
         hit = url;
       }
@@ -132,9 +139,8 @@ function findPhoto(photoMap: Map<string, string>, fdName: string): string | null
 
   // 3. Initials+surname abbreviation: "F. de Jong" style keys.
   //    Build the abbreviated form of the fd.org name and look it up directly.
-  const parts = q.split(" ");
-  if (parts.length >= 2) {
-    const abbreviated = `${parts[0][0]} ${parts.slice(1).join(" ")}`;
+  if (qWords.length >= 2) {
+    const abbreviated = `${qWords[0][0]} ${qWords.slice(1).join(" ")}`;
     const abbr = photoMap.get(abbreviated);
     if (abbr) return abbr;
   }
