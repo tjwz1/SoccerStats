@@ -41,6 +41,20 @@ const COMP_CANONICAL: Record<string, string> = {
   "europa league": "europaleague",
   "uefa europa league": "europaleague",
   "copa libertadores": "copaliber",
+  "world cup": "worldcup",
+  "fifa world cup": "worldcup",
+  "copa mundial": "worldcup",
+  "copa mundial de la fifa": "worldcup",
+  "euro": "uefaeuro",
+  "euros": "uefaeuro",
+  "european championship": "uefaeuro",
+  "uefa european championship": "uefaeuro",
+  "uefa euro": "uefaeuro",
+  "copa america": "copaamerica",
+  "conmebol copa america": "copaamerica",
+  "africa cup of nations": "afcon",
+  "african cup of nations": "afcon",
+  "afcon": "afcon",
 };
 
 function normalizeComp(name: string): string {
@@ -2854,9 +2868,18 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
       assists: r.assists,
     }));
 
-  const career: CareerRow[] = [...apiCareer, ...wikiCareer].sort(
-    (a, b) => b.season.localeCompare(a.season) || a.competition.localeCompare(b.competition)
-  );
+  // Deduplicate by (season, normalized-competition): keep first occurrence.
+  // Guards against stale cache rows where "FIFA World Cup" and "World Cup" were
+  // stored as separate entries before COMP_CANONICAL was expanded to unify them.
+  const seenCareerKeys = new Set<string>();
+  const career: CareerRow[] = [...apiCareer, ...wikiCareer]
+    .sort((a, b) => b.season.localeCompare(a.season) || a.competition.localeCompare(b.competition))
+    .filter((r) => {
+      const key = `${r.season}|${normalizeComp(r.competition)}`;
+      if (seenCareerKeys.has(key)) return false;
+      seenCareerKeys.add(key);
+      return true;
+    });
 
   // "This Season" = scorers API (league + UEFA) + wiki/TM rows for cups not in scorers
   const scorerCompKeys = new Set(
