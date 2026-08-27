@@ -19,7 +19,27 @@ async function throttle(): Promise<void> {
   REQ_TIMESTAMPS.push(Date.now());
 }
 
-async function lookupPhoto(player: { id: number; name: string }): Promise<string | null> {
+const normalize = (s: string) =>
+  s.toLowerCase()
+    .replace(/ø/g, "o").replace(/ð/g, "d").replace(/þ/g, "th").replace(/ł/g, "l")
+    .replace(/ß/g, "ss").replace(/æ/g, "ae").replace(/œ/g, "oe")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+// Extract the longest significant word (>=5 chars) from a team name, stripping
+// generic prefixes ("FC", "SC", "CF", etc.) that appear across many clubs.
+function teamKeyword(teamName: string): string {
+  const stripped = normalize(teamName)
+    .replace(/\b(fc|sc|cf|sd|ud|rcd|rc|cd|ac|ss|sv|vfb|vfl|bsc|asc|afc|fk|nk|sk|jk|jfc|1\.)\b/g, " ")
+    .trim();
+  const words = stripped.split(/\s+/).filter(w => w.length >= 5);
+  // longest word is the strongest team identifier (e.g. "barcelona", "manchester")
+  return words.sort((a, b) => b.length - a.length)[0] ?? "";
+}
+
+async function lookupPhoto(
+  player: { id: number; name: string },
+  expectedTeamKey: string // pre-computed from fetchPhotos; empty string = no team check
+): Promise<string | null> {
   const cached = await getPhoto(player.name);
   if (cached !== undefined) return cached;
 
@@ -42,11 +62,6 @@ async function lookupPhoto(player: { id: number; name: string }): Promise<string
       (p) => p.idAPIfootball && Number(p.idAPIfootball) === player.id
     );
 
-    const normalize = (s: string) =>
-      s.toLowerCase()
-        .replace(/ø/g, "o").replace(/ð/g, "d").replace(/þ/g, "th").replace(/ł/g, "l")
-        .replace(/ß/g, "ss").replace(/æ/g, "ae").replace(/œ/g, "oe")
-        .normalize("NFD").replace(/[̀-ͯ]/g, "");
     const queryNorm = normalize(player.name);
 
     // 2nd choice: exact name match after normalisation.
@@ -54,13 +69,18 @@ async function lookupPhoto(player: { id: number; name: string }): Promise<string
       ? (players.find((p) => normalize(p.strPlayer ?? "") === queryNorm) ?? null)
       : null;
 
-    // 3rd choice: single result where every query word appears as a complete word
-    // in the result name — handles mononyms (fd.org "Alisson" → TSDB "Alisson Becker")
-    // while rejecting false positives ("Rodri" → "Jay Rodriguez": "rodri" ∉ result words;
-    // "Pedri" → "Pedrinho": "pedri" ∉ word set of "pedrinho").
+    // 3rd choice: single result that passes BOTH checks:
+    //   (a) every query word appears as a complete word in the result name — rejects
+    //       "Rodri"→"Jay Rodriguez" and "Pedri"→"Pedrinho" while keeping
+    //       "Alisson"→"Alisson Becker" (mononym where name IS a result word).
+    //   (b) result team contains the expected team's key identifier word — rejects
+    //       "Gerard Martin"→"Gerardo Martino (Atlanta United)" and
+    //       "Guille Fernandez"→"Guillermo Fernández (Rosario Central)" while
+    //       keeping "Pablo Gavira"→"Gavi (Barcelona)" when teamKey="barcelona".
     const qWords = queryNorm.split(" ");
     const unique = !matched && !nameMatch && players.length === 1
       && qWords.every(w => normalize(players[0].strPlayer ?? "").split(" ").includes(w))
+      && (expectedTeamKey === "" || normalize(players[0].strTeam ?? "").includes(expectedTeamKey))
       ? players[0]
       : null;
 
@@ -77,13 +97,15 @@ async function lookupPhoto(player: { id: number; name: string }): Promise<string
 }
 
 export async function fetchPhotos(
-  players: Array<{ id: number; name: string }>
+  players: Array<{ id: number; name: string }>,
+  teamName?: string
 ): Promise<Record<number, string | null>> {
+  const expectedTeamKey = teamName ? teamKeyword(teamName) : "";
   // Run all lookups concurrently — throttle() inside lookupPhoto enforces the
   // global 20 req/min rate limit so we never overwhelm TheSportsDB regardless
   // of how many teams are fetched in parallel. Cache hits skip throttle entirely.
   const results = await Promise.all(
-    players.map(async (p) => ({ id: p.id, photo: await lookupPhoto(p) }))
+    players.map(async (p) => ({ id: p.id, photo: await lookupPhoto(p, expectedTeamKey) }))
   );
   return Object.fromEntries(results.map(({ id, photo }) => [id, photo]));
 }

@@ -2234,7 +2234,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     const [fplPhotos, ssPhotos, tsdbPhotos, wikiAppMap] = await Promise.all([
       fetchFplPhotos(squadForPhotos),
       fetchSofaScorePhotos(squadForPhotos, data.name, teamId),
-      fetchPhotos(squadForPhotos),
+      fetchPhotos(squadForPhotos, data.name),
       fetchCareerAppTotals(squad),
     ]);
     allSquadPhotos = mergePhotos(tsdbPhotos, ssPhotos, fplPhotos);
@@ -2243,7 +2243,7 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     // Fire both photo sources + career totals concurrently; merge by priority SS > TSDB
     const [ssPhotos, tsdbPhotos, wikiAppMap] = await Promise.all([
       fetchSofaScorePhotos(squadForPhotos, data.name, teamId),
-      fetchPhotos(squadForPhotos),
+      fetchPhotos(squadForPhotos, data.name),
       fetchCareerAppTotals(squad),
     ]);
     allSquadPhotos = mergePhotos(tsdbPhotos, ssPhotos);
