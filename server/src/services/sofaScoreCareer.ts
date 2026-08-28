@@ -21,11 +21,11 @@ function normName(s: string): string {
 }
 
 // Each curl call is a separate OS process. A single player's full career can be 70-80+
-// (tournament, season) pairs, and this function runs concurrently for multiple players at
-// once (e.g. the squad lineup pre-warm fetches 3 players in parallel) — unbounded Promise.all
-// here has caused 100+ simultaneous curl spawns, which fails widely under that load. Cap
-// concurrency so one player's fetch stays fast while total in-flight processes stay bounded.
-const SS_FETCH_CONCURRENCY = 5;
+// (tournament, season) pairs. At 5 concurrency that takes up to 96s (12 rounds × 8s/pair),
+// exceeding Vercel's function timeout and leaving SofaScore scrapes incomplete. Raising to 15
+// brings the worst case to ~32s (5-6 rounds) — well under the 60s serverless limit — while
+// keeping total simultaneous curl processes bounded at ~15 (acceptable for the host OS).
+const SS_FETCH_CONCURRENCY = 15;
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
