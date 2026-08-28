@@ -2648,11 +2648,12 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
 
   // Phase 1: bio + both DB caches in parallel — saves 2 sequential round-trips.
 
-  const [personData, cachedStats, cachedTrophies, tmCupChecked] = await Promise.all([
+  const [personData, cachedStats, cachedTrophies, tmCupChecked, ssCacheExists] = await Promise.all([
     apiFetch(`/persons/${id}`, 24 * 60 * 60 * 1000) as Promise<any>,
     getWikiStats(id),
     getWikiTrophies(id),
     getTmCupChecked(id),
+    getCached(`/ss-career/${id}`).then(Boolean),
   ]);
 
   // Current season string e.g. "2025/26"
@@ -2689,7 +2690,9 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   const cachedHasCurrentPeriod = (cachedStats ?? []).some(
     r => r.season === currentSeasonStr || r.season === currentYear
   );
-  const needsSofaRefresh = !needsCareer && hasCurrentTeam && !cachedHasCurrentPeriod;
+  // Also re-run when the SofaScore cache has expired: partial results use a 1h TTL,
+  // so this naturally retries players who had a rate-limited partial fetch last time.
+  const needsSofaRefresh = !needsCareer && hasCurrentTeam && (!cachedHasCurrentPeriod || !ssCacheExists);
   const needsCurrentSeasonCups =
     !needsCareer &&
     hasCurrentTeam &&       // skip for retired/inactive players (no team)
@@ -2793,10 +2796,13 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // CL/EL are added only if the player had scorer entries there in the current season.
   // This cuts worst-case API calls from 30 to ~10 for a typical domestic-only player.
   const currentSeasonCodes = new Set(currentSeasonHits.map((r) => r.code));
+  // Also probe past European seasons when wikiRows confirms the player appeared there.
+  // Covers e.g. a Man United player in CL 2021/22 whose current club isn't in Europe.
+  const wikiCompNorms = new Set((wikiRows ?? []).map(r => normalizeComp(r.league ?? "")));
   const activeComps = [...new Set([
     competitionCode,
-    ...(currentSeasonCodes.has("CL") ? ["CL"] : []),
-    ...(currentSeasonCodes.has("EL") ? ["EL"] : []),
+    ...(currentSeasonCodes.has("CL") || wikiCompNorms.has("championsleague") ? ["CL"] : []),
+    ...(currentSeasonCodes.has("EL") || wikiCompNorms.has("europaleague") ? ["EL"] : []),
     ...(currentSeasonCodes.has("ECL") ? ["ECL"] : []),
   ])];
 

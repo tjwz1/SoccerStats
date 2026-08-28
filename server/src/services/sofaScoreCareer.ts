@@ -143,17 +143,19 @@ export async function fetchSofaScoreCareer(
       .catch(() => null)
   );
 
-  // If most individual season fetches failed (e.g. SofaScore rate-limited us mid-fetch), the
-  // handful that did succeed would otherwise get cached as if they were this player's whole
-  // career — a single surviving row (often a national-team cap with near-zero stats) then
-  // blocks any future re-scrape because it satisfies the "has a current-period row" cache-hit
-  // check. Treat a low completion rate as a failed fetch entirely rather than caching a
-  // misleadingly partial result.
+  // If SofaScore rate-limited us mid-fetch, grade by success rate rather than discarding all
+  // progress. A partial result is still better than nothing, but we cache it briefly (1h) so
+  // the stale-detection and needsSofaRefresh logic re-trigger a full retry soon.
   const successCount = seasonStats.filter((r) => r !== null).length;
-  if (pairs.length >= 3 && successCount / pairs.length < 0.75) {
-    console.warn(`[ssCareer] "${playerName}" → only ${successCount}/${pairs.length} season fetches succeeded (ss=${ssId}); treating as failed, not caching`);
+  const successRate = pairs.length > 0 ? successCount / pairs.length : 1;
+  // Below 50%: too few results — treat as a complete failure and don't cache anything.
+  // 50–75%: partial results are better than nothing; cache with a 1-hour TTL so the
+  // stale-detection logic re-triggers SofaScore after the short window expires.
+  if (pairs.length >= 3 && successRate < 0.5) {
+    console.warn(`[ssCareer] "${playerName}" → only ${successCount}/${pairs.length} season fetches succeeded (ss=${ssId}); too few to cache`);
     return [];
   }
+  const isPartial = pairs.length >= 3 && successRate < 0.75;
 
   const rows: WikiCareerRow[] = seasonStats
     .filter((r): r is { pair: SsSeasonPair; data: any } => !!r && (r.data.statistics?.appearances ?? 0) > 0)
@@ -167,7 +169,9 @@ export async function fetchSofaScoreCareer(
     }))
     .filter((r) => r.season && r.team);
 
-  console.log(`[ssCareer] "${playerName}" → ${rows.length} career rows from SofaScore (ss=${ssId}, ${pairs.length} tournament/season pairs probed)`);
-  if (rows.length > 0) setCached(cacheKey, rows, SS_CAREER_TTL_MS).catch(() => {});
+  const cacheTtl = isPartial ? 60 * 60 * 1000 : SS_CAREER_TTL_MS;
+  if (isPartial) console.warn(`[ssCareer] "${playerName}" → partial: ${successCount}/${pairs.length} succeeded, caching with 1h TTL (ss=${ssId})`);
+  else console.log(`[ssCareer] "${playerName}" → ${rows.length} career rows from SofaScore (ss=${ssId}, ${pairs.length} tournament/season pairs probed)`);
+  if (rows.length > 0) setCached(cacheKey, rows, cacheTtl).catch(() => {});
   return rows;
 }

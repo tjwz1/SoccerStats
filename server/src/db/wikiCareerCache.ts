@@ -82,11 +82,16 @@ export function hasStaleAssistSignature(rows: WikiCareerRow[]): boolean {
     (acc, r) => ({ goals: acc.goals + r.goals, assists: acc.assists + r.assists, seasons: acc.seasons + 1 }),
     { goals: 0, assists: 0, seasons: 0 }
   );
+  const distinctSeasons = new Set(rows.map(r => r.season)).size;
   return (
     (totals.goals >= 10 && totals.assists === 0 && totals.seasons >= 3) ||
     (totals.goals >= 200 && totals.assists <= 20 && totals.seasons >= 8) ||
     rows.length === 1 ||
-    (rows.length === 2 && totals.goals === 0 && totals.assists === 0)
+    (rows.length === 2 && totals.goals === 0 && totals.assists === 0) ||
+    // Pattern 4: all rows from one season — signature of TM current-season-only fallback.
+    // Fires when SofaScore was rate-limited (returned []) and TM was the sole source,
+    // providing only the current season. Re-triggers SofaScore on next visit.
+    distinctSeasons === 1
   );
 }
 
