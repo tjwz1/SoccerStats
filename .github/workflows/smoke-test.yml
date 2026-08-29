@@ -43,9 +43,10 @@ jobs:
             echo "$line" | tee -a "$LOGFILE"
           }
 
-          # Like check() but treats 504 as SKIP — used for competitions where fd.org's
-          # upstream endpoint is occasionally unavailable (e.g. BSA off-season), so a
-          # timeout there means "data unavailable", not a server regression.
+          # Like check() but treats 504 and curl-timeout (000/"") as SKIP — used for
+          # competitions where fd.org's upstream endpoint is occasionally unavailable
+          # (e.g. BSA off-season, inter-tournament brackets), so a timeout means
+          # "data unavailable", not a server regression.
           check_soft() {
             local label="$1" url="$2" out code line
             out=$(curl -s -w "\n__STATUS__%{http_code}" \
@@ -54,11 +55,11 @@ jobs:
               "$url" 2>/dev/null || true)
             code=$(printf '%s' "$out" | tail -n1 | sed 's/__STATUS__//')
             case "$code" in
-              200) line="PASS -- $label ($code)";                         PASS=$((PASS+1)) ;;
-              403|504) line="SKIP -- $label ($code, upstream unavailable)"; SKIP=$((SKIP+1)) ;;
-              404) line="PASS -- $label ($code, not yet available)";      PASS=$((PASS+1)) ;;
-              "")  line="FAIL -- $label (no response / timeout)";         FAIL=$((FAIL+1)) ;;
-              *)   line="FAIL -- $label (HTTP $code)";                    FAIL=$((FAIL+1)) ;;
+              200) line="PASS -- $label ($code)";                              PASS=$((PASS+1)) ;;
+              403|504) line="SKIP -- $label ($code, upstream unavailable)";    SKIP=$((SKIP+1)) ;;
+              404) line="PASS -- $label ($code, not yet available)";           PASS=$((PASS+1)) ;;
+              ""|000) line="SKIP -- $label (timeout, upstream unavailable)";  SKIP=$((SKIP+1)) ;;
+              *)   line="FAIL -- $label (HTTP $code)";                         FAIL=$((FAIL+1)) ;;
             esac
             echo "$line" | tee -a "$LOGFILE"
           }

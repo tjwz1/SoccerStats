@@ -2116,9 +2116,10 @@ export async function getCompetitionFixtures(
   try {
     data = await apiFetch(`/competitions/${competitionCode}/matches?season=${seasonYear}`, ttl);
   } catch (e: any) {
-    // fd.org returns 404 when the season isn't registered yet (e.g. CL 2026-27 in August).
-    // Treat it as an empty fixture list — no matches scheduled yet.
-    if (/API error 404/.test(e.message)) return [];
+    // fd.org returns 404 when the season isn't registered yet (e.g. CL 2026-27 in August),
+    // and occasionally 400 during the season-transition window before the new season is fully
+    // registered. Both mean "no fixtures yet" — return an empty list rather than 500.
+    if (/API error (400|404)/.test(e.message)) return [];
     throw e;
   }
   const matches: CompetitionFixture[] = (data?.matches ?? [])
