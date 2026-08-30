@@ -4,11 +4,12 @@ import helmet from "helmet";
 import compression from "compression";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
-import teamsRouter from "./routes/teams";
+import teamsRouter, { clearLineupCacheForTeam } from "./routes/teams";
 import playersRouter from "./routes/players";
 import favouritesRouter from "./routes/favourites";
 import accountRouter from "./routes/account";
 import { getClient } from "./db/supabase";
+import { deleteCached, deleteCachedByPrefix } from "./db/apiCache";
 import { getTeamSquadPlayers } from "./services/footballApi";
 import { fetchPlayerWikiData } from "./services/wikiStats";
 import { fetchSofaScoreCareer } from "./services/sofaScoreCareer";
@@ -293,7 +294,11 @@ app.delete("/api/admin/cache/expired", adminLimiter, requireAdmin, async (_req, 
 // Useful during transfer windows when fd.org data changes but the 24h TTL hasn't expired yet.
 // Query params: teamId (fd.org team ID) and/or competitionCode (e.g. "PD", "PL").
 // Deletes /teams/{teamId}, /competitions/{competitionCode}/teams, the SofaScore photo map,
-// and all lineup cache entries for the team (across competitions).
+// and all lineup cache entries for the team (across competitions) — via deleteCached /
+// deleteCachedByPrefix so the in-process apiCache memCache is cleared too, not just Supabase.
+// Also drops the team's entries from routes/teams.ts's separate in-process lineupCache Map,
+// which neither of those touches — without this a warm instance kept serving the pre-purge
+// squad for up to LINEUP_TTL_MS (24h) even right after calling this endpoint.
 app.delete("/api/admin/cache/squad", adminLimiter, requireAdmin, async (req, res) => {
   const teamId = req.query.teamId as string | undefined;
   const competitionCode = (req.query.competitionCode as string | undefined)?.toUpperCase();
@@ -310,26 +315,19 @@ app.delete("/api/admin/cache/squad", adminLimiter, requireAdmin, async (req, res
   }
 
   try {
-    const db = getClient();
-    // Delete exact-keyed entries
-    const { error: e1, count: c1 } = await db
-      .from("api_cache")
-      .delete({ count: "exact" })
-      .in("path", paths);
-    if (e1) return res.status(500).json({ error: e1.message });
+    await Promise.all(paths.map((p) => deleteCached(p)));
 
-    // Delete all lineup entries for this team across all competitions (prefix match)
-    let c2 = 0;
+    let lineupCleared = 0;
     if (teamId) {
-      const { error: e2, count } = await db
-        .from("api_cache")
-        .delete({ count: "exact" })
-        .like("path", `/team-lineup/v3/${teamId}/%`);
-      if (e2) return res.status(500).json({ error: e2.message });
-      c2 = count ?? 0;
+      await deleteCachedByPrefix(`/team-lineup/v3/${teamId}/`);
+      lineupCleared = clearLineupCacheForTeam(teamId);
     }
 
-    res.json({ deleted: (c1 ?? 0) + c2, paths, lineupPrefix: teamId ? `/team-lineup/v3/${teamId}/` : null });
+    res.json({
+      clearedPaths: paths,
+      lineupPrefix: teamId ? `/team-lineup/v3/${teamId}/` : null,
+      lineupCacheEntriesCleared: lineupCleared,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

@@ -51,6 +51,21 @@ const CLUB_HONOURS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const lineupCache = new Map<string, { data: unknown; fetchedAt: number }>();
 const LINEUP_TTL_MS = 24 * 60 * 60 * 1000; // 24h — squad changes at most weekly
 
+// Drops every lineupCache entry for a team (all competitions — keys are `${teamId}:${competition}`).
+// Used by the admin squad-purge route so a force-refresh actually clears this L1 cache too —
+// previously it only deleted Supabase rows, so a warm instance kept serving the old squad
+// for up to LINEUP_TTL_MS after an admin "purge".
+export function clearLineupCacheForTeam(teamId: string): number {
+  let cleared = 0;
+  for (const key of lineupCache.keys()) {
+    if (key.startsWith(`${teamId}:`)) {
+      lineupCache.delete(key);
+      cleared++;
+    }
+  }
+  return cleared;
+}
+
 // Typed shouldCache helpers — prevents the type-mismatch bugs that silently defeat caching.
 const cacheWhen = {
   nonEmpty:    (d: unknown[]) => d.length > 0,
