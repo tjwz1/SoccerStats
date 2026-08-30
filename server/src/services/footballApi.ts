@@ -74,7 +74,23 @@ function getSquadTTL(): number {
   const m = new Date().getMonth() + 1; // 1–12
   return (m >= 6 && m <= 9) || m === 1 ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
 }
-const SQUAD_TTL_MS = getSquadTTL();
+
+// Shared name-matching helpers for reconciling fd.org's squad against scraper supplements
+// (Transfermarkt/Wikipedia). Pure + module-scoped so they're usable both early (squad
+// reconciliation, before the XI is built) and late (addMissing supplement) in getTeamLineup().
+function normPlayerName(n: string): string {
+  return n.toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z\s]/g, "").trim().replace(/\s+/g, " ");
+}
+function playerNamesMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  const aT = a.split(" "), bT = b.split(" ");
+  const aLast = aT[aT.length - 1], bLast = bT[bT.length - 1];
+  if (aLast.length >= 4 && aLast === bLast) return true;
+  for (const tok of aT) if (tok.length >= 5 && bT.includes(tok)) return true;
+  return false;
+}
 const SCORERS_CURRENT_TTL_MS = 2 * 60 * 1000;   // 2 min — fd.org updates scorers every ~2-5 min during live matches
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -1570,7 +1586,9 @@ export async function getTeams(competitionCode: string) {
   if (useMock()) return MOCK_TEAMS;
   const espnConfig = getEspnLeagueConfig(competitionCode);
   if (espnConfig) return getEspnTeams(espnConfig);
-  const data = await apiFetch(`/competitions/${competitionCode}/teams`) as any;
+  // Same TTL as getTeamLineup's write to this key — two different TTLs on one cache
+  // entry meant whichever writer ran last silently won.
+  const data = await apiFetch(`/competitions/${competitionCode}/teams`, getSquadTTL()) as any;
   // Pre-warm scorers in background. International tournaments use their own season year
   // (not getCurrentSeason()) — skip pre-warming for them to avoid 404 noise.
   if (!INTERNATIONAL_COMP_CODES.has(competitionCode)) {
@@ -2172,12 +2190,12 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
         (async () => {
           if (competitionCode) {
             try {
-              const d = await apiFetch(`/competitions/${competitionCode}/teams`, SQUAD_TTL_MS) as any;
+              const d = await apiFetch(`/competitions/${competitionCode}/teams`, getSquadTTL()) as any;
               const found = d.teams?.find((t: any) => String(t.id) === String(teamId));
               if (found?.squad?.length > 0) return found;
             } catch { /* fall through to /teams/{id} */ }
           }
-          return apiFetch(`/teams/${teamId}`, SQUAD_TTL_MS);
+          return apiFetch(`/teams/${teamId}`, getSquadTTL());
         })(),
         competitionCode
           ? apiFetch(`/competitions/${competitionCode}/scorers?season=${getCurrentSeason()}&limit=400`, SCORERS_CURRENT_TTL_MS).catch(() => null)
@@ -2185,13 +2203,62 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
       ]);
 
   const data = teamData as any;
-  const squad: any[] = data.squad ?? [];
+  let squad: any[] = data.squad ?? [];
 
   // Resolve competition code (caller-supplied first, fall back to team's running competition)
   const compCode = competitionCode
     ?? (!isEspnComp
         ? (data.runningCompetitions as any[] | undefined)?.find((c: any) => c.type === "LEAGUE")?.code
         : undefined);
+
+  // Squad reconciliation against Transfermarkt's /kader/ page — club competitions only
+  // (WC/EC national squads are sourced from Wikipedia below and never touch this).
+  // fd.org's squad list is additive-only cached data: a transferred-out player can linger
+  // on his old club's squad for up to 24h after the move because nothing ever removes him.
+  // TM's kader page reflects transfers faster and is scraped fresh per team, so when it
+  // returns a plausible full squad we treat it as the source of truth for *membership* and
+  // drop any fd.org player it no longer lists. The MIN_TM_SQUAD size floor guards against a
+  // failed/partial scrape (which returns [] or a handful of rows) wiping a real squad — in
+  // that case we skip filtering and fall back to fd.org-only, same as before this change.
+  // 15s cap so a slow TM cold-start doesn't block the entire lineup response.
+  let tmClubSquad: TmSquadPlayer[] = [];
+  const MIN_TM_SQUAD_FOR_FILTER = 15;
+  // A second, post-filter floor: TM's club search can resolve to the wrong entity entirely
+  // (e.g. a same-named club in an unrelated league) — that wrong squad can still be >=15
+  // players, defeating the floor above, but will share almost no names with the real fd.org
+  // squad. If filtering would leave fewer than a fieldable XI, the TM match is untrustworthy —
+  // discard it completely (skip filtering AND skip the addMissing supplement below) rather
+  // than trust its player list for either removal or addition.
+  const MIN_SURVIVING_SQUAD = 11;
+  if (compCode && compCode !== "WC" && compCode !== "EC") {
+    // ESPN calendar-year leagues (MLS etc.) use the calendar year, not the European season.
+    const tmSeason = espnCompConfig ? getEspnCurrentSeason(espnCompConfig) : getCurrentSeason();
+    try {
+      tmClubSquad = await Promise.race([
+        getTmClubSquad(data.name, tmSeason),
+        new Promise<TmSquadPlayer[]>((resolve) => setTimeout(() => resolve([]), 7_000)),
+      ]);
+    } catch (e) {
+      console.warn(`[lineup] TM squad fetch failed for ${data.name}:`, (e as Error).message);
+    }
+    if (tmClubSquad.length >= MIN_TM_SQUAD_FOR_FILTER) {
+      const tmNorms = tmClubSquad.map((p) => normPlayerName(p.name));
+      const before = squad.length;
+      const filtered = squad.filter((p: any) =>
+        tmNorms.some((tn) => playerNamesMatch(tn, normPlayerName(p.name)))
+      );
+      if (filtered.length < MIN_SURVIVING_SQUAD && before >= MIN_SURVIVING_SQUAD) {
+        console.warn(`[lineup] TM squad for ${data.name} shares almost no names with fd.org's squad (${filtered.length}/${before} survived) — likely resolved to the wrong club; discarding TM data entirely for this team`);
+        tmClubSquad = [];
+      } else {
+        const removed = before - filtered.length;
+        if (removed > 0) {
+          console.log(`[lineup] TM reconciliation: removed ${removed} player(s) no longer on ${data.name}'s TM roster`);
+        }
+        squad = filtered;
+      }
+    }
+  }
 
   // Process scorers — use the pre-loaded result, or fetch now if compCode was unknown upfront
   const appearances = new Map<number, number>();
@@ -2299,21 +2366,6 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
   type SupplementPlayer = { id: 0; name: string; position: string; dateOfBirth: string };
   const supplementPlayers: SupplementPlayer[] = [];
 
-  // Shared name deduplication helpers
-  function normPlayerName(n: string): string {
-    return n.toLowerCase()
-      .normalize("NFD").replace(/[̀-ͯ]/g, "")
-      .replace(/[^a-z\s]/g, "").trim().replace(/\s+/g, " ");
-  }
-  function playerNamesMatch(a: string, b: string): boolean {
-    if (a === b) return true;
-    const aT = a.split(" "), bT = b.split(" ");
-    const aLast = aT[aT.length - 1], bLast = bT[bT.length - 1];
-    if (aLast.length >= 4 && aLast === bLast) return true;
-    for (const tok of aT) if (tok.length >= 5 && bT.includes(tok)) return true;
-    return false;
-  }
-
   function buildExistingNorms(): Set<string> {
     return new Set([
       ...xi.map(({ player: p }) => normPlayerName(p.name)),
@@ -2353,19 +2405,9 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
       console.warn(`[lineup] EC Wikipedia supplement failed:`, (e as Error).message);
     }
   } else if (compCode) {
-    // Club competitions: use Transfermarkt /kader/ page
-    // 15s cap so a slow TM cold-start doesn't block the entire lineup response
-    // ESPN calendar-year leagues (MLS etc.) use the calendar year, not the European season.
-    const tmSeason = espnCompConfig ? getEspnCurrentSeason(espnCompConfig) : getCurrentSeason();
-    try {
-      const tmSquad = await Promise.race([
-        getTmClubSquad(data.name, tmSeason),
-        new Promise<TmSquadPlayer[]>((resolve) => setTimeout(() => resolve([]), 7_000)),
-      ]);
-      addMissing(tmSquad, buildExistingNorms(), `TM (${compCode})`);
-    } catch (e) {
-      console.warn(`[lineup] TM squad supplement failed for ${data.name}:`, (e as Error).message);
-    }
+    // Club competitions: add any TM players fd.org is missing. Reuses the same tmClubSquad
+    // fetched above during reconciliation — no second scrape needed.
+    addMissing(tmClubSquad, buildExistingNorms(), `TM (${compCode})`);
   }
 
   // When fd.org returned an empty squad, promote TM supplement players to form the XI.
@@ -2551,7 +2593,7 @@ async function fetchScorerStats(
 
 export async function getTeamSquadPlayers(teamId: string): Promise<{ teamName: string; players: Array<{ id: number; name: string }> }> {
   if (useMock()) return { teamName: "", players: [] };
-  const data = await apiFetch(`/teams/${teamId}`, SQUAD_TTL_MS) as any;
+  const data = await apiFetch(`/teams/${teamId}`, getSquadTTL()) as any;
   return {
     teamName: data.name ?? "",
     players: (data.squad ?? []).map((p: any) => ({ id: p.id as number, name: p.name as string })),

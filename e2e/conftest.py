@@ -108,9 +108,23 @@ def page_with_pl_standings(page):
 
 
 @pytest.fixture
+def page_with_arsenal_default_tab(page_with_pl_standings):
+    """Navigate from PL standings into Arsenal's team page, leaving whichever tab
+    loads by default untouched — for tests that assert on that default state
+    (e.g. test_default_tab_is_schedule)."""
+    _click_arsenal_in_standings(page_with_pl_standings)
+    return page_with_pl_standings
+
+
+@pytest.fixture
 def page_with_arsenal(page_with_pl_standings):
     """Navigate from PL standings into Arsenal's squad view."""
     _click_arsenal_in_standings(page_with_pl_standings)
+    # Team pages land on Schedule by default (test_default_tab_is_schedule) — the formation
+    # badge that _wait_for_squad_loaded waits for only renders on the Squad tab, so without
+    # this click every squad-view test skips with "Squad/lineup not loaded within timeout"
+    # regardless of whether the squad actually loaded.
+    page_with_pl_standings.get_by_role("button", name="Squad").click()
     _wait_for_squad_loaded(page_with_pl_standings)
     return page_with_pl_standings
 

@@ -104,7 +104,10 @@ const TM_SEARCH_CACHE_MAX = 1000;
 
 async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef | null> {
   const cacheKey = `${hrefPattern.source}:${query}`;
-  // L1: in-memory
+  // L1: in-memory. Only ever holds positive hits (see below) — a transient TM failure
+  // (network blip, brief 403, Cloudflare challenge) must not disable this club/player's
+  // lookup for the rest of the process's uptime, so a miss here always falls through to
+  // a real retry rather than short-circuiting on a cached null.
   if (tmSearchCache.has(cacheKey)) return tmSearchCache.get(cacheKey)!;
 
   // L2: Supabase — TM slugs are stable, persist to avoid re-scraping on restart.
@@ -124,10 +127,53 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
   const searchUrl =
     `${BASE}/schnellsuche/ergebnis/schnellsuche` +
     `?query=${encodeURIComponent(query)}&x=0&y=0`;
-  const html = await tmFetch(searchUrl);
-  if (!html) { cappedSet(tmSearchCache, cacheKey, null, TM_SEARCH_CACHE_MAX); return null; }
+
+  // Fetched inline (not via tmFetch) so the final, post-redirect URL is available: TM's
+  // search redirects (302) straight to the entity's own page instead of showing a results
+  // list when it's confident of a single exact match (this happens for many well-known
+  // clubs, e.g. "Newcastle United FC", "Tottenham Hotspur FC" — anything the search engine
+  // doesn't need to disambiguate). node-fetch follows the redirect transparently, so without
+  // checking res.url the code below would silently try to parse a search-results page's
+  // layout out of the entity's own homepage, find no matching candidates, and report "not
+  // found" for a club that actually resolved fine.
+  let html: string | null;
+  let finalUrl: string;
+  try {
+    const res = await fetch(searchUrl, { headers: HEADERS, signal: AbortSignal.timeout(8_000), redirect: "follow" });
+    finalUrl = res.url;
+    if (res.status === 403 || res.status === 429) {
+      console.warn(`[transfermarkt] Blocked (${res.status}) for ${searchUrl}`);
+      return null;
+    }
+    if (!res.ok) {
+      console.warn(`[transfermarkt] HTTP ${res.status} for ${searchUrl}`);
+      return null;
+    }
+    const text = await res.text();
+    if (text.includes("cf-browser-verification") || text.includes("Just a moment")) {
+      console.warn(`[transfermarkt] Cloudflare challenge for ${searchUrl}`);
+      return null;
+    }
+    html = stripNonContent(text);
+  } catch (e) {
+    console.warn(`[transfermarkt] Fetch error: ${(e as Error).message}`);
+    return null;
+  }
+  if (!html) return null; // transient fetch failure — don't cache, let the next call retry
 
   const $ = cheerio.load(html);
+
+  // Redirected straight to an entity page matching what we asked for — trust it directly
+  // rather than trying to parse it as a results listing (see comment above).
+  const redirectMatch = new URL(finalUrl).pathname.match(hrefPattern);
+  if (redirectMatch) {
+    const title = $("h1").first().text().trim();
+    const direct: EntityRef = { slug: redirectMatch[1], id: redirectMatch[2], name: title || query };
+    cappedSet(tmSearchCache, cacheKey, direct, TM_SEARCH_CACHE_MAX);
+    setCached(dbKey, { ref: direct }, TM_SEARCH_TTL_MS);
+    return direct;
+  }
+
   const candidates: EntityRef[] = [];
 
   // Collect every anchor matching the requested entity type — TM's search page often lists
@@ -144,10 +190,15 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
 
   const best = pickBestMatch(query, candidates);
 
-  cappedSet(tmSearchCache, cacheKey, best, TM_SEARCH_CACHE_MAX);
-  // Only persist non-null results — a null from an SSL/network failure shouldn't
-  // block retries for 30 days. Re-running the search is cheap (one HTTP call).
-  if (best !== null) setCached(dbKey, { ref: best }, TM_SEARCH_TTL_MS);
+  // Only cache/persist non-null results — a null here can come from a transient network
+  // hiccup, a one-off block, or TM's search genuinely not having this query, and caching it
+  // (especially in the unbounded-lifetime in-memory map) would silently disable this
+  // club/player's TM lookup — supplement AND squad-reconciliation filtering — for as long as
+  // the process stays warm. Re-running the search is cheap (one HTTP call), so just retry.
+  if (best !== null) {
+    cappedSet(tmSearchCache, cacheKey, best, TM_SEARCH_CACHE_MAX);
+    setCached(dbKey, { ref: best }, TM_SEARCH_TTL_MS);
+  }
   return best;
 }
 
@@ -556,13 +607,18 @@ const TM_CLUB_NAME_ALIASES: Record<string, string> = {
   "Rayo Vallecano de Madrid": "Rayo Vallecano",
   // Ligue 1
   "Paris Saint-Germain FC": "Paris Saint-Germain",
-  "Stade Rennais FC 1901": "Stade Rennes",
+  // "Stade Rennes" reads as correct but doesn't substring-match TM's actual name ("Stade
+  // Rennais FC") in pickBestMatch — "Rennes" (city) vs "Rennais" (club's adjectival form)
+  // aren't substrings of each other. Verified against TM's live search results.
+  "Stade Rennais FC 1901": "Stade Rennais",
   "AS Monaco FC": "AS Monaco",
   "RC Strasbourg Alsace": "RC Strasbourg",
   "ES Troyes AC": "Troyes",
-  "Racing Club de Lens": "Racing Lens",
+  // "Racing Lens" likewise doesn't substring-match TM's actual name ("RC Lens").
+  "Racing Club de Lens": "RC Lens",
   "Stade Brestois 29": "Stade Brest",
   "Olympique Lyonnais": "Olympique Lyonnais",
+  "Lille OSC": "LOSC Lille",
   // Eredivisie
   "AFC Ajax": "Ajax",
   "FC Twente '65": "FC Twente",
@@ -601,6 +657,15 @@ const TM_CLUB_NAME_ALIASES: Record<string, string> = {
   // Premier League
   "Brighton & Hove Albion FC": "Brighton & Hove Albion",
   "Wolverhampton Wanderers FC": "Wolverhampton Wanderers",
+  // These three return zero candidates from TM's search for the raw fd.org name (not a
+  // substring-matching issue like the ones above — TM's search just doesn't resolve the
+  // "FC"-suffixed query at all for these). Verified against TM's live search results.
+  "Newcastle United FC": "Newcastle United",
+  "Tottenham Hotspur FC": "Tottenham Hotspur",
+  "Coventry City FC": "Coventry City",
+  // La Liga — "Real Racing Club de Santander" (fd.org's full legal name) returns no
+  // results from TM's search at all; TM's actual club name is just "Racing Santander".
+  "Real Racing Club de Santander": "Racing Santander",
 };
 
 /** Resolve TM search query for a club: try raw name, fall back to alias if not found. */

@@ -30,10 +30,10 @@ def test_all_four_tabs_visible(page_with_arsenal: Page):
 
 
 @pytest.mark.squad
-def test_default_tab_is_schedule(page_with_arsenal: Page):
+def test_default_tab_is_schedule(page_with_arsenal_default_tab: Page):
     """The Schedule tab is active by default when a team is first selected."""
     # The active tab has bg-green-600 class
-    active_tab = page_with_arsenal.locator(
+    active_tab = page_with_arsenal_default_tab.locator(
         "button[class*='bg-green-600']"
     ).filter(has_text=re.compile(r"Squad|Honours|Schedule|News"))
     active_tab.wait_for(timeout=QUICK_TIMEOUT)
