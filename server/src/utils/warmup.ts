@@ -17,6 +17,7 @@ const WARM_PREFIXES = [
   "/competition-seasons/v3/",
   "/espn/",
   "/team-index/v1",
+  "team-news-digest:",
 ];
 
 export function warmL1Cache(): void {

@@ -1,5 +1,8 @@
 import { safeFetch as fetch } from "../utils/httpClient";
 import * as cheerio from "cheerio";
+import { getAnyCached, setCached } from "../db/apiCache";
+import { summarizeNews } from "./aiSummary";
+import { resolveGoogleNewsUrls } from "./googleNewsUrl";
 
 export interface NewsArticle {
   title: string;
@@ -345,78 +348,303 @@ function searchQuery(teamName: string): string {
   return `${stripped} football`;
 }
 
-export async function fetchTeamNews(teamName: string): Promise<NewsResponse> {
+// ─── AI digest: body scraping + windowing + dedup + truncation ───────────────
+
+const DIGEST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — LLM call is expensive
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SCRAPE_TIMEOUT_MS = 6_000;
+const SCRAPE_CONCURRENCY = 5;
+const MAX_WORDS_PER_ARTICLE = 350;
+const MAX_TOTAL_WORDS = 6_000;
+
+function collapseWhitespace(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+// Extract the main article text from a raw HTML page with cheerio: prefer a real
+// <article>, else the block element whose concatenated <p> text is longest.
+function extractArticleText(html: string): string {
+  const $ = cheerio.load(html);
+  $("script,style,nav,aside,footer,header,figure,form,noscript,iframe").remove();
+
+  const pText = (el: cheerio.Cheerio<any>): string =>
+    collapseWhitespace(
+      el
+        .find("p")
+        .map((_, p) => $(p).text())
+        .get()
+        .join(" ")
+    );
+
+  const article = $("article").first();
+  if (article.length) {
+    const t = pText(article);
+    if (t.length >= 200) return t;
+  }
+
+  let best = "";
+  $("main, [role=main], .article-body, .article__body, .story-body, .content, #content, section, div").each(
+    (_, el) => {
+      const t = pText($(el));
+      if (t.length > best.length) best = t;
+    }
+  );
+  if (best.length >= 200) return best;
+
+  // Last resort: all <p> on the page.
+  return pText($("body"));
+}
+
+// Fetch each url and return url -> main text. Failures/paywalls are simply omitted.
+export async function fetchArticleBodies(urls: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const queue = [...new Set(urls)];
+
+  async function worker() {
+    for (;;) {
+      const url = queue.shift();
+      if (!url) return;
+      try {
+        const res = await fetch(url, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            Accept: "text/html,application/xhtml+xml",
+          },
+          signal: AbortSignal.timeout(SCRAPE_TIMEOUT_MS),
+          redirect: "follow",
+        });
+        if (!res.ok) continue;
+        const ct = res.headers.get("content-type") ?? "";
+        if (!ct.includes("html")) continue;
+        const html = await res.text();
+        const text = extractArticleText(html);
+        if (text.length >= 200) out.set(url, text);
+      } catch {
+        // omit this url
+      }
+    }
+  }
+
+  await Promise.allSettled(
+    Array.from({ length: Math.min(SCRAPE_CONCURRENCY, queue.length) }, worker)
+  );
+  return out;
+}
+
+// Cheap near-duplicate check: token Jaccard on the first N words. Repeated wire
+// copy across outlets scores high and gets dropped.
+function firstWordsTokenSet(text: string, n: number): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, n)
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+function truncateWords(text: string, maxWords: number): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  return words.length <= maxWords ? text : words.slice(0, maxWords).join(" ");
+}
+
+// Assemble the text blob handed to the LLM from the in-window articles.
+// `resolvedByUrl` maps a Google News redirect link to the real publisher URL that
+// `bodies` is keyed by; a missing entry means the link never resolved and we fall
+// back to the RSS <description> snippet.
+export function buildDigestInput(
+  recent: NewsArticle[],
+  bodies: Map<string, string>,
+  descByUrl: Map<string, string>,
+  resolvedByUrl: Map<string, string> = new Map()
+): string {
+  const kept: Array<{ source: string; text: string }> = [];
+  const keptSets: Set<string>[] = [];
+
+  for (const a of recent) {
+    const body = bodies.get(resolvedByUrl.get(a.url) ?? a.url);
+    const raw = body
+      ? body
+      : descByUrl.get(a.url)
+        ? `${a.title}. ${descByUrl.get(a.url)}`
+        : a.title;
+    const text = collapseWhitespace(raw);
+    if (!text) continue;
+
+    const sig = firstWordsTokenSet(text, 40);
+    if (keptSets.some((s) => jaccard(s, sig) > 0.7)) continue;
+
+    kept.push({ source: a.source, text: truncateWords(text, MAX_WORDS_PER_ARTICLE) });
+    keptSets.push(sig);
+  }
+
+  let total = 0;
+  const blocks: string[] = [];
+  for (const { source, text } of kept) {
+    const words = text.split(/\s+/).filter(Boolean).length;
+    if (total + words > MAX_TOTAL_WORDS) break;
+    total += words;
+    blocks.push(`「${source}」\n${text}`);
+  }
+  return blocks.join("\n\n---\n\n");
+}
+
+// Compute the digest: try the AI summary over scraped bodies, fall back to the
+// heuristic. Cached under team-news-digest:<teamId> at 6h TTL, independent of the
+// 15-min article cache — a warm digest skips scraping + the LLM entirely.
+async function computeDigest(
+  teamName: string,
+  teamId: string,
+  data: NewsArticle[],
+  descByUrl: Map<string, string>
+): Promise<string[]> {
+  const digestKey = `team-news-digest:${teamId}`;
+
+  // 24h window; widen to 48h if too thin. Full `data` still drives `articles`.
+  let recent = data.filter((a) => Date.parse(a.publishedAt) >= Date.now() - DAY_MS);
+  if (recent.length < 3) {
+    recent = data.filter((a) => Date.parse(a.publishedAt) >= Date.now() - 2 * DAY_MS);
+  }
+
+  if (recent.length === 0) {
+    return [`Quiet news day — no major ${teamName} stories in the last 24 hours.`];
+  }
+
+  const cached = await getAnyCached(digestKey);
+  if (cached && !cached.stale && Array.isArray(cached.data) && cached.data.length) {
+    return cached.data as string[];
+  }
+  const staleFallback =
+    cached && Array.isArray(cached.data) && cached.data.length ? (cached.data as string[]) : null;
+
+  try {
+    // Google News RSS links are encrypted redirects — resolve them to real
+    // publisher URLs before scraping. Unresolved links fall back to the snippet.
+    const resolvedByUrl = await resolveGoogleNewsUrls(recent.map((a) => a.url));
+    const bodies = await fetchArticleBodies([...new Set(resolvedByUrl.values())]);
+    const joined = buildDigestInput(recent, bodies, descByUrl, resolvedByUrl);
+    console.log(
+      `[news] "${teamName}" digest: ${recent.length} in-window, ` +
+        `${resolvedByUrl.size} urls resolved, ${bodies.size} bodies scraped`
+    );
+    const digest = await summarizeNews(teamName, joined);
+    if (!digest.length) throw new Error("empty digest");
+    await setCached(digestKey, digest, DIGEST_CACHE_TTL_MS);
+    return digest;
+  } catch (e) {
+    console.warn(`[news] AI digest failed for "${teamName}": ${(e as Error).message}`);
+    return staleFallback ?? generateDigest(data, teamName);
+  }
+}
+
+// Fetch + parse the Google News RSS search feed. Returns the deduped article list
+// (capped at 20) plus a url -> <description>-snippet map used as a scrape fallback.
+export async function fetchRssArticles(
+  teamName: string
+): Promise<{ data: NewsArticle[]; descByUrl: Map<string, string>; rawCount: number }> {
   const q = searchQuery(teamName);
   const url =
     `https://news.google.com/rss/search` +
     `?q=${encodeURIComponent(q)}&hl=en-GB&gl=GB&ceid=GB:en`;
 
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; RSS/2.0 reader)",
+      Accept: "application/rss+xml, application/xml, text/xml, */*",
+    },
+    signal: AbortSignal.timeout(10_000),
+    redirect: "follow",
+  });
+  if (!res.ok) {
+    console.warn(`[news] HTTP ${res.status} for "${teamName}"`);
+    return { data: [], descByUrl: new Map(), rawCount: 0 };
+  }
+  // Detect HTML error pages (rate-limited 200s from Google) before XML parsing
+  const ct = res.headers.get("content-type") ?? "";
+  if (ct.includes("text/html")) {
+    console.warn(`[news] Rate-limited or blocked for "${teamName}" (content-type: ${ct})`);
+    return { data: [], descByUrl: new Map(), rawCount: 0 };
+  }
+
+  const xml = await res.text();
+  const $ = cheerio.load(xml, { xmlMode: true });
+  const articles: NewsArticle[] = [];
+  // RSS <description> snippet keyed by url — a fallback for scrape misses. Kept
+  // local so the NewsArticle shape (the client contract) is untouched.
+  const descByUrl = new Map<string, string>();
+
+  $("item").each((_, el) => {
+    const $el = $(el);
+
+    // <title> in Google News RSS is "Headline - Source Name"
+    const rawTitle = $el.find("title").first().text().trim();
+    const sourceName = $el.find("source").first().text().trim();
+
+    // Strip the trailing " - Source" suffix that Google appends
+    const title = sourceName && rawTitle.endsWith(` - ${sourceName}`)
+      ? rawTitle.slice(0, -(` - ${sourceName}`).length).trim()
+      : rawTitle.replace(/\s+-\s+\S[^-]*$/, "").trim();
+
+    // <link> in RSS XML is a text node sibling of the closing tag — use <guid> as reliable fallback
+    const link =
+      $el.find("link").text().trim() ||
+      $el.find("guid").text().trim();
+
+    const pubDate = $el.find("pubDate").text().trim();
+
+    if (!title || !link) return;
+
+    const rawDesc = $el.find("description").first().text().trim();
+    if (rawDesc) {
+      const snippet = cheerio.load(rawDesc).root().text().replace(/\s+/g, " ").trim();
+      if (snippet) descByUrl.set(link, snippet.slice(0, 500));
+    }
+
+    articles.push({
+      title,
+      url: link,
+      source: sourceName || "Unknown",
+      publishedAt: pubDate ? new Date(pubDate).toISOString() : new Date().toISOString(),
+    });
+  });
+
+  // Deduplicate: keep only the first article per normalised title prefix
+  // (Google RSS often returns the same story from multiple outlets in a row)
+  const seen = new Set<string>();
+  const deduped = articles.filter((a) => {
+    const key = a.title.toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 60).trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const data = deduped.slice(0, 20);
+  console.log(`[news] "${teamName}" → ${data.length} articles (${articles.length - deduped.length} dupes removed)`);
+  return { data, descByUrl, rawCount: articles.length };
+}
+
+export async function fetchTeamNews(teamName: string, teamId: string): Promise<NewsResponse> {
   try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; RSS/2.0 reader)",
-        Accept: "application/rss+xml, application/xml, text/xml, */*",
-      },
-      signal: AbortSignal.timeout(10_000),
-      redirect: "follow",
-    });
-    if (!res.ok) {
-      console.warn(`[news] HTTP ${res.status} for "${teamName}"`);
-      return { digest: [], articles: [] };
+    const { data, descByUrl } = await fetchRssArticles(teamName);
+    if (data.length === 0) return { digest: [], articles: [] };
+
+    let digest: string[];
+    try {
+      digest = await computeDigest(teamName, teamId, data, descByUrl);
+    } catch (e) {
+      console.warn(`[news] digest error for "${teamName}": ${(e as Error).message}`);
+      digest = generateDigest(data, teamName);
     }
-    // Detect HTML error pages (rate-limited 200s from Google) before XML parsing
-    const ct = res.headers.get("content-type") ?? "";
-    if (ct.includes("text/html")) {
-      console.warn(`[news] Rate-limited or blocked for "${teamName}" (content-type: ${ct})`);
-      return { digest: [], articles: [] };
-    }
-
-    const xml = await res.text();
-    const $ = cheerio.load(xml, { xmlMode: true });
-    const articles: NewsArticle[] = [];
-
-    $("item").each((_, el) => {
-      const $el = $(el);
-
-      // <title> in Google News RSS is "Headline - Source Name"
-      const rawTitle = $el.find("title").first().text().trim();
-      const sourceName = $el.find("source").first().text().trim();
-
-      // Strip the trailing " - Source" suffix that Google appends
-      const title = sourceName && rawTitle.endsWith(` - ${sourceName}`)
-        ? rawTitle.slice(0, -(` - ${sourceName}`).length).trim()
-        : rawTitle.replace(/\s+-\s+\S[^-]*$/, "").trim();
-
-      // <link> in RSS XML is a text node sibling of the closing tag — use <guid> as reliable fallback
-      const link =
-        $el.find("link").text().trim() ||
-        $el.find("guid").text().trim();
-
-      const pubDate = $el.find("pubDate").text().trim();
-
-      if (!title || !link) return;
-
-      articles.push({
-        title,
-        url: link,
-        source: sourceName || "Unknown",
-        publishedAt: pubDate ? new Date(pubDate).toISOString() : new Date().toISOString(),
-      });
-    });
-
-    // Deduplicate: keep only the first article per normalised title prefix
-    // (Google RSS often returns the same story from multiple outlets in a row)
-    const seen = new Set<string>();
-    const deduped = articles.filter((a) => {
-      const key = a.title.toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 60).trim();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    const data = deduped.slice(0, 20);
-    console.log(`[news] "${teamName}" → ${data.length} articles (${articles.length - deduped.length} dupes removed)`);
-    return { digest: generateDigest(data, teamName), articles: data };
+    return { digest, articles: data };
   } catch (e) {
     console.warn(`[news] Fetch error for "${teamName}": ${(e as Error).message}`);
     return { digest: [], articles: [] };
