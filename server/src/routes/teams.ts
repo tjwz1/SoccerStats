@@ -924,7 +924,7 @@ router.get("/teams/:id/news", async (req, res) => {
     if (!teamName) return res.status(400).json({ error: "?name= query param required" });
     const cacheKey = `team-news:${req.params.id}`;
     await serveWithSWR(res, cacheKey, 15 * 60 * 1000,
-      () => fetchTeamNews(teamName),
+      () => fetchTeamNews(teamName, req.params.id),
       cacheWhen.hasArticles
     );
   } catch (e: any) {
