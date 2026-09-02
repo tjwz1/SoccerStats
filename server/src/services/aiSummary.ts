@@ -16,10 +16,23 @@ const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 // Thrown on HTTP 429 / 5xx / empty candidates / parse failure so summarizeNews can
 // decide whether to retry with the fallback model and callers can fall through.
 export class GeminiError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly retryAfterMs?: number
+  ) {
     super(message);
     this.name = "GeminiError";
   }
+}
+
+// Gemini's 429 body carries the wait it wants, as a `retryDelay: "12.5s"` field
+// and/or "Please retry in 12.5s" in the message. Pull whichever is present.
+function parseRetryAfterMs(body: string): number | undefined {
+  const m =
+    body.match(/"retryDelay":\s*"([\d.]+)s"/) ??
+    body.match(/retry in ([\d.]+)s/i);
+  return m ? Math.ceil(parseFloat(m[1]) * 1000) : undefined;
 }
 
 function buildPrompt(teamName: string, articleText: string): string {
@@ -76,36 +89,106 @@ export function parseBullets(raw: string): string[] {
   return finish(lines);
 }
 
-async function callGemini(model: string, prompt: string): Promise<string[]> {
+// 429 (rate limit) and 5xx (esp. 503 "model overloaded") are transient on the
+// Gemini free tier and clear within seconds; a thrown request (network / abort)
+// is treated the same. Retried with backoff against the SAME model before we
+// bother switching models, because both Flash models share one overloaded backend.
+function isRetryable(e: unknown): boolean {
+  const s = e instanceof GeminiError ? e.status : undefined;
+  if (s === 429 || (s !== undefined && s >= 500)) return true;
+  return e instanceof GeminiError && e.status === undefined; // network / timeout
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const MAX_RETRY_WAIT_MS = 20_000; // give up rather than stall the request longer
+
+async function callGeminiWithRetry(
+  model: string,
+  prompt: string,
+  maxAttempts = 2
+): Promise<string[]> {
+  // Fixed backoff for 503s (immediate responses); 429s override it with Google's
+  // own retry hint. Keep the attempt budget small — during an outage every extra
+  // call eats the 20-request free-tier window.
+  const backoffs = [2_000, 6_000];
+  let timeoutsUsed = 0;
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await callGemini(model, prompt);
+    } catch (e) {
+      lastErr = e;
+      const timedOut = e instanceof GeminiError && e.status === undefined;
+      if (timedOut && ++timeoutsUsed >= 1) throw e; // one 75s wait is enough
+      if (!isRetryable(e) || attempt === maxAttempts - 1) throw e;
+
+      const hinted = e instanceof GeminiError ? e.retryAfterMs : undefined;
+      if (hinted !== undefined && hinted > MAX_RETRY_WAIT_MS) throw e; // not worth waiting
+      const wait = (hinted ?? backoffs[attempt]) + Math.floor(Math.random() * 1_000);
+      console.warn(
+        `[aiSummary] ${model} attempt ${attempt + 1} failed (${(e as Error).message}); retry in ${wait}ms`
+      );
+      await sleep(wait);
+    }
+  }
+  throw lastErr;
+}
+
+async function callGemini(
+  model: string,
+  prompt: string,
+  thinkingLevel: "MINIMAL" | "LOW" | null = "LOW"
+): Promise<string[]> {
   const key = process.env.GEMINI_API_KEY as string;
   const url = `${GEMINI_BASE}/${model}:generateContent?key=${key}`;
+
+  const generationConfig: Record<string, unknown> = {
+    temperature: 0.3,
+    responseMimeType: "application/json",
+  };
+  // Summarising supplied text needs little reasoning; low thinking cuts latency
+  // (the main cause of timeouts) and token use. `thinkingLevel` is the Gemini-3+
+  // control (enum MINIMAL|LOW|MEDIUM|HIGH); if a model rejects it we retry without.
+  if (thinkingLevel) generationConfig.thinkingConfig = { thinkingLevel };
 
   let res;
   try {
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.3, responseMimeType: "application/json" },
-      }),
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig }),
       // Generous — Flash "thinking" on ~6-7k words can be slow, especially on the
       // free tier under load. This runs on the digest's background refresh path
       // (users get the stale digest instantly) and Vercel maxDuration is 300s.
       signal: AbortSignal.timeout(75_000),
     });
   } catch (e) {
-    // Network/timeout — treat as retryable.
+    // Network/timeout — retryable (status left undefined).
     throw new GeminiError(`request failed for ${model}: ${(e as Error).message}`);
   }
 
-  if (res.status === 429 || res.status >= 500) {
+  if (res.status === 429) {
+    const body = await res.text().catch(() => "");
+    throw new GeminiError(
+      `HTTP 429 from ${model}`,
+      429,
+      parseRetryAfterMs(body)
+    );
+  }
+  if (res.status >= 500) {
     throw new GeminiError(`HTTP ${res.status} from ${model}`, res.status);
   }
   if (!res.ok) {
-    // 4xx other than 429 (bad key, bad request) — not worth a Pro retry, but the
-    // caller still falls back to the heuristic, so surface it as GeminiError.
     const body = await res.text().catch(() => "");
+    // Some models may not accept thinkingConfig — retry once without it.
+    if (res.status === 400 && thinkingLevel && /thinking/i.test(body)) {
+      console.warn(`[aiSummary] ${model} rejected thinkingConfig; retrying without it`);
+      return callGemini(model, prompt, null);
+    }
+    // 4xx other than 429 (bad key, bad request) — not retryable; the caller still
+    // falls back to the heuristic, so surface it as GeminiError.
     throw new GeminiError(`HTTP ${res.status} from ${model}: ${body.slice(0, 200)}`, res.status);
   }
 
@@ -136,10 +219,11 @@ async function callGemini(model: string, prompt: string): Promise<string[]> {
 }
 
 /**
- * Summarise recent news about a team into 3–5 factual bullets.
- * Tries the primary Flash model, then the fallback Flash model once on
- * 404 / quota / 5xx / parse failure. Throws (GeminiError or otherwise) if both
- * attempts fail or no API key is set — the caller falls back to the heuristic.
+ * Summarise recent news about a team into 3–6 detail-dense bullets.
+ * Primary Flash model with retry+backoff (transient 429/503/timeout), then the
+ * fallback Flash model with the same treatment. Throws (GeminiError or otherwise)
+ * only after all of that fails, or when no API key is set — the caller then falls
+ * back to the heuristic digest.
  */
 export async function summarizeNews(teamName: string, articleText: string): Promise<string[]> {
   if (!process.env.GEMINI_API_KEY) {
@@ -149,11 +233,11 @@ export async function summarizeNews(teamName: string, articleText: string): Prom
   const prompt = buildPrompt(teamName, articleText);
 
   try {
-    return await callGemini(GEMINI_MODEL_PRIMARY, prompt);
+    return await callGeminiWithRetry(GEMINI_MODEL_PRIMARY, prompt);
   } catch (e) {
     console.warn(
-      `[aiSummary] primary model failed (${(e as Error).message}); retrying with ${GEMINI_MODEL_FALLBACK}`
+      `[aiSummary] ${GEMINI_MODEL_PRIMARY} exhausted (${(e as Error).message}); trying ${GEMINI_MODEL_FALLBACK}`
     );
-    return await callGemini(GEMINI_MODEL_FALLBACK, prompt);
+    return await callGeminiWithRetry(GEMINI_MODEL_FALLBACK, prompt);
   }
 }

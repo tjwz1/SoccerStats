@@ -351,11 +351,12 @@ function searchQuery(teamName: string): string {
 // ─── AI digest: body scraping + windowing + dedup + truncation ───────────────
 
 const DIGEST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — LLM call is expensive
+const DIGEST_FALLBACK_CACHE_TTL_MS = 15 * 60 * 1000; // short — retry the AI path soon
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SCRAPE_TIMEOUT_MS = 6_000;
 const SCRAPE_CONCURRENCY = 5;
-const MAX_WORDS_PER_ARTICLE = 500; // fees / clauses / quotes often sit mid-article
-const MAX_TOTAL_WORDS = 9_000;
+const MAX_WORDS_PER_ARTICLE = 400; // enough to catch fees / clauses / quotes
+const MAX_TOTAL_WORDS = 5_000; // keeps the LLM call fast + cheap; detail comes from the prompt
 
 function collapseWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
@@ -542,7 +543,12 @@ async function computeDigest(
     return digest;
   } catch (e) {
     console.warn(`[news] AI digest failed for "${teamName}": ${(e as Error).message}`);
-    return staleFallback ?? generateDigest(data, teamName);
+    const fallback = staleFallback ?? generateDigest(data, teamName);
+    // Cache the fallback briefly so a Gemini outage doesn't re-run the whole
+    // resolve + scrape + retried-LLM pipeline on every page view; it still
+    // retries the AI path in ~30 min.
+    await setCached(digestKey, fallback, DIGEST_FALLBACK_CACHE_TTL_MS);
+    return fallback;
   }
 }
 
