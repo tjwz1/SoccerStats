@@ -7,8 +7,10 @@ import { safeFetch as fetch } from "../utils/httpClient";
 // so the fallback is a second free Flash model, not Pro. Callers should treat any
 // throw as "fall back to the heuristic digest".
 
-const GEMINI_MODEL_PRIMARY = "gemini-3.6-flash";
-const GEMINI_MODEL_FALLBACK = "gemini-3.5-flash";
+// 3.5-flash is primary because 3.6-flash has been returning 503 / timing out
+// frequently on the free tier; revisit once it stabilises. Both are free-tier.
+const GEMINI_MODEL_PRIMARY = "gemini-3.5-flash";
+const GEMINI_MODEL_FALLBACK = "gemini-3.6-flash";
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
 // Thrown on HTTP 429 / 5xx / empty candidates / parse failure so summarizeNews can
@@ -22,18 +24,19 @@ export class GeminiError extends Error {
 
 function buildPrompt(teamName: string, articleText: string): string {
   return [
-    `You are a football news editor. Below is the full text of news articles published in the last 24 hours about ${teamName}.`,
+    `You are a football news editor briefing a ${teamName} fan who will NOT click through to read any of the articles. Below is the scraped text of news articles from the last 24 hours about ${teamName}.`,
     ``,
-    `Write a factual summary of what is being reported. Respond with ONLY a JSON object of the exact form:`,
+    `Write a digest that tells the fan exactly what happened, with the specifics. Respond with ONLY a JSON object of the exact form:`,
     `{"bullets": ["...", "..."]}`,
     ``,
-    `Rules:`,
-    `- 3 to 5 bullets.`,
-    `- Each bullet is ONE short sentence, plain text, no markdown, no leading bullet character.`,
-    `- Lead with the biggest / most widely reported story.`,
-    `- Only state things supported by the supplied text. No speculation, no outside knowledge.`,
-    `- Refer to "${teamName}" by name where relevant; do not invent quotes, fees, or dates.`,
-    `- If the articles disagree, summarise the consensus or note the uncertainty briefly.`,
+    `Content rules:`,
+    `- 3 to 6 bullets, ordered by how widely each story is reported (biggest story first). One bullet per distinct story.`,
+    `- Each bullet is 1 to 2 sentences, roughly 20 to 45 words.`,
+    `- Pack in the concrete details that are actually present in the text, e.g.: transfer fees and add-ons, contract length and wages, release / buy-back / loan / option clauses, the selling and buying clubs, player age and position, squad numbers, paraphrased manager or player quotes, match results and scorelines, records or milestones reached, injury diagnosis and expected return date, and official dates.`,
+    `- Prefer concrete facts over vague phrasing. Never write filler such as "generating coverage", "in the news", "reports have emerged", or "transfer interest has been reported" — if a story carries no concrete detail in the supplied text, leave it out entirely.`,
+    `- Do not repeat the same signing, result, or story across multiple bullets.`,
+    `- Only state what the supplied text supports. Do not invent figures, quotes, dates, or clubs. If sources conflict on a number, give the range or say "reported at around".`,
+    `- Plain text only: no markdown, no leading bullet character, no source attribution like "(BBC)".`,
     ``,
     `--- ARTICLES ---`,
     articleText,
@@ -52,7 +55,7 @@ export function parseBullets(raw: string): string[] {
     arr
       .map((x) => String(x).replace(/^\s*[•\-*•]\s*/, "").replace(/^\s*\d+[.)]\s*/, "").trim())
       .filter((s) => s.length > 0 && !/^[#>*_\-\s]+$/.test(s))
-      .slice(0, 5);
+      .slice(0, 6);
 
   try {
     const parsed = JSON.parse(cleaned);
@@ -86,7 +89,10 @@ async function callGemini(model: string, prompt: string): Promise<string[]> {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.3, responseMimeType: "application/json" },
       }),
-      signal: AbortSignal.timeout(20_000),
+      // Generous — Flash "thinking" on ~6-7k words can be slow, especially on the
+      // free tier under load. This runs on the digest's background refresh path
+      // (users get the stale digest instantly) and Vercel maxDuration is 300s.
+      signal: AbortSignal.timeout(75_000),
     });
   } catch (e) {
     // Network/timeout — treat as retryable.

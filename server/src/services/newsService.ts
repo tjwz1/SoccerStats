@@ -354,8 +354,8 @@ const DIGEST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — LLM call is expensive
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SCRAPE_TIMEOUT_MS = 6_000;
 const SCRAPE_CONCURRENCY = 5;
-const MAX_WORDS_PER_ARTICLE = 350;
-const MAX_TOTAL_WORDS = 6_000;
+const MAX_WORDS_PER_ARTICLE = 500; // fees / clauses / quotes often sit mid-article
+const MAX_TOTAL_WORDS = 9_000;
 
 function collapseWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
