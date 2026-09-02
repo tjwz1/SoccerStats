@@ -350,8 +350,12 @@ function searchQuery(teamName: string): string {
 
 // ─── AI digest: body scraping + windowing + dedup + truncation ───────────────
 
-const DIGEST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — LLM call is expensive
-const DIGEST_FALLBACK_CACHE_TTL_MS = 15 * 60 * 1000; // short — retry the AI path soon
+// The AI digest is generated once per UTC day per team; the last good one is
+// retained ~3 days so it can serve as the fallback on days the LLM call fails.
+const DIGEST_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+// After a failed generation attempt, wait this long before retrying within the
+// same day (avoids re-running resolve + scrape + LLM on every page view).
+const DIGEST_RETRY_THROTTLE_MS = 30 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SCRAPE_TIMEOUT_MS = 6_000;
 const SCRAPE_CONCURRENCY = 5;
@@ -499,16 +503,73 @@ export function buildDigestInput(
   return blocks.join("\n\n---\n\n");
 }
 
-// Compute the digest: try the AI summary over scraped bodies, fall back to the
-// heuristic. Cached under team-news-digest:<teamId> at 6h TTL, independent of the
-// 15-min article cache — a warm digest skips scraping + the LLM entirely.
-async function computeDigest(
+// What we persist under team-news-digest:<teamId>. Only ever written with fresh
+// `bullets` on a successful AI generation; a failed attempt keeps the old bullets
+// and only bumps lastAttempt/ok so it can still serve as the fallback.
+interface DigestEntry {
+  bullets: string[];
+  date: string; // UTC yyyy-mm-dd the bullets were generated for
+  lastAttempt: number; // epoch ms of the most recent generation attempt
+  ok: boolean; // did that attempt succeed
+}
+
+function utcDay(d = new Date()): string {
+  return d.toISOString().slice(0, 10);
+}
+
+// Accepts the new object shape or a legacy bare string[] cache row.
+function normalizeDigestEntry(raw: unknown): DigestEntry | null {
+  if (Array.isArray(raw)) {
+    const bullets = raw.filter((x): x is string => typeof x === "string");
+    return bullets.length ? { bullets, date: "", lastAttempt: 0, ok: true } : null;
+  }
+  if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    const bullets = Array.isArray(o.bullets)
+      ? o.bullets.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!bullets.length) return null;
+    return {
+      bullets,
+      date: typeof o.date === "string" ? o.date : "",
+      lastAttempt: typeof o.lastAttempt === "number" ? o.lastAttempt : 0,
+      ok: o.ok !== false,
+    };
+  }
+  return null;
+}
+
+// Produce the "Overview" digest. Generated at most once per UTC day per team via
+// Gemini over scraped article bodies; served from cache for the rest of the day.
+// Fallback order when today's generation fails: the previous good AI digest, then
+// the syntactic heuristic (generateDigest). The stored AI digest is never
+// overwritten by the heuristic.
+export async function computeDigest(
   teamName: string,
   teamId: string,
   data: NewsArticle[],
   descByUrl: Map<string, string>
 ): Promise<string[]> {
   const digestKey = `team-news-digest:${teamId}`;
+  const today = utcDay();
+
+  const cached = await getAnyCached(digestKey);
+  const prev = normalizeDigestEntry(cached?.data ?? null);
+
+  // Today's digest already exists — serve it, no scraping or LLM.
+  if (prev && prev.date === today) return prev.bullets;
+
+  // A failed attempt earlier today — don't re-run the pipeline every page view;
+  // serve the previous day's digest until the throttle window passes.
+  if (
+    prev &&
+    !prev.ok &&
+    Date.now() - prev.lastAttempt < DIGEST_RETRY_THROTTLE_MS
+  ) {
+    return prev.bullets;
+  }
+
+  const persist = (e: DigestEntry) => setCached(digestKey, e, DIGEST_RETENTION_MS);
 
   // 24h window; widen to 48h if too thin. Full `data` still drives `articles`.
   let recent = data.filter((a) => Date.parse(a.publishedAt) >= Date.now() - DAY_MS);
@@ -517,15 +578,10 @@ async function computeDigest(
   }
 
   if (recent.length === 0) {
+    // Not persisted as "today's" digest — if news breaks later, the next refresh
+    // picks it up rather than being stuck on this for the rest of the day.
     return [`Quiet news day — no major ${teamName} stories in the last 24 hours.`];
   }
-
-  const cached = await getAnyCached(digestKey);
-  if (cached && !cached.stale && Array.isArray(cached.data) && cached.data.length) {
-    return cached.data as string[];
-  }
-  const staleFallback =
-    cached && Array.isArray(cached.data) && cached.data.length ? (cached.data as string[]) : null;
 
   try {
     // Google News RSS links are encrypted redirects — resolve them to real
@@ -539,16 +595,19 @@ async function computeDigest(
     );
     const digest = await summarizeNews(teamName, joined);
     if (!digest.length) throw new Error("empty digest");
-    await setCached(digestKey, digest, DIGEST_CACHE_TTL_MS);
+    await persist({ bullets: digest, date: today, lastAttempt: Date.now(), ok: true });
     return digest;
   } catch (e) {
     console.warn(`[news] AI digest failed for "${teamName}": ${(e as Error).message}`);
-    const fallback = staleFallback ?? generateDigest(data, teamName);
-    // Cache the fallback briefly so a Gemini outage doesn't re-run the whole
-    // resolve + scrape + retried-LLM pipeline on every page view; it still
-    // retries the AI path in ~30 min.
-    await setCached(digestKey, fallback, DIGEST_FALLBACK_CACHE_TTL_MS);
-    return fallback;
+    if (prev) {
+      // Keep the previous good AI digest; just record the failed attempt so the
+      // throttle applies and we retry later in the day.
+      await persist({ ...prev, lastAttempt: Date.now(), ok: false });
+      return prev.bullets;
+    }
+    // No AI digest has ever succeeded for this team — use the heuristic, and do
+    // not persist it (so every refresh keeps trying the AI path).
+    return generateDigest(data, teamName);
   }
 }
 
