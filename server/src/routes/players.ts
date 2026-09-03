@@ -1,75 +1,98 @@
 import { Router } from "express";
-import { getPlayer } from "../services/footballApi";
-import { getAnyCached, setCached } from "../db/apiCache";
-
-// Cache the assembled player response for 10 minutes — avoids re-running all the
-// scorer + wiki + TM lookups on every request while still refreshing after a match day.
-const PLAYER_RESPONSE_TTL_MS = 10 * 60 * 1000;
-
-// Deduplicates concurrent requests for the same player+competition so two simultaneous
-// browser tabs or a retry during the 20s window share one getPlayer() call.
-const inflightLookups = new Map<string, Promise<unknown>>();
-
-// Keys currently being refreshed in the background (SWR revalidation guard).
-const revalidatingPlayers = new Set<string>();
+import { getLiveMatches } from "../services/footballApi";
+import {
+  getStoredProfile,
+  refreshPlayerProfile,
+  type PlayerPayload,
+} from "../services/playerStore";
 
 const router = Router();
 
+// A stored profile older than this gets a background refresh on read (stale-while-revalidate).
+const SWR_STALE_MS = 12 * 60 * 60 * 1000;
+// During a live match, a participating player's profile is refreshed inline if older than this
+// so an in-game goal/assist shows up quickly.
+const LIVE_STALE_MS = 60 * 1000;
+// First-ever visit: how long we wait for the assembly pipeline before returning a placeholder.
+const FIRST_VISIT_TIMEOUT_MS = 9000;
+
+// Guards so a given player is only refreshed once at a time from the background paths here
+// (refreshPlayerProfile also dedupes internally; this just avoids scheduling churn).
+const bgRefreshing = new Set<number>();
+function scheduleBgRefresh(id: number, competition: string, teamId?: number | null) {
+  if (bgRefreshing.has(id)) return;
+  bgRefreshing.add(id);
+  refreshPlayerProfile(id, competition, teamId)
+    .catch(() => {})
+    .finally(() => bgRefreshing.delete(id));
+}
+
+async function teamIsLive(teamId: number | null | undefined): Promise<boolean> {
+  if (!teamId) return false;
+  try {
+    const live = await getLiveMatches();
+    return live.some((m) => m.homeTeamId === teamId || m.awayTeamId === teamId);
+  } catch {
+    return false;
+  }
+}
+
+const timeout = <T>(ms: number, value: T) =>
+  new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+
 router.get("/:id", async (req, res) => {
   try {
+    const id = parseInt(req.params.id, 10);
+    if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid player id" });
     const competition = (req.query.competition as string) || "PL";
-    const cacheKey = `player_response:${req.params.id}`;
 
-    // SWR: return any cached entry (even stale) immediately, refresh in background.
-    // Only treats empty-career entries as misses — allows retries after a first-run scrape failure.
-    const hit = await getAnyCached(cacheKey);
-    // Career data is stable within a session — let Vercel CDN cache it for 10 min.
-    res.set("Cache-Control", "public, s-maxage=600, stale-while-revalidate=60");
-    if (hit && (hit.data as any)?.career?.length > 0) {
-      if (hit.stale && !revalidatingPlayers.has(cacheKey)) {
-        revalidatingPlayers.add(cacheKey);
-        getPlayer(req.params.id, competition)
-          .then((fresh) => {
-            if ((fresh as any)?.career?.length > 0) setCached(cacheKey, fresh, PLAYER_RESPONSE_TTL_MS);
-          })
-          .catch(() => {})
-          .finally(() => revalidatingPlayers.delete(cacheKey));
+    // Career data is stable within a session — let the Vercel CDN hold it briefly.
+    res.set("Cache-Control", "public, s-maxage=300, stale-while-revalidate=60");
+
+    const stored = await getStoredProfile(id);
+
+    if (stored) {
+      const ageMs = Date.now() - new Date(stored.refreshed_at).getTime();
+
+      // Live match in progress for this player's team → refresh inline (bounded) so the
+      // response reflects the current game. Cheap: the current-season scorers list is
+      // per-competition and shared/cached across every player.
+      if (ageMs > LIVE_STALE_MS && (await teamIsLive(stored.team_id))) {
+        const fresh = (await Promise.race([
+          refreshPlayerProfile(id, stored.competition || competition, stored.team_id),
+          timeout(FIRST_VISIT_TIMEOUT_MS, null),
+        ])) as PlayerPayload | null;
+        return res.json(fresh ?? stored.data);
       }
-      return res.json(hit.data);
+
+      // Otherwise serve immediately; refresh in the background if the row is old.
+      if (ageMs > SWR_STALE_MS || !stored.complete) {
+        scheduleBgRefresh(id, stored.competition || competition, stored.team_id);
+      }
+      return res.json(stored.data);
     }
 
-    // 20-second hard cap — Wikipedia/TM scrapes can hang on first load for
-    // unknown players; this ensures the client gets a fast error + retry
-    // rather than an indefinite spinner.
-    // The background lookup continues after the timeout and caches its result
-    // so the client's retry returns instantly.
-    const LOOKUP_TIMEOUT_MS = 20_000;
+    // First-ever visit: short wait for the full assembly, then fall back to a placeholder.
+    // The refresh keeps running after the timeout and populates player_profiles, so the
+    // client's auto-retry returns the real data shortly after.
+    const data = (await Promise.race([
+      refreshPlayerProfile(id, competition),
+      timeout(FIRST_VISIT_TIMEOUT_MS, null),
+    ])) as PlayerPayload | null;
 
-    // Reuse an in-flight lookup if one is already running for this player.
-    let lookupPromise = inflightLookups.get(cacheKey);
-    if (!lookupPromise) {
-      lookupPromise = getPlayer(req.params.id, competition);
-      inflightLookups.set(cacheKey, lookupPromise);
-      lookupPromise
-        .then((d) => {
-          if ((d as any)?.career?.length > 0) setCached(cacheKey, d, PLAYER_RESPONSE_TTL_MS);
-        })
-        .catch(() => {})
-        .finally(() => inflightLookups.delete(cacheKey));
-    }
+    if (data) return res.json(data);
 
-    const data = await Promise.race([
-      lookupPromise,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Player lookup timed out")), LOOKUP_TIMEOUT_MS)
-      ),
-    ]);
-    // Only cache when we have career data — avoids persisting empty results from
-    // a first-run wiki/TM scrape failure and blocking retries for 10 minutes.
-    if ((data as any)?.career?.length > 0) {
-      setCached(cacheKey, data, PLAYER_RESPONSE_TTL_MS);
-    }
-    res.json(data);
+    res.set("Cache-Control", "no-store");
+    return res.json({
+      id,
+      name: "",
+      photo: null,
+      currentSeason: { appearances: 0, goals: 0, assists: 0, minutesPlayed: 0 },
+      career: [],
+      totals: { appearances: 0, goals: 0, assists: 0 },
+      trophies: [],
+      pending: true,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

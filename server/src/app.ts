@@ -10,7 +10,8 @@ import favouritesRouter from "./routes/favourites";
 import accountRouter from "./routes/account";
 import { getClient } from "./db/supabase";
 import { deleteCached, deleteCachedByPrefix } from "./db/apiCache";
-import { getTeamSquadPlayers } from "./services/footballApi";
+import { getTeamSquadPlayers, getTeams } from "./services/footballApi";
+import { refreshPlayerProfile, getProfileRefreshMeta } from "./services/playerStore";
 import { fetchPlayerWikiData } from "./services/wikiStats";
 import { fetchSofaScoreCareer } from "./services/sofaScoreCareer";
 import { scrapeTransfermarktPlayerStats, type TmCareerRow } from "./services/transfermarktScraper";
@@ -272,6 +273,73 @@ app.post("/api/admin/populate-wiki-stats", adminLimiter, requireAdmin, async (re
       console.log(`[populate-wiki] ${teamKey} done: ${done} ok, ${skipped} skipped, ${failed} failed`);
     }
   })();
+});
+
+// Once-daily player-stats refresh — called by Vercel cron (Authorization: Bearer CRON_SECRET)
+// and manually via GET /api/admin/refresh-players with x-admin-secret header.
+//
+// Walks the big-5 league squads (override with ?leagues=PL,PD,BL1,SA,FL1), then re-runs the
+// assembly pipeline for each player and upserts player_profiles. Ordered least-complete /
+// stalest first, so a fresh deployment fills the roster out over successive nights and then
+// just keeps it current. Bounded by ?budgetMs (default 280s) to stay under the function's
+// maxDuration; fd.org's rate limit is the real throughput cap, so full coverage is gradual.
+const BIG_5 = ["PL", "PD", "BL1", "SA", "FL1"];
+app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, res) => {
+  const leagues = ((req.query.leagues as string) || BIG_5.join(","))
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  const budgetMs = Math.min(Number(req.query.budgetMs) || 280_000, 290_000);
+  const paceMs = Math.max(Number(req.query.paceMs) || 1200, 0);
+  const started = Date.now();
+
+  try {
+    // Build player -> {teamId, competition} from the league squads.
+    const idTeam = new Map<number, number>();
+    const idComp = new Map<number, string>();
+    for (const code of leagues) {
+      try {
+        const teams = await getTeams(code);
+        for (const t of teams as Array<{ id: number }>) {
+          try {
+            const { players } = await getTeamSquadPlayers(String(t.id));
+            for (const p of players) {
+              idTeam.set(p.id, t.id);
+              idComp.set(p.id, code);
+            }
+          } catch { /* skip unreadable squad */ }
+        }
+      } catch { /* skip unreadable league */ }
+    }
+
+    const ids = [...idTeam.keys()];
+    const meta = await getProfileRefreshMeta(ids);
+    // Priority: never-stored (0) → stored-incomplete (1) → stored-complete (2); then oldest first.
+    ids.sort((a, b) => {
+      const ma = meta.get(a), mb = meta.get(b);
+      const rank = (m?: { complete: boolean }) => (!m ? 0 : m.complete ? 2 : 1);
+      const ra = rank(ma), rb = rank(mb);
+      if (ra !== rb) return ra - rb;
+      const ta = ma ? new Date(ma.refreshed_at).getTime() : 0;
+      const tb = mb ? new Date(mb.refreshed_at).getTime() : 0;
+      return ta - tb;
+    });
+
+    let done = 0, failed = 0, processed = 0;
+    for (const id of ids) {
+      if (Date.now() - started > budgetMs) break;
+      processed++;
+      try {
+        const r = await refreshPlayerProfile(id, idComp.get(id) ?? "PL", idTeam.get(id));
+        if (r) done++; else failed++;
+      } catch { failed++; }
+      if (paceMs) await new Promise((r) => setTimeout(r, paceMs));
+    }
+
+    const elapsedSec = Math.round((Date.now() - started) / 1000);
+    console.log(`[refresh-players] processed=${processed}/${ids.length} ok=${done} failed=${failed} in ${elapsedSec}s`);
+    res.json({ leagues, totalPlayers: ids.length, processed, refreshed: done, failed, elapsedSec });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message, elapsedSec: Math.round((Date.now() - started) / 1000) });
+  }
 });
 
 // Purge expired api_cache rows — called daily by Vercel cron (Authorization: Bearer CRON_SECRET)

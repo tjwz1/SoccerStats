@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useSearchParams, useNavigate, useLocation } from "react-router-dom";
 import type { Player, PlayerDetail, Trophy } from "../types";
 import { useApi } from "../hooks/useApi";
@@ -14,9 +14,24 @@ export default function PlayerPage() {
   const statePlayer = (location.state as { player?: Player; teamName?: string } | null)?.player;
   const teamName = (location.state as { teamName?: string } | null)?.teamName;
 
-  const { data, loading, error, retry } = useApi<PlayerDetail>(
+  const { data, loading, error, retry } = useApi<PlayerDetail & { pending?: boolean }>(
     id ? `/api/players/${id}?competition=${competition}` : null
   );
+
+  // On a first-ever visit the server may return a `pending` placeholder while it assembles
+  // the full career history in the background. Poll a few times until the real data lands.
+  const MAX_PENDING_TRIES = 6;
+  const pending = data?.pending === true;
+  const [pendingTries, setPendingTries] = useState(0);
+  useEffect(() => {
+    if (!pending || pendingTries >= MAX_PENDING_TRIES) return;
+    const t = setTimeout(() => {
+      setPendingTries((n) => n + 1);
+      retry();
+    }, 5000);
+    return () => clearTimeout(t);
+  }, [pending, pendingTries, retry]);
+  const awaitingFirstLoad = pending && pendingTries < MAX_PENDING_TRIES;
 
   const displayName = data?.name ?? statePlayer?.name ?? "Player";
   // Prefer the API-fetched photo (available on direct navigation) over the navigation-state
@@ -94,7 +109,7 @@ export default function PlayerPage() {
         </div>
 
         {/* Loading */}
-        {loading && (
+        {(loading || awaitingFirstLoad) && (
           <div className="flex flex-col items-center gap-3 py-20 text-slate-500">
             <div className="w-8 h-8 border-2 border-slate-600 border-t-white rounded-full animate-spin" />
             <p className="text-sm">Loading career stats…</p>
@@ -114,7 +129,20 @@ export default function PlayerPage() {
           </div>
         )}
 
-        {data && (() => {
+        {/* First-load assembly still not ready after several polls */}
+        {pending && !awaitingFirstLoad && (
+          <div className="flex flex-col items-center gap-4 py-20 text-center">
+            <p className="text-slate-400">This is taking longer than usual to prepare.</p>
+            <button
+              onClick={() => { setPendingTries(0); retry(); }}
+              className="px-5 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {data && !awaitingFirstLoad && !pending && (() => {
           const hasData = data.totals.appearances > 0 || data.trophies.length > 0 || data.currentSeason.appearances > 0;
           if (!hasData) return (
             <div className="flex flex-col items-center gap-3 py-16 text-center">
