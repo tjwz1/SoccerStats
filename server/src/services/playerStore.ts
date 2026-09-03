@@ -37,6 +37,22 @@ export function isPayloadComplete(d: PlayerPayload | null): boolean {
   return payloadHasData(d) && (p?.career?.length ?? 0) >= CAREER_COMPLETE_THRESHOLD;
 }
 
+// Minimal, client-renderable PlayerDetail used while the real career history is still being
+// assembled. The `pending` flag tells the client to keep polling; the read route also kicks
+// a background refresh whenever it serves one of these.
+export function buildPendingPayload(id: number, name = ""): PlayerPayload {
+  return {
+    id,
+    name,
+    photo: null,
+    currentSeason: { appearances: 0, goals: 0, assists: 0, minutesPlayed: 0 },
+    career: [],
+    totals: { appearances: 0, goals: 0, assists: 0 },
+    trophies: [],
+    pending: true,
+  } as unknown as PlayerPayload;
+}
+
 // ── Read ────────────────────────────────────────────────────────────────────
 
 export async function getStoredProfile(id: number): Promise<StoredProfile | null> {
@@ -136,6 +152,45 @@ async function saveProfile(
     console.error("[playerStore] upsert failed:", (e as Error).message);
   }
   return row;
+}
+
+// Insert placeholder rows for players discovered from a squad walk but not yet assembled.
+// `ignoreDuplicates` means existing real rows are never touched. Skeletons carry a `pending`
+// payload and an epoch `refreshed_at` so they (a) seed future refresh runs without another
+// squad walk, (b) render name + team instantly on first visit instead of a bare spinner, and
+// (c) sort to the front of the refresh queue. Returns the count actually inserted.
+export async function saveSkeletonProfiles(
+  entries: Array<{ id: number; name: string; teamId: number | null; competition: string }>
+): Promise<number> {
+  if (entries.length === 0) return 0;
+  const rows = entries.map((e) => ({
+    id: e.id,
+    name: e.name,
+    competition: e.competition,
+    team_id: e.teamId,
+    data: buildPendingPayload(e.id, e.name),
+    complete: false,
+    refreshed_at: new Date(0).toISOString(),
+  }));
+  let inserted = 0;
+  try {
+    const client = getClient();
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500);
+      const { data, error } = await client
+        .from("player_profiles")
+        .upsert(chunk as any, { onConflict: "id", ignoreDuplicates: true })
+        .select("id");
+      if (error) {
+        console.error("[playerStore] skeleton upsert failed:", error.message);
+        continue;
+      }
+      inserted += data?.length ?? 0;
+    }
+  } catch (e) {
+    console.error("[playerStore] skeleton upsert failed:", (e as Error).message);
+  }
+  return inserted;
 }
 
 // Deduplicates concurrent refreshes for the same player so the first-visit foreground

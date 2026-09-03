@@ -11,7 +11,7 @@ import accountRouter from "./routes/account";
 import { getClient } from "./db/supabase";
 import { deleteCached, deleteCachedByPrefix } from "./db/apiCache";
 import { getTeamSquadPlayers, getTeams } from "./services/footballApi";
-import { refreshPlayerProfile, listStoredProfiles } from "./services/playerStore";
+import { refreshPlayerProfile, listStoredProfiles, saveSkeletonProfiles } from "./services/playerStore";
 import { fetchPlayerWikiData } from "./services/wikiStats";
 import { fetchSofaScoreCareer } from "./services/sofaScoreCareer";
 import { scrapeTransfermarktPlayerStats, type TmCareerRow } from "./services/transfermarktScraper";
@@ -291,7 +291,9 @@ const BIG_5 = ["PL", "PD", "BL1", "SA", "FL1"];
 app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, res) => {
   const leagues = ((req.query.leagues as string) || BIG_5.join(","))
     .split(",").map((s) => s.trim()).filter(Boolean);
-  const budgetMs = Math.min(Number(req.query.budgetMs) || 280_000, 290_000);
+  // On Vercel the function is killed at maxDuration (300s); locally a bulk-fill run can go long.
+  const hardCap = process.env.VERCEL ? 290_000 : 3_600_000;
+  const budgetMs = Math.min(Number(req.query.budgetMs) || 280_000, hardCap);
   const paceMs = Math.max(Number(req.query.paceMs) || 6_000, 0);
   const discoverPaceMs = Math.max(Number(req.query.discoverPaceMs) || 6_000, 0);
   const started = Date.now();
@@ -300,7 +302,9 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
   try {
     const idTeam = new Map<number, number>();
     const idComp = new Map<number, string>();
+    const idName = new Map<number, string>();
     const meta = new Map<number, { refreshed_at: string; complete: boolean }>();
+    const EPOCH = new Date(0).toISOString();
 
     // 1. Cheap seed — every player we already know about, straight from player_profiles.
     const stored = await listStoredProfiles();
@@ -312,7 +316,8 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
 
     // 2. Discovery — pick up players not yet stored (new signings, unseen squads).
     //    Default on; only pace after a call that actually hit the network so a warm
-    //    squad cache flies through. Capped at 40% of the budget.
+    //    squad cache flies through. Capped at 40% of the budget. Newly-found players get
+    //    a skeleton row so future runs skip the squad walk and first visits render instantly.
     const doDiscover = req.query.discover !== "0";
     let discovered = 0;
     if (doDiscover) {
@@ -329,6 +334,7 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
               if (!idComp.has(p.id)) discovered++;
               idTeam.set(p.id, t.id);
               idComp.set(p.id, code);
+              idName.set(p.id, p.name);
             }
           } catch { /* skip unreadable squad */ }
           if (discoverPaceMs && Date.now() - t0 > 800) {
@@ -336,9 +342,22 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
           }
         }
       }
+
+      // Persist skeletons for the players we just found that aren't stored yet.
+      const newEntries = [...idName.keys()]
+        .filter((id) => !meta.has(id))
+        .map((id) => ({
+          id,
+          name: idName.get(id) ?? "",
+          teamId: idTeam.get(id) ?? null,
+          competition: idComp.get(id) ?? "PL",
+        }));
+      const skeletonsCreated = await saveSkeletonProfiles(newEntries);
+      for (const e of newEntries) meta.set(e.id, { refreshed_at: EPOCH, complete: false });
+      console.log(`[refresh-players] skeletons created=${skeletonsCreated}/${newEntries.length}`);
     }
 
-    // 3. Order: never-stored (0) → stored-incomplete (1) → stored-complete (2); then oldest first.
+    // 3. Order: skeleton/never-refreshed first (epoch) → incomplete → complete; then oldest first.
     const ids = [...idComp.keys()];
     ids.sort((a, b) => {
       const ma = meta.get(a), mb = meta.get(b);

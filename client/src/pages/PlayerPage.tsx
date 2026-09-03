@@ -20,7 +20,7 @@ export default function PlayerPage() {
 
   // On a first-ever visit the server may return a `pending` placeholder while it assembles
   // the full career history in the background. Poll a few times until the real data lands.
-  const MAX_PENDING_TRIES = 6;
+  const MAX_PENDING_TRIES = 12;
   const pending = data?.pending === true;
   const [pendingTries, setPendingTries] = useState(0);
   useEffect(() => {

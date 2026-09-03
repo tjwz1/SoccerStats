@@ -3,6 +3,7 @@ import { getLiveMatches } from "../services/footballApi";
 import {
   getStoredProfile,
   refreshPlayerProfile,
+  buildPendingPayload,
   type PlayerPayload,
 } from "../services/playerStore";
 
@@ -83,16 +84,7 @@ router.get("/:id", async (req, res) => {
     if (data) return res.json(data);
 
     res.set("Cache-Control", "no-store");
-    return res.json({
-      id,
-      name: "",
-      photo: null,
-      currentSeason: { appearances: 0, goals: 0, assists: 0, minutesPlayed: 0 },
-      career: [],
-      totals: { appearances: 0, goals: 0, assists: 0 },
-      trophies: [],
-      pending: true,
-    });
+    return res.json(buildPendingPayload(id));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
