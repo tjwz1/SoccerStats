@@ -69,31 +69,43 @@ export async function getStoredProfile(id: number): Promise<StoredProfile | null
   return null;
 }
 
-export async function getProfileRefreshMeta(
-  ids: number[]
-): Promise<Map<number, { refreshed_at: string; complete: boolean }>> {
-  const map = new Map<number, { refreshed_at: string; complete: boolean }>();
-  if (ids.length === 0) return map;
+export interface ProfileLite {
+  id: number;
+  team_id: number | null;
+  competition: string;
+  refreshed_at: string;
+  complete: boolean;
+}
+
+// Lightweight listing of every stored profile — the daily refresh job seeds its candidate
+// set from this (no external calls) before optionally discovering new players from squads.
+export async function listStoredProfiles(): Promise<ProfileLite[]> {
+  const out: ProfileLite[] = [];
   try {
     const client = getClient();
-    for (let i = 0; i < ids.length; i += 300) {
-      const chunk = ids.slice(i, i + 300);
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
       const { data, error } = await client
         .from("player_profiles")
-        .select("id, refreshed_at, complete")
-        .in("id", chunk);
-      if (error || !data) continue;
+        .select("id, team_id, competition, refreshed_at, complete")
+        .order("id", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error || !data || data.length === 0) break;
       for (const r of data) {
-        map.set(r.id as number, {
+        out.push({
+          id: r.id as number,
+          team_id: (r.team_id as number | null) ?? null,
+          competition: (r.competition as string) ?? "PL",
           refreshed_at: r.refreshed_at as string,
           complete: r.complete as boolean,
         });
       }
+      if (data.length < PAGE) break;
     }
   } catch {
     /* return whatever we have */
   }
-  return map;
+  return out;
 }
 
 // ── Write ───────────────────────────────────────────────────────────────────

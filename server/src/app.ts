@@ -11,7 +11,7 @@ import accountRouter from "./routes/account";
 import { getClient } from "./db/supabase";
 import { deleteCached, deleteCachedByPrefix } from "./db/apiCache";
 import { getTeamSquadPlayers, getTeams } from "./services/footballApi";
-import { refreshPlayerProfile, getProfileRefreshMeta } from "./services/playerStore";
+import { refreshPlayerProfile, listStoredProfiles } from "./services/playerStore";
 import { fetchPlayerWikiData } from "./services/wikiStats";
 import { fetchSofaScoreCareer } from "./services/sofaScoreCareer";
 import { scrapeTransfermarktPlayerStats, type TmCareerRow } from "./services/transfermarktScraper";
@@ -278,54 +278,82 @@ app.post("/api/admin/populate-wiki-stats", adminLimiter, requireAdmin, async (re
 // Once-daily player-stats refresh — called by Vercel cron (Authorization: Bearer CRON_SECRET)
 // and manually via GET /api/admin/refresh-players with x-admin-secret header.
 //
-// Walks the big-5 league squads (override with ?leagues=PL,PD,BL1,SA,FL1), then re-runs the
-// assembly pipeline for each player and upserts player_profiles. Ordered least-complete /
-// stalest first, so a fresh deployment fills the roster out over successive nights and then
-// just keeps it current. Bounded by ?budgetMs (default 280s) to stay under the function's
-// maxDuration; fd.org's rate limit is the real throughput cap, so full coverage is gradual.
+// 1. Seeds the candidate set from player_profiles (no external calls).
+// 2. Optionally walks the big-5 league squads (?leagues=PL,PD,BL1,SA,FL1) to discover players
+//    not yet stored — paced and time-capped so a cold squad cache doesn't stall the run on
+//    fd.org 429 back-off. Skip with ?discover=0.
+// 3. Re-runs the assembly pipeline per player, least-complete / stalest first, upserting
+//    player_profiles until ?budgetMs (default 280s, under the function's maxDuration) is spent.
+//
+// fd.org's 10 req/min free tier is the real throughput cap (~1 call per cold player), so
+// ?paceMs defaults to 6s and full coverage of the roster builds up over several runs.
 const BIG_5 = ["PL", "PD", "BL1", "SA", "FL1"];
 app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, res) => {
   const leagues = ((req.query.leagues as string) || BIG_5.join(","))
     .split(",").map((s) => s.trim()).filter(Boolean);
   const budgetMs = Math.min(Number(req.query.budgetMs) || 280_000, 290_000);
-  const paceMs = Math.max(Number(req.query.paceMs) || 1200, 0);
+  const paceMs = Math.max(Number(req.query.paceMs) || 6_000, 0);
+  const discoverPaceMs = Math.max(Number(req.query.discoverPaceMs) || 6_000, 0);
   const started = Date.now();
+  const overBudget = () => Date.now() - started > budgetMs;
 
   try {
-    // Build player -> {teamId, competition} from the league squads.
     const idTeam = new Map<number, number>();
     const idComp = new Map<number, string>();
-    for (const code of leagues) {
-      try {
-        const teams = await getTeams(code);
-        for (const t of teams as Array<{ id: number }>) {
+    const meta = new Map<number, { refreshed_at: string; complete: boolean }>();
+
+    // 1. Cheap seed — every player we already know about, straight from player_profiles.
+    const stored = await listStoredProfiles();
+    for (const p of stored) {
+      if (p.team_id) idTeam.set(p.id, p.team_id);
+      idComp.set(p.id, p.competition);
+      meta.set(p.id, { refreshed_at: p.refreshed_at, complete: p.complete });
+    }
+
+    // 2. Discovery — pick up players not yet stored (new signings, unseen squads).
+    //    Default on; only pace after a call that actually hit the network so a warm
+    //    squad cache flies through. Capped at 40% of the budget.
+    const doDiscover = req.query.discover !== "0";
+    let discovered = 0;
+    if (doDiscover) {
+      const setupCap = Math.min(budgetMs * 0.4, 120_000);
+      outer: for (const code of leagues) {
+        let teams: Array<{ id: number }> = [];
+        try { teams = (await getTeams(code)) as Array<{ id: number }>; } catch { continue; }
+        for (const t of teams) {
+          if (Date.now() - started > setupCap) break outer;
+          const t0 = Date.now();
           try {
             const { players } = await getTeamSquadPlayers(String(t.id));
             for (const p of players) {
+              if (!idComp.has(p.id)) discovered++;
               idTeam.set(p.id, t.id);
               idComp.set(p.id, code);
             }
           } catch { /* skip unreadable squad */ }
+          if (discoverPaceMs && Date.now() - t0 > 800) {
+            await new Promise((r) => setTimeout(r, discoverPaceMs));
+          }
         }
-      } catch { /* skip unreadable league */ }
+      }
     }
 
-    const ids = [...idTeam.keys()];
-    const meta = await getProfileRefreshMeta(ids);
-    // Priority: never-stored (0) → stored-incomplete (1) → stored-complete (2); then oldest first.
+    // 3. Order: never-stored (0) → stored-incomplete (1) → stored-complete (2); then oldest first.
+    const ids = [...idComp.keys()];
     ids.sort((a, b) => {
       const ma = meta.get(a), mb = meta.get(b);
       const rank = (m?: { complete: boolean }) => (!m ? 0 : m.complete ? 2 : 1);
       const ra = rank(ma), rb = rank(mb);
       if (ra !== rb) return ra - rb;
-      const ta = ma ? new Date(ma.refreshed_at).getTime() : 0;
-      const tb = mb ? new Date(mb.refreshed_at).getTime() : 0;
+      const ta = ma ? Date.parse(ma.refreshed_at) : 0;
+      const tb = mb ? Date.parse(mb.refreshed_at) : 0;
       return ta - tb;
     });
 
+    // 4. Refresh within the remaining budget.
     let done = 0, failed = 0, processed = 0;
     for (const id of ids) {
-      if (Date.now() - started > budgetMs) break;
+      if (overBudget()) break;
       processed++;
       try {
         const r = await refreshPlayerProfile(id, idComp.get(id) ?? "PL", idTeam.get(id));
@@ -335,8 +363,8 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
     }
 
     const elapsedSec = Math.round((Date.now() - started) / 1000);
-    console.log(`[refresh-players] processed=${processed}/${ids.length} ok=${done} failed=${failed} in ${elapsedSec}s`);
-    res.json({ leagues, totalPlayers: ids.length, processed, refreshed: done, failed, elapsedSec });
+    console.log(`[refresh-players] seed=${stored.length} discovered=${discovered} candidates=${ids.length} processed=${processed} ok=${done} failed=${failed} in ${elapsedSec}s`);
+    res.json({ leagues, seeded: stored.length, discovered, candidates: ids.length, processed, refreshed: done, failed, elapsedSec });
   } catch (e: any) {
     res.status(500).json({ error: e.message, elapsedSec: Math.round((Date.now() - started) / 1000) });
   }
