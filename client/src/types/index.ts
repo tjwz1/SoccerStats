@@ -229,6 +229,7 @@ export interface CompetitionStats {
   assists: StatLeader[];
   cleanSheets: StatLeader[];
   hasLive?: boolean;   // true when at least one match in this competition is currently live
+  assistsComplete?: boolean; // true when the assist list covers all players, not just goalscorers
 }
 
 export interface TeamStatLine {
