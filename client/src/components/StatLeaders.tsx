@@ -128,7 +128,7 @@ export default function StatLeaders({ compCode, season, onSelectTeam }: Props) {
           </p>
         )}
 
-        {filter === "assists" && !["WC", "EC"].includes(compCode) && !loading && leaders.length > 0 && (
+        {filter === "assists" && stats?.assistsComplete === false && !loading && leaders.length > 0 && (
           <p className="text-[9px] text-slate-600 text-center pb-1 px-1">
             Only includes players who have also scored (free-tier limit)
           </p>

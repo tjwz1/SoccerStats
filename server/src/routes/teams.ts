@@ -5,7 +5,7 @@ import { fetchClubHonours, type ClubTrophy } from "../services/wikiStats";
 import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transfermarktScraper";
 import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoalEvents, getMatchBookingsAndSubs, teamsMatch, type EspnLineupPlayer } from "../services/matchStatsScraper";
 import { fetchEspnCupMatches, fetchTmCupMatches, DOMESTIC_CUP_MAP, TM_CUP_LEAGUES } from "../services/cupSchedule";
-import { ESPN_LEAGUES, getEspnStandings } from "../services/espnService";
+import { ESPN_LEAGUES, getEspnStandings, getEspnAssistLeaders, DOMESTIC_ESPN_SLUGS } from "../services/espnService";
 import { fetchTeamNews } from "../services/newsService";
 import { getAnyCached, setCached, clearMemCache, clearAllCache, deleteCached, deleteCachedByPrefix, FOREVER_TTL_MS } from "../db/apiCache";
 import { clearStaleAssists, clearPlayerCareer, clearAllPlayerCareer } from "../db/wikiCareerCache";
@@ -286,12 +286,17 @@ router.get("/competitions/:code/fixtures", async (req, res) => {
 router.get("/competitions/:code/live-scorers", async (req, res) => {
   const code = req.params.code;
   const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
-  const cacheKey = `/live-scorers/v1/${code}/${season ?? "current"}`;
+  const cacheKey = `/live-scorers/v2/${code}/${season ?? "current"}`;
   try {
     await serveWithSWR(res, cacheKey, 90 * 1000, async () => {
     const intl = isInternationalComp(code);
 
-    const [fdDataRaw, csData, allLive, finishedList] = await Promise.all([
+    // Domestic assist leaderboards from fd.org only list players who have also scored.
+    // ESPN's scoring-statistics endpoint has a complete assist leaderboard — pull it for
+    // the current season of any fd.org league ESPN also covers.
+    const espnAssistSlug = !intl && !season ? DOMESTIC_ESPN_SLUGS[code] : undefined;
+
+    const [fdDataRaw, csData, allLive, finishedList, espnAssistsRaw] = await Promise.all([
       getTopScorers(code, season).catch(() => ({ goals: [], assists: [] })),
       getTeamCleanSheets(code, season).catch(() => []),
       getLiveMatches().catch(() => []),
@@ -300,6 +305,9 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
       intl
         ? getFinishedMatchList(code, season).catch(() => [] as FinishedMatchRef[])
         : Promise.resolve([] as FinishedMatchRef[]),
+      espnAssistSlug
+        ? getEspnAssistLeaders(espnAssistSlug).catch(() => [])
+        : Promise.resolve([] as Awaited<ReturnType<typeof getEspnAssistLeaders>>),
     ]);
 
     // Trim to 50 — client shows 10; extra headroom for live re-ordering without sending 400 entries
@@ -351,22 +359,56 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
       );
     }
 
-    // Use ESPN-built assists for international comps; fd.org scorers-based for domestic.
-    const baseAssists: any[] = (intl && finishedAssistMap.size > 0)
-      ? Array.from(finishedAssistMap.values())
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 30)
-          .map(({ count, teamId, teamName, teamCrest, displayName }) => ({
-            value: count,
-            liveAdd: 0,
-            playedMatches: 0,
-            player: { id: 0, name: displayName, nationality: "", dateOfBirth: "", position: "" },
-            team: { id: teamId, name: teamName, shortName: teamName, crest: teamCrest, tla: teamName.slice(0, 3).toUpperCase() },
-          }))
-      : fdData.assists;
+    // ESPN lists assisters regardless of whether they've scored; fd.org's list carries
+    // real player ids (clickable → player page). Merge: ESPN rows are the base (complete +
+    // internally consistent count/order), fd.org fills in the id/bio for anyone it also has.
+    function mergeEspnAssists(espn: any[], fd: any[]): any[] {
+      return espn.map((e) => {
+        const match = fd.find((f) => namesMatch(f.player.name, e.player.name));
+        if (!match) return e;
+        return {
+          ...e,
+          // Prefer fd.org's team object so crests match the Goals tab (same CDN).
+          team: match.team?.crest ? match.team : e.team,
+          player: {
+            ...e.player,
+            id: match.player.id || 0,
+            nationality: e.player.nationality || match.player.nationality,
+            dateOfBirth: e.player.dateOfBirth || match.player.dateOfBirth,
+            position: e.player.position || match.player.position,
+          },
+          playedMatches: match.playedMatches ?? 0,
+        };
+      });
+    }
+
+    // Assist leaderboard source, in order of completeness:
+    //   intl comps      → ESPN goal-event rebuild across all finished matches
+    //   domestic + ESPN → ESPN scoring-statistics leaderboard (merged with fd.org for ids)
+    //   otherwise       → fd.org /scorers (only players who have also scored)
+    let assistsComplete = false;
+    let baseAssists: any[];
+    if (intl && finishedAssistMap.size > 0) {
+      assistsComplete = true;
+      baseAssists = Array.from(finishedAssistMap.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 30)
+        .map(({ count, teamId, teamName, teamCrest, displayName }) => ({
+          value: count,
+          liveAdd: 0,
+          playedMatches: 0,
+          player: { id: 0, name: displayName, nationality: "", dateOfBirth: "", position: "" },
+          team: { id: teamId, name: teamName, shortName: teamName, crest: teamCrest, tla: teamName.slice(0, 3).toUpperCase() },
+        }));
+    } else if (espnAssistsRaw.length > 0) {
+      assistsComplete = true;
+      baseAssists = mergeEspnAssists(espnAssistsRaw, fdData.assists);
+    } else {
+      baseAssists = fdData.assists;
+    }
 
     if (!liveMatches.length) {
-      return { goals: fdData.goals, assists: baseAssists, cleanSheets: csData, hasLive: false };
+      return { goals: fdData.goals, assists: baseAssists, cleanSheets: csData, hasLive: false, assistsComplete };
     }
 
     // Aggregate live goals/assists — key is normalized name, value stores original for display
@@ -434,6 +476,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
       assists: mergeLive(baseAssists, "assists"),
       cleanSheets: csData,
       hasLive: true,
+      assistsComplete,
     };
     }); // end serveWithSWR
   } catch (e: any) {

@@ -221,6 +221,32 @@ export async function getEspnStandings(
 
 // ── Scorers ───────────────────────────────────────────────────────────────────
 
+// One entry from an ESPN scoring-statistics category. The team lives on `athlete.team`
+// (ESPN moved it there; top-level `item.team` is usually null now) — fall back either way.
+// `playerId` is passed through only for callers that want the ESPN athlete id.
+function mapEspnScoringLeader(item: any, keepPlayerId: boolean): FdStatLeader {
+  const ath = item.athlete ?? {};
+  const team = ath.team ?? item.team ?? {};
+  return {
+    value: Math.round(item.value ?? 0),
+    playedMatches: 0,
+    player: {
+      id: keepPlayerId ? parseInt(ath.id, 10) || 0 : 0,
+      name: ath.displayName ?? ath.fullName ?? "",
+      nationality: ath.citizenship ?? "",
+      dateOfBirth: "",
+      position: mapEspnPosition(ath.position?.abbreviation),
+    },
+    team: {
+      id: parseInt(team.id, 10) || 0,
+      name: team.displayName ?? team.name ?? "",
+      shortName: team.shortDisplayName ?? team.displayName ?? team.name ?? "",
+      crest: team.logos?.[0]?.href ?? (team.id ? espnCrest(team.id) : ""),
+      tla: (team.abbreviation ?? "").slice(0, 4),
+    },
+  };
+}
+
 export async function getEspnScorers(
   config: EspnLeagueConfig,
   _season?: number
@@ -230,36 +256,38 @@ export async function getEspnScorers(
     ESPN_LIVE_TTL
   );
   const stats: any[] = data?.stats ?? [];
-
-  function mapLeaders(cat: any): FdStatLeader[] {
-    if (!cat) return [];
-    return (cat.leaders ?? []).slice(0, 30).map((item: any) => {
-      const ath = item.athlete ?? {};
-      const team = item.team ?? {};
-      return {
-        value: item.value ?? 0,
-        playedMatches: 0,
-        player: {
-          id: parseInt(ath.id, 10) || 0,
-          name: ath.displayName ?? ath.fullName ?? "",
-          nationality: ath.citizenship ?? "",
-          dateOfBirth: "",
-          position: mapEspnPosition(ath.position?.abbreviation),
-        },
-        team: {
-          id: parseInt(team.id, 10) || 0,
-          name: team.displayName ?? team.name ?? "",
-          shortName: team.shortDisplayName ?? team.displayName ?? "",
-          crest: team.logos?.[0]?.href ?? (team.id ? espnCrest(team.id) : ""),
-          tla: (team.abbreviation ?? "").slice(0, 4),
-        },
-      };
-    });
-  }
+  const mapLeaders = (cat: any): FdStatLeader[] =>
+    (cat?.leaders ?? []).slice(0, 30).map((it: any) => mapEspnScoringLeader(it, true));
 
   const goalsCat  = stats.find((s: any) => s.name === "goalsLeaders"   || s.abbreviation === "G");
   const assistCat = stats.find((s: any) => s.name === "assistsLeaders" || s.abbreviation === "A");
   return { goals: mapLeaders(goalsCat), assists: mapLeaders(assistCat) };
+}
+
+// fd.org-primary leagues that ESPN also covers. Used only to source a *complete* assist
+// leaderboard (ESPN lists assisters who haven't scored; fd.org's /scorers endpoint does not).
+// Standings / fixtures / squads for these still come from fd.org.
+export const DOMESTIC_ESPN_SLUGS: Record<string, string> = {
+  PL: "eng.1", PD: "esp.1", BL1: "ger.1", SA: "ita.1", FL1: "fra.1",
+  DED: "ned.1", PPL: "por.1", ELC: "eng.2", BSA: "bra.1",
+};
+
+// Full current-season assist leaderboard from ESPN's scoring statistics — includes
+// assisters who haven't scored (unlike fd.org). Player id is left 0 (ESPN athlete ids
+// aren't fd.org ids); callers reconcile against an fd.org list by name for clickability.
+export async function getEspnAssistLeaders(slug: string): Promise<FdStatLeader[]> {
+  try {
+    const data = await espnFetch(`${ESPN_SITE}/${slug}/statistics?type=scoring`, ESPN_LIVE_TTL);
+    const stats: any[] = data?.stats ?? [];
+    const cat = stats.find((s: any) => s.name === "assistsLeaders" || s.abbreviation === "A");
+    if (!cat) return [];
+    return (cat.leaders ?? [])
+      .slice(0, 50)
+      .map((it: any) => mapEspnScoringLeader(it, false))
+      .filter((r: FdStatLeader) => r.value > 0 && r.player.name);
+  } catch {
+    return [];
+  }
 }
 
 // ── Competition fixtures ──────────────────────────────────────────────────────
