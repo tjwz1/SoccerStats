@@ -33,6 +33,7 @@ function Check-Ep(\$label, \$url) {
     } catch {
         \$code = \$_.Exception.Response.StatusCode.value__
         if (\$code -eq 403) { \$script:skips++ }
+        elseif (\$code -eq 404) { \$script:passes++ }  # not-yet-available is a valid state (e.g. a bracket before the knockout stage starts)
         elseif (\$null -ne \$code) { \$script:fails.Add(\"\$label (HTTP \$code)\") }
         else { \$script:fails.Add(\"\$label (no response)\") }
     }
