@@ -832,25 +832,32 @@ function propagateWinners(rounds: BracketRound[]): BracketRound[] {
 export async function getBracketMatches(competitionCode: string, season?: number): Promise<BracketData | null> {
   if (useMock()) return null;
 
+  // When no season is given, don't re-derive "current" via local clock math (getCurrentSeason()
+  // uses a month-based heuristic that can drift from fd.org's own notion of current — it did:
+  // fd.org already had the new season's league-phase matches live while getCurrentSeason() was
+  // still one year behind). Omitting the param lets fd.org resolve "current" itself, same as
+  // getStandings() already does.
+  const query = season ? `?season=${season}` : "";
+  // Historical seasons are immutable → cache forever. Current/inferred season uses a short TTL
+  // so winner advancement propagates quickly after knockout matches finish.
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
-  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
-  // Historical seasons are immutable → cache forever.
-  // Current season uses a short TTL so winner advancement propagates quickly after knockout matches finish.
-  const ttl = season && season < getCurrentSeason() ? FOREVER_TTL_MS : 2 * 60_000;
+  const currentYear = isIntl ? new Date().getFullYear() : getCurrentSeason();
+  const ttl = season && season < currentYear ? FOREVER_TTL_MS : 2 * 60_000;
+  // Only used below for WC-specific post-processing (Wikipedia R16 correction, hardcoded
+  // bracket order) — WC callers always pass an explicit season, so this stays accurate even
+  // though the fd.org query itself no longer needs a resolved value when season is omitted.
+  const seasonYear = season ?? currentYear;
 
   let raw: any;
   try {
     raw = await apiFetch(
-      `/competitions/${competitionCode}/matches?season=${seasonYear}`,
+      `/competitions/${competitionCode}/matches${query}`,
       ttl
     );
   } catch (e: any) {
     // 403 (tier restriction) → no bracket available for this competition
-    // 404 → season not registered yet; fall back to previous season if season was inferred
-    if (/API error (403|404)/.test(e.message)) {
-      if (!season && /API error 404/.test(e.message)) return getBracketMatches(competitionCode, seasonYear - 1);
-      return null;
-    }
+    // 404 → the explicitly-requested season doesn't exist on fd.org
+    if (/API error (403|404)/.test(e.message)) return null;
     throw e;
   }
 
