@@ -4,59 +4,46 @@ Planned improvements that are not urgent now but should be addressed before/at s
 
 ---
 
-## Before Public Launch
+## Bugs
 
-### 1. Supabase `api_cache` expiry cleanup
+### News feed stopped updating daily — FIXED (2026-09-13)
 
-**Problem:** `setCached` upserts rows with an `expires_at` timestamp but nothing ever deletes them. Expired rows accumulate silently — they're never served (the warmup query already filters `gt("expires_at", now)`) but they bloat the table and slow scans over time. Past-season data with `FOREVER_TTL_MS` (1 year) makes this worse.
+**Observed (2026-09-08):** Team news is stale — Barcelona's most recent article is ~a week old. The daily news digest / article fetch appears to have stopped running or is failing silently. Affects at least Barcelona; likely all teams.
 
-**Fix:** A daily DELETE job:
-```sql
-DELETE FROM api_cache WHERE expires_at < NOW() - INTERVAL '1 day';
-```
+**Root cause (verified against production):** the news pipeline itself was never broken. `api_cache` showed Barcelona's digest frozen at `date: 2026-09-08, ok: true` — a genuinely successful generation that then never ran again. A live production log tail (`vercel logs`) during a manually-triggered stale request showed zero backend activity — no RSS fetch, no Gemini call. Root cause: `serveWithSWR`'s (and the bracket route's own inline copy of the same pattern) background revalidation fires an un-awaited promise *after* `res.json()` has already been sent. On Vercel, the function's execution can be frozen the instant the response is flushed — there was no `waitUntil()` anywhere in the codebase telling the platform to keep the invocation alive for that background work. It likely completed only on the rare occasion an instance happened to stay warm by chance, which stopped happening around 2026-09-08.
 
-Options:
-- **Supabase pg_cron** (paid tier): schedule directly in the database
-- **Vercel cron** (`vercel.json` `crons`): hit a protected admin endpoint that runs the DELETE
+**Fix:** added `@vercel/functions`, and wrapped both background-revalidation call sites (`serveWithSWR` in `teams.ts`, and the bracket route's inline SWR) in `waitUntil(...)`. This is a systemic fix — it protects every stale-while-revalidate endpoint in the app, not just news. Verified locally: cleared the stale Barcelona cache rows, hit `/api/teams/81/news`, got a freshly-generated digest referencing current news, and confirmed the Supabase row's `date` advanced to today. The Vercel-freeze behavior itself can only be fully confirmed after this deploys to production and a real stale cache entry gets revalidated in the background — worth spot-checking `team-news-digest:*` rows a day or two after deploy.
 
 ---
 
-### 2. Rate limiter shared store
+### Champions League page: wrong zone indicators + stale bracket — FIXED (2026-09-13)
 
-**Problem:** `express-rate-limit` uses an in-memory store by default (`app.ts:33`). Under Vercel, each function instance has its own counter — a user routed across N instances effectively gets N× the allowed rate. The 200 req/min cap is meaningless for abuse prevention at scale.
+**Observed (2026-09-09):** The Champions League page is misrepresenting the new league-phase format.
 
-**Fix (simple):** Replace the default store with a Supabase-backed store. `express-rate-limit` accepts a custom `store` option. A Supabase `rate_limits` table with `(ip, window_start, count)` rows keeps counters shared across all instances.
+- **Standings zone indicators are hardcoded from another league.** Correct CL league-phase rules: top **8** automatically qualify for the Round of 16; teams **9–24** (the next 16) go to a knockout play-off round to qualify; teams **25th and below** are eliminated. No relegation.
+- **The knockout bracket shown for the current season is actually last season's bracket.**
+- It is still the league phase, so **no bracket should be shown at all** yet.
 
-**Fix (better at scale):** Use Vercel Edge Middleware for rate limiting at the CDN layer, before the function is invoked. Vercel's built-in rate limiting or Upstash Redis via the `@upstash/ratelimit` package both work here.
+**Root cause (verified against live fd.org data):** `/api/competitions/CL/standings` returns no `description` field and no `zoneRanges` on any row for the 36-team league-phase table — confirmed by pulling the live response directly. `getZone()`/`getZoneRanges()` (`client/src/pages/CompetitionLanding.tsx`) had no `"CL"` entry in `ZONE_OVERRIDES`, so it fell through to `deriveZones()`, a generic domestic-league heuristic (top-4/relegation), producing nonsense zones for a 36-team single table. Separately, `getBracketMatches()` (`server/src/services/footballApi.ts`) had a fallback that silently recursed into `seasonYear - 1` whenever the current season had zero knockout matches yet — written for the old format's brief August inter-season gap, but the new 36-team league phase runs Sept–Jan, so that fallback now serves last season's finished bracket for months, and because it always returns non-empty data, the client never hit its "not available yet" empty state.
+
+**Fix:**
+- Added a `CL` entry to `ZONE_OVERRIDES`: `[[1,8,"r16"], [9,24,"playoff"], [25,36,"elim"]]`, plus new `r16`/`elim` zone types with colors and labels ("Round of 16" / "Eliminated"). Verified the boundaries against the live 36-team table.
+- Removed the silent previous-season fallback in `getBracketMatches()` for the "no knockout matches yet" case — it now returns `null`. `BracketView.tsx` already had correct handling for this (`error.includes("404")` → "Knockout bracket not yet available for this competition"), so no client change was needed there; verified locally that `/api/competitions/CL/bracket` now returns 404 instead of last season's bracket.
+- Fixed the bracket route's own inline SWR background-refresh to use `waitUntil()` too (same systemic issue as the news fix above — it has its own copy of the pattern, not the shared `serveWithSWR` helper).
 
 ---
 
-### 3. CDN caching headers for historical data
+### Team "Form" not updating for the current season
 
-**Problem:** Every API request — even for fully static historical data (past-season brackets, career standings, completed seasons) — hits a serverless function → Supabase → response. There are no `Cache-Control` headers set on any API response. Vercel's Edge Network can serve GET responses from CDN if the server opts in.
+**Observed (2026-09-11):** The Form indicator shows correctly for past/previous seasons but is not updating for the current season. Expected: form should reflect at most the last 5 games played.
 
-**Fix:** Add `Cache-Control` headers based on TTL type. The existing `isPastSeason` / `FOREVER_TTL_MS` logic already distinguishes immutable from mutable data — use the same flag to drive the header:
-
-```typescript
-// Past-season (immutable): CDN caches for 24h, zero function invocations on repeat requests
-res.set("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=3600");
-
-// Current-season (SWR pattern must run): no CDN caching
-res.set("Cache-Control", "no-store");
-```
-
-Routes using `serveWithSWR` for current data must use `no-store` since the SWR pattern requires the function to execute.
-
-Candidates for `public, s-maxage=86400`:
-- `/competitions/:code/bracket?season=<past>` — immutable once the season ends
-- `/competitions/:code/standings?season=<past>` — immutable
-- `/players/:id` career stats — mostly immutable (Wikipedia-sourced)
+**Not yet investigated.**
 
 ---
 
 ## When Real Users Arrive
 
-### 4. Tighten Supabase Auth refresh token lifetime
+### 1. Tighten Supabase Auth refresh token lifetime
 
 **Context:** Accounts are implemented (`feature/accounts` branch). Supabase Auth is used with magic-link sign-in.
 
@@ -68,7 +55,7 @@ Candidates for `public, s-maxage=86400`:
 
 ---
 
-### 5. Token storage: localStorage → httpOnly cookies
+### 2. Token storage: localStorage → httpOnly cookies
 
 **Problem:** Supabase stores JWTs in `localStorage` by default. Any XSS vulnerability on the page can read these tokens. `httpOnly` cookies are inaccessible to JavaScript entirely.
 
@@ -78,7 +65,7 @@ Candidates for `public, s-maxage=86400`:
 
 ---
 
-### 6. Audit log alerts for suspicious auth events
+### 3. Audit log alerts for suspicious auth events
 
 **Problem:** Supabase Auth logs sign-in/sign-out events in `auth.audit_log_entries`, but nothing watches them. Mass magic-link attempts from one IP (email harvesting probe) or a sudden spike in account deletions would go unnoticed.
 

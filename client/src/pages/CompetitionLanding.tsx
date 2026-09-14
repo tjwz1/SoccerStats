@@ -25,7 +25,7 @@ interface FixtureMatch {
 // International group tournaments where top 2 advance + best 3rd-placed teams
 const INTL_GROUP_CODES = new Set(["WC", "EC"]);
 
-type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel" | "promo" | "lib" | "libq" | "sud" | "ccc" | "afc";
+type Zone = "ucl" | "uel" | "ecl" | "playoff" | "rel" | "promo" | "lib" | "libq" | "sud" | "ccc" | "afc" | "r16" | "elim";
 
 // [minPos, maxPos, zone] — inclusive position bounds
 // Exact overrides for competitions where the specific rules are known
@@ -53,6 +53,10 @@ const ZONE_OVERRIDES: Record<string, [number, number, Zone][]> = {
   MX1: [[1,5,"ccc"]],   // ~5 Liga MX clubs in 2026 CONCACAF Champions Cup
   // AFC leagues (Champions League Elite) — J1 has 20 teams, bottom 3 relegated
   JPN: [[1,3,"afc"], [18,20,"rel"]],
+  // UEFA Champions League — 36-team Swiss-model league phase (2024/25 format onward).
+  // Top 8 auto-qualify for the Round of 16; 9th-24th go to a knockout play-off round
+  // to reach the Round of 16; 25th and below are eliminated. No relegation.
+  CL: [[1,8,"r16"], [9,24,"playoff"], [25,36,"elim"]],
 };
 
 // For competitions without exact rules, derive reasonable zones from team count
@@ -69,7 +73,7 @@ function deriveZones(totalTeams: number): [number, number, Zone][] {
 
 // Convert server-provided {zone: [min,max]} into the [min,max,zone][] tuple format.
 function serverRangesToList(serverRanges: Record<string, [number, number]>): [number, number, Zone][] {
-  const VALID: Set<string> = new Set(["ucl","uel","ecl","playoff","rel","promo","lib","libq","sud","ccc","afc"]);
+  const VALID: Set<string> = new Set(["ucl","uel","ecl","playoff","rel","promo","lib","libq","sud","ccc","afc","r16","elim"]);
   return Object.entries(serverRanges)
     .filter(([z]) => VALID.has(z))
     .map(([z, [min, max]]) => [min, max, z as Zone]);
@@ -99,6 +103,8 @@ const ZONE_DOT: Record<Zone, string> = {
   sud:     "bg-orange-400",    // Copa Sudamericana (CONMEBOL secondary)
   ccc:     "bg-purple-500",    // CONCACAF Champions Cup
   afc:     "bg-sky-500",       // AFC Champions League
+  r16:     "bg-blue-500",      // CL league phase: auto-qualify for Round of 16
+  elim:    "bg-red-500",       // CL league phase: eliminated (no relegation involved)
 };
 
 const ZONE_LABEL: Record<Zone, string> = {
@@ -113,6 +119,8 @@ const ZONE_LABEL: Record<Zone, string> = {
   sud:     "Copa Sudamericana",
   ccc:     "CONCACAF Champions Cup",
   afc:     "AFC Champions League",
+  r16:     "Round of 16",
+  elim:    "Eliminated",
 };
 
 // Parse fd.org's description field (e.g. "Promotion - Champions League (Group Stage: 1st)")

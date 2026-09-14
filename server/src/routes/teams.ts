@@ -11,6 +11,7 @@ import { getAnyCached, setCached, clearMemCache, clearAllCache, deleteCached, de
 import { clearStaleAssists, clearPlayerCareer, clearAllPlayerCareer } from "../db/wikiCareerCache";
 import { requireAdmin } from "../utils/auth";
 import { isIndexComplete, searchTeamIndex, addCompToIndex, setKnownCompCodes, exportIndexData, hydrateIndex } from "../utils/teamIndex";
+import { waitUntil } from "@vercel/functions";
 import type { Response } from "express";
 
 // Keys currently being revalidated in the background — prevents duplicate background
@@ -31,10 +32,17 @@ async function serveWithSWR<T>(
     res.json(hit.data);
     if (hit.stale && !revalidating.has(key)) {
       revalidating.add(key);
-      fetch()
-        .then((fresh) => { if (shouldCache(fresh)) setCached(key, fresh, ttlMs); })
-        .catch((e) => console.error(`[SWR] refresh failed for ${key}:`, e.message))
-        .finally(() => revalidating.delete(key));
+      // On Vercel, the function's execution can be frozen/terminated the instant the
+      // response above is flushed — a bare un-awaited promise here is not guaranteed to
+      // ever run to completion. waitUntil() tells the platform to keep the invocation
+      // alive until this settles. It's a safe no-op outside a Vercel request context
+      // (e.g. local dev), so this doesn't change local behavior.
+      waitUntil(
+        fetch()
+          .then((fresh) => { if (shouldCache(fresh)) setCached(key, fresh, ttlMs); })
+          .catch((e) => console.error(`[SWR] refresh failed for ${key}:`, e.message))
+          .finally(() => revalidating.delete(key))
+      );
     }
     return;
   }
@@ -194,9 +202,13 @@ router.get("/competitions/:code/bracket", async (req, res) => {
       if (hit.data === null) return res.status(404).json({ error: "bracket not available" });
       res.json(hit.data);
       if (hit.stale) {
-        getBracketMatches(req.params.code, season)
-          .then((d) => setCached(cacheKey, d ?? null, 30 * 60 * 1000))
-          .catch(() => {});
+        // See serveWithSWR's comment: on Vercel this must be kept alive with waitUntil
+        // or the platform can freeze the function before this ever runs.
+        waitUntil(
+          getBracketMatches(req.params.code, season)
+            .then((d) => setCached(cacheKey, d ?? null, 30 * 60 * 1000))
+            .catch(() => {})
+        );
       }
       return;
     }
