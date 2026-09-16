@@ -1079,7 +1079,7 @@ export interface ScheduleMatch {
 }
 
 // Competition codes to check for European matches (all in free tier).
-const EURO_COMPS = ["CL", "EL", "ECL"] as const;
+export const EURO_COMPS = ["CL", "EL", "ECL"] as const;
 
 // International tournaments run every 4 years — we must search multiple recent seasons.
 // Club competitions always use getCurrentSeason() only.
@@ -2094,10 +2094,15 @@ export async function getFinishedMatchList(
   season?: number
 ): Promise<FinishedMatchRef[]> {
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
-  const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
+  // WC/EC need an explicit calendar year (their "season" is a single tournament, not a
+  // year fd.org resolves as "current" the way a league season is). For everything else
+  // (including the continental club cups below), omit the season when none is given and
+  // let fd.org resolve "current" itself, rather than guessing via getCurrentSeason()'s
+  // local-clock heuristic — same fix already proven for the bracket and scorer probe.
+  const query = season ? `&season=${season}` : isIntl ? `&season=${new Date().getFullYear()}` : "";
   const ttl = season && season < getCurrentSeason() ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
   const data = await apiFetch(
-    `/competitions/${competitionCode}/matches?season=${seasonYear}&status=FINISHED`,
+    `/competitions/${competitionCode}/matches?status=FINISHED${query}`,
     ttl
   ) as any;
   return (data?.matches ?? []).map((m: any) => ({
@@ -2576,12 +2581,16 @@ interface ScorerEntry {
 async function fetchScorerStats(
   playerId: number,
   competitionCode: string,
-  season: number
+  season?: number
 ): Promise<ScorerEntry | null> {
   try {
-    const ttl = season < getCurrentSeason() ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
+    // Omitting season lets fd.org resolve "current" itself, same as getStandings() and
+    // getBracketMatches() — avoids re-deriving "current" via getCurrentSeason()'s local-clock
+    // heuristic, which is what caused an earlier (now-fixed) stale-bracket bug.
+    const query = season ? `&season=${season}` : "";
+    const ttl = season && season < getCurrentSeason() ? FOREVER_TTL_MS : SCORERS_CURRENT_TTL_MS;
     const data = await apiFetch(
-      `/competitions/${competitionCode}/scorers?season=${season}&limit=400`,
+      `/competitions/${competitionCode}/scorers?limit=400${query}`,
       ttl
     ) as any;
     const hit = data.scorers?.find((s: any) => s.player.id === playerId);
@@ -2693,7 +2702,6 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   if (useMock()) return { ...MOCK_PLAYER_STATS, id: playerId, name: "Bukayo Saka" };
 
   const id = parseInt(playerId, 10);
-  const probeComps = [...new Set([competitionCode, "CL", "EL"])];
 
   // Phase 1: bio + both DB caches in parallel — saves 2 sequential round-trips.
 
@@ -2704,6 +2712,26 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     getTmCupChecked(id),
     getCached(`/ss-career/${id}`).then(Boolean),
   ]);
+
+  // fd.org's /persons currentTeam occasionally reports a player's national team instead of
+  // their club around international windows (e.g. currentTeam.name === "Spain") — treat a
+  // currentTeam matching the player's own nationality as unreliable rather than trusting it.
+  const currentTeamIsReliable = !!personData.currentTeam?.name && personData.currentTeam.name !== personData.nationality;
+  const reliableClubName = currentTeamIsReliable ? personData.currentTeam.name : "";
+
+  // The caller-supplied competition can be wrong and, once persisted to player_profiles,
+  // never self-corrects (every later refresh just reuses the stored value) — e.g. a player
+  // visited via a route that didn't know their real league defaults to "PL". Cross-check
+  // against the current team's own runningCompetitions (already embedded in personData, no
+  // extra fetch needed — same field already used elsewhere in this file to resolve a team's
+  // domestic league). Only trust it when currentTeam itself is reliable (see above) — during
+  // an international window a national team's runningCompetitions lists tournaments like the
+  // Nations League, not the player's actual domestic league.
+  const teamLeagueCode = currentTeamIsReliable
+    ? (personData.currentTeam?.runningCompetitions as any[] | undefined)?.find((c: any) => c.type === "LEAGUE")?.code
+    : undefined;
+  const resolvedCompetitionCode = teamLeagueCode ?? competitionCode;
+  const probeComps = [...new Set([resolvedCompetitionCode, "CL", "EL"])];
 
   // Current season string e.g. "2025/26"
   const currentSeasonStr = `${getCurrentSeason()}/${String(getCurrentSeason() + 1).slice(2)}`;
@@ -2754,20 +2782,17 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // International tournaments (WC/EC) run in the calendar year of the tournament,
   // not the club-season year (e.g. WC 2026 uses season=2026, not getCurrentSeason()=2025).
   const INTL_SEASON = new Date().getFullYear();
-  // fd.org's /persons currentTeam occasionally reports a player's national team instead of
-  // their club around international windows (e.g. currentTeam.name === "Spain"). Passing that
-  // straight through as Transfermarkt's row label produced nonsense like team: "Spain" on
-  // Premier League rows — treat a currentTeam matching the player's own nationality as
-  // unreliable rather than trusting it.
-  const reliableClubName = personData.currentTeam?.name && personData.currentTeam.name !== personData.nationality
-    ? personData.currentTeam.name
-    : "";
   const [currentSeasonHits, freshWiki, tmCareer, tmHonours, wfCareer, sofaCareer] = await Promise.all([
     Promise.all(
       probeComps.map(async (code) => {
-        const seasonYear = INTERNATIONAL_COMP_CODES.has(code) ? INTL_SEASON : getCurrentSeason();
+        const isIntl = INTERNATIONAL_COMP_CODES.has(code);
+        // Club competitions: omit season and let fd.org resolve "current" itself, rather than
+        // re-deriving it via getCurrentSeason()'s local-clock heuristic (see fetchScorerStats).
+        const seasonYear = isIntl ? INTL_SEASON : undefined;
         const entry = await fetchScorerStats(id, code, seasonYear);
-        return entry ? { code, entry, seasonYear } : null;
+        // seasonYear is only used for labeling/grouping downstream, never to build a query —
+        // getCurrentSeason() here is just a display fallback for the omitted-season case.
+        return entry ? { code, entry, seasonYear: seasonYear ?? getCurrentSeason() } : null;
       })
     ).then((r) => r.filter(Boolean) as Array<{ code: string; entry: ScorerEntry; seasonYear: number }>),
     // Wikipedia is only used for trophies now — its club career tables have no Assists
@@ -2849,7 +2874,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // Covers e.g. a Man United player in CL 2021/22 whose current club isn't in Europe.
   const wikiCompNorms = new Set((wikiRows ?? []).map(r => normalizeComp(r.league ?? "")));
   const activeComps = [...new Set([
-    competitionCode,
+    resolvedCompetitionCode,
     ...(currentSeasonCodes.has("CL") || wikiCompNorms.has("championsleague") ? ["CL"] : []),
     ...(currentSeasonCodes.has("EL") || wikiCompNorms.has("europaleague") ? ["EL"] : []),
     ...(currentSeasonCodes.has("ECL") ? ["ECL"] : []),
@@ -2977,6 +3002,10 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     nationality: personData.nationality,
     dateOfBirth: personData.dateOfBirth,
     position: personData.section ?? personData.position,
+    // The competition actually used for probing (may differ from the caller-supplied
+    // one — see resolvedCompetitionCode above). Callers that persist this profile
+    // should store this value so a wrong tag self-corrects on the next refresh.
+    competition: resolvedCompetitionCode,
     currentSeason,
     career,
     totals,

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { safeFetch } from "../utils/httpClient";
-import { getCompetitions, getTeams, getTeamLineup, getTeamSchedule, getMatchDetail, getMatchLineups, getStandings, getCompetitionSeasons, getTopScorers, getTeamCleanSheets, getBracketMatches, getLiveMatches, getPositionHistory, getUpcomingFixtures, getH2HMatches, isInternationalComp, getFinishedMatchList, getCompetitionFixtures, type FinishedMatchRef, type StandingsData, type MatchGoalEvent } from "../services/footballApi";
+import { getCompetitions, getTeams, getTeamLineup, getTeamSchedule, getMatchDetail, getMatchLineups, getStandings, getCompetitionSeasons, getTopScorers, getTeamCleanSheets, getBracketMatches, getLiveMatches, getPositionHistory, getUpcomingFixtures, getH2HMatches, isInternationalComp, getFinishedMatchList, getCompetitionFixtures, EURO_COMPS, type FinishedMatchRef, type StandingsData, type MatchGoalEvent } from "../services/footballApi";
 import { fetchClubHonours, type ClubTrophy } from "../services/wikiStats";
 import { scrapeTransfermarktHonours, getTmClubRef } from "../services/transfermarktScraper";
 import { getMatchPlayerStats, getEspnMatchLineup, getMatchTeamStats, getMatchGoalEvents, getMatchBookingsAndSubs, teamsMatch, type EspnLineupPlayer } from "../services/matchStatsScraper";
@@ -302,19 +302,26 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
   try {
     await serveWithSWR(res, cacheKey, 90 * 1000, async () => {
     const intl = isInternationalComp(code);
+    // Continental club cups (CL/EL/ECL) have the exact same problem as international
+    // tournaments: fd.org's /scorers only lists players who have also scored, and ESPN has
+    // no equivalent "assists leaders" endpoint for them (its coverage is domestic-league
+    // shaped). They get the same fix: rebuild the full assist leaderboard from goal events
+    // across every finished match, same as WC/EC already do.
+    const useMatchRebuild = intl || (EURO_COMPS as readonly string[]).includes(code);
 
     // Domestic assist leaderboards from fd.org only list players who have also scored.
     // ESPN's scoring-statistics endpoint has a complete assist leaderboard — pull it for
     // the current season of any fd.org league ESPN also covers.
-    const espnAssistSlug = !intl && !season ? DOMESTIC_ESPN_SLUGS[code] : undefined;
+    const espnAssistSlug = !useMatchRebuild && !season ? DOMESTIC_ESPN_SLUGS[code] : undefined;
 
     const [fdDataRaw, csData, allLive, finishedList, espnAssistsRaw] = await Promise.all([
       getTopScorers(code, season).catch(() => ({ goals: [], assists: [] })),
       getTeamCleanSheets(code, season).catch(() => []),
       getLiveMatches().catch(() => []),
-      // For international comps fd.org /matches/:id has no goal events on the free tier,
-      // so we fetch all finished matches and rebuild assists via ESPN (same as live overlay).
-      intl
+      // For international/continental comps fd.org /matches/:id has no goal events on the
+      // free tier, so we fetch all finished matches and rebuild assists via ESPN (same as
+      // live overlay).
+      useMatchRebuild
         ? getFinishedMatchList(code, season).catch(() => [] as FinishedMatchRef[])
         : Promise.resolve([] as FinishedMatchRef[]),
       espnAssistSlug
@@ -346,12 +353,12 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
       return false;
     }
 
-    // For international competitions, build a complete assists leaderboard from ESPN
-    // goal events across all finished matches — identical approach to the live overlay.
+    // For international/continental competitions, build a complete assists leaderboard from
+    // ESPN goal events across all finished matches — identical approach to the live overlay.
     type AssistEntry = { count: number; teamId: number; teamName: string; teamCrest: string; displayName: string };
     const finishedAssistMap = new Map<string, AssistEntry>();
 
-    if (intl && finishedList.length > 0) {
+    if (useMatchRebuild && finishedList.length > 0) {
       await Promise.all(
         finishedList.map(async (m) => {
           try {
@@ -395,12 +402,12 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
     }
 
     // Assist leaderboard source, in order of completeness:
-    //   intl comps      → ESPN goal-event rebuild across all finished matches
-    //   domestic + ESPN → ESPN scoring-statistics leaderboard (merged with fd.org for ids)
-    //   otherwise       → fd.org /scorers (only players who have also scored)
+    //   intl/continental → ESPN goal-event rebuild across all finished matches
+    //   domestic + ESPN  → ESPN scoring-statistics leaderboard (merged with fd.org for ids)
+    //   otherwise        → fd.org /scorers (only players who have also scored)
     let assistsComplete = false;
     let baseAssists: any[];
-    if (intl && finishedAssistMap.size > 0) {
+    if (useMatchRebuild && finishedAssistMap.size > 0) {
       assistsComplete = true;
       baseAssists = Array.from(finishedAssistMap.values())
         .sort((a, b) => b.count - a.count)
@@ -450,7 +457,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
 
     // Merge live-match additions onto a base leader list.
     // Goals: fd.org scorers updates live, so base already has them — liveAdd is UI indicator only.
-    // Assists: for intl comps base is ESPN finished-match data; live assists add on top.
+    // Assists: for intl/continental comps base is ESPN finished-match data; live assists add on top.
     //          For domestic comps base is fd.org scorers; live assists add on top.
     function mergeLive(base: any[], field: "goals" | "assists"): any[] {
       const usedKeys = new Set<string>();

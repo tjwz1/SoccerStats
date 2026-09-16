@@ -212,7 +212,11 @@ export function refreshPlayerProfile(
   const run = (async () => {
     try {
       const data = await getPlayer(String(id), competition);
-      if (data) await saveProfile(id, competition, data, teamId ?? null);
+      // getPlayer() may resolve a different (correct) competition than the one we called it
+      // with — e.g. a profile first saved with a wrong/defaulted tag. Persist the corrected
+      // value so the stored row self-heals instead of repeating the same wrong tag forever.
+      const resolvedCompetition = (data as any)?.competition || competition;
+      if (data) await saveProfile(id, resolvedCompetition, data, teamId ?? null);
       return data ?? null;
     } catch (e) {
       console.error(`[playerStore] refresh failed for ${id}:`, (e as Error).message);

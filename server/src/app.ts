@@ -357,23 +357,46 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
       console.log(`[refresh-players] skeletons created=${skeletonsCreated}/${newEntries.length}`);
     }
 
-    // 3. Order: skeleton/never-refreshed first (epoch) → incomplete → complete; then oldest first.
-    const ids = [...idComp.keys()];
-    ids.sort((a, b) => {
-      const ma = meta.get(a), mb = meta.get(b);
-      const rank = (m?: { complete: boolean }) => (!m ? 0 : m.complete ? 2 : 1);
-      const ra = rank(ma), rb = rank(mb);
-      if (ra !== rb) return ra - rb;
-      const ta = ma ? Date.parse(ma.refreshed_at) : 0;
-      const tb = mb ? Date.parse(mb.refreshed_at) : 0;
+    // 3. Split into two queues instead of one strict bucket order. A single combined
+    //    ranking (skeleton/incomplete always before complete) let a large incomplete
+    //    backlog consume the entire budget indefinitely, starving already-complete
+    //    players of any refresh at all — confirmed in production: every complete
+    //    profile across all 5 leagues had gone 3+ days without a refresh, 97% over 7
+    //    days, because ~1275 incomplete/skeleton rows alone exceed a single run's
+    //    throughput. Each queue now gets a guaranteed slice of the budget.
+    const byOldestRefresh = (a: number, b: number) => {
+      const ta = Date.parse(meta.get(a)?.refreshed_at ?? EPOCH);
+      const tb = Date.parse(meta.get(b)?.refreshed_at ?? EPOCH);
       return ta - tb;
-    });
+    };
+    const incompleteIds = [...idComp.keys()].filter((id) => !meta.get(id)?.complete).sort(byOldestRefresh);
+    const staleCompleteIds = [...idComp.keys()].filter((id) => meta.get(id)?.complete).sort(byOldestRefresh);
 
-    // 4. Refresh within the remaining budget.
+    // 4. Refresh within the remaining budget. Incomplete/skeleton rows get the majority
+    //    share (75%) since filling in never-seen players is still the priority; complete
+    //    rows get a guaranteed minority share (25%) regardless of how large the
+    //    incomplete backlog is, so popular players stay on a bounded refresh cadence
+    //    instead of going stale indefinitely. If the incomplete queue empties before its
+    //    slice is used, the complete queue gets the leftover time too (bounded by overBudget()).
+    const incompleteBudgetEnd = started + budgetMs * 0.75;
+    const overIncompleteBudget = () => Date.now() > incompleteBudgetEnd;
+
     let done = 0, failed = 0, processed = 0;
-    for (const id of ids) {
+    let incompleteProcessed = 0, staleCompleteProcessed = 0;
+
+    for (const id of incompleteIds) {
+      if (overIncompleteBudget() || overBudget()) break;
+      processed++; incompleteProcessed++;
+      try {
+        const r = await refreshPlayerProfile(id, idComp.get(id) ?? "PL", idTeam.get(id));
+        if (r) done++; else failed++;
+      } catch { failed++; }
+      if (paceMs) await new Promise((r) => setTimeout(r, paceMs));
+    }
+
+    for (const id of staleCompleteIds) {
       if (overBudget()) break;
-      processed++;
+      processed++; staleCompleteProcessed++;
       try {
         const r = await refreshPlayerProfile(id, idComp.get(id) ?? "PL", idTeam.get(id));
         if (r) done++; else failed++;
@@ -382,8 +405,19 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
     }
 
     const elapsedSec = Math.round((Date.now() - started) / 1000);
-    console.log(`[refresh-players] seed=${stored.length} discovered=${discovered} candidates=${ids.length} processed=${processed} ok=${done} failed=${failed} in ${elapsedSec}s`);
-    res.json({ leagues, seeded: stored.length, discovered, candidates: ids.length, processed, refreshed: done, failed, elapsedSec });
+    console.log(
+      `[refresh-players] seed=${stored.length} discovered=${discovered} ` +
+      `incomplete=${incompleteIds.length} (processed ${incompleteProcessed}) ` +
+      `staleComplete=${staleCompleteIds.length} (processed ${staleCompleteProcessed}) ` +
+      `processed=${processed} ok=${done} failed=${failed} in ${elapsedSec}s`
+    );
+    res.json({
+      leagues, seeded: stored.length, discovered,
+      candidates: incompleteIds.length + staleCompleteIds.length,
+      incompleteQueued: incompleteIds.length, incompleteProcessed,
+      staleCompleteQueued: staleCompleteIds.length, staleCompleteProcessed,
+      processed, refreshed: done, failed, elapsedSec,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message, elapsedSec: Math.round((Date.now() - started) / 1000) });
   }
