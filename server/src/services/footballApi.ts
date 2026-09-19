@@ -1085,6 +1085,14 @@ export const EURO_COMPS = ["CL", "EL", "ECL"] as const;
 // Club competitions always use getCurrentSeason() only.
 const INTERNATIONAL_COMP_CODES = new Set(["EC", "WC"]);
 
+// Continental club cups a team can be favourited/selected from while browsing that
+// competition's own standings page (e.g. Champions League) rather than their actual
+// domestic league. If one of these is passed as `domesticCode`, unioning it with
+// EURO_COMPS alone never recovers the team's real league — it's excluded entirely,
+// so only the continental cup's own fixtures show. See CLI (Copa Libertadores) note
+// in cupSchedule.ts: it's a separate, real fd.org-covered competition, not a domestic one.
+const CONTINENTAL_CLUB_COMP_CODES = new Set(["CL", "EL", "ECL", "CLI"]);
+
 export async function getTeamSchedule(teamId: string, domesticCode = "PL", forcedSeason?: number): Promise<ScheduleMatch[]> {
   if (useMock()) return [];
   const espnConfig = getEspnLeagueConfig(domesticCode);
@@ -1092,9 +1100,22 @@ export async function getTeamSchedule(teamId: string, domesticCode = "PL", force
 
   const isIntl = INTERNATIONAL_COMP_CODES.has(domesticCode);
 
+  // Self-heal a mis-tagged domesticCode: resolve the team's actual LEAGUE-type running
+  // competition from fd.org, same pattern used in getTeamLineup/getPlayer. Cheap in the
+  // common case — this hits the same cached /teams/{id} entry the squad/lineup views warm.
+  let resolvedDomesticCode = domesticCode;
+  if (!isIntl && CONTINENTAL_CLUB_COMP_CODES.has(domesticCode)) {
+    try {
+      const teamData = await apiFetch(`/teams/${teamId}`, getSquadTTL()) as any;
+      const leagueCode = (teamData?.runningCompetitions as any[] | undefined)
+        ?.find((c: any) => c.type === "LEAGUE")?.code;
+      if (leagueCode) resolvedDomesticCode = leagueCode;
+    } catch { /* keep the passed code if the lookup fails */ }
+  }
+
   const comps: string[] = isIntl
     ? [domesticCode]
-    : [...new Set([domesticCode, ...EURO_COMPS])];
+    : [...new Set([resolvedDomesticCode, domesticCode, ...EURO_COMPS])];
 
   let seasons: number[];
   if (forcedSeason) {
