@@ -71,6 +71,7 @@ export default function MainView() {
 
   useEffect(() => {
     if (selectedComp) sessionStorage.setItem("ss_comp", JSON.stringify(selectedComp));
+    else sessionStorage.removeItem("ss_comp");
   }, [selectedComp]);
 
   useEffect(() => {
