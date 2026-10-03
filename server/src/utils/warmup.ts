@@ -15,6 +15,15 @@ import { hydrateIndex, setKnownCompCodes, type TeamEntry } from "./teamIndex";
 //
 // Prefix-matched: per-team / per-season / per-competition sets too numerous to
 // enumerate here without their own extra Supabase round trip.
+//
+// MAINTENANCE WARNING: these strings (and the ones in exactKeys() below) are hand-kept
+// in sync with the cache-key formats routes/teams.ts constructs independently — nothing
+// enforces that. A version bump on a route's key (e.g. "/standings/v13/" -> "v14") here
+// compiles and passes every test, but silently stops that data from being pre-warmed;
+// cold starts just quietly regress with no alarm. This already happened once (the old
+// "/teams/v1/{CODE}" prefix below was dead code because it was never actually added to
+// this list). When you change a cache key's format in routes/teams.ts, grep this file
+// for the old prefix/key and update it here too.
 const WARM_PREFIXES = [
   "/team-lineup/v3/",
   "/standings/v5/",     // past-season standings (1-year TTL)
@@ -59,38 +68,40 @@ export function warmL1Cache(): void {
       let count = 0;
       const byPath = new Map<string, { data: unknown; expires_at: string }>();
 
-      // Exact keys first, as their OWN query with no `.limit()` exposure. This small,
-      // fixed-size set (competitions, live-matches, the team index, 3 fixture windows)
-      // must never be at the mercy of the much larger prefix-matched set's row count —
-      // with a single combined query and an arbitrary (unordered) cap, a surge of rows
-      // in the prefix set (e.g. many /team-lineup/v3/ entries after heavy traffic) could
-      // silently push /team-index/v1 itself out of the truncated result.
+      // Two independent queries issued in parallel (not sequentially — this is a
+      // cold-start latency path, so an extra serial round trip here works against the
+      // whole point of this function):
+      //
+      // 1. Exact keys, with no `.limit()` exposure. This small, fixed-size set
+      //    (competitions, live-matches, the team index, 3 fixture windows) must never
+      //    be at the mercy of the much larger prefix-matched set's row count — with a
+      //    single combined query and an arbitrary (unordered) cap, a surge of rows in
+      //    the prefix set (e.g. many /team-lineup/v3/ entries after heavy traffic)
+      //    could silently push /team-index/v1 itself out of the truncated result.
+      // 2. Prefix-matched: per-team / per-season / per-competition sets too numerous to
+      //    enumerate without their own extra Supabase round trip per key. Capped, since
+      //    these sets grow with traffic (more teams/seasons visited over time) — losing
+      //    a few of these only means slightly fewer teams pre-warmed, not a correctness gap.
       const exact = exactKeys();
-      const { data: exactData, error: exactError } = await getClient()
-        .from("api_cache")
-        .select("path, data, expires_at")
-        .in("path", exact);
+      const [exactResult, prefixResult] = await Promise.all([
+        getClient().from("api_cache").select("path, data, expires_at").in("path", exact),
+        getClient()
+          .from("api_cache")
+          .select("path, data, expires_at")
+          .or(WARM_PREFIXES.map((p) => `path.like.${p}%`).join(","))
+          .limit(500),
+      ]);
 
-      if (exactError) {
-        console.error("[warmup] Exact-key query failed:", exactError.message);
+      if (exactResult.error) {
+        console.error("[warmup] Exact-key query failed:", exactResult.error.message);
       } else {
-        for (const row of exactData ?? []) byPath.set(row.path as string, row);
+        for (const row of exactResult.data ?? []) byPath.set(row.path as string, row);
       }
 
-      // Prefix-matched: per-team / per-season / per-competition sets too numerous to
-      // enumerate without their own extra Supabase round trip per key. Capped, since
-      // these sets grow with traffic (more teams/seasons visited over time) — losing a
-      // few of these only means slightly fewer teams pre-warmed, not a correctness gap.
-      const { data: prefixData, error: prefixError } = await getClient()
-        .from("api_cache")
-        .select("path, data, expires_at")
-        .or(WARM_PREFIXES.map((p) => `path.like.${p}%`).join(","))
-        .limit(500);
-
-      if (prefixError) {
-        console.error("[warmup] Prefix query failed:", prefixError.message);
+      if (prefixResult.error) {
+        console.error("[warmup] Prefix query failed:", prefixResult.error.message);
       } else {
-        for (const row of prefixData ?? []) byPath.set(row.path as string, row);
+        for (const row of prefixResult.data ?? []) byPath.set(row.path as string, row);
       }
 
       for (const [path, row] of byPath) {

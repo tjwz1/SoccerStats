@@ -131,10 +131,19 @@ async function doFetch(path: string, ttlMs?: number): Promise<unknown> {
         (data as any).matches.some((m: any) =>
           new Date(m.utcDate).getTime() > now && (!m.homeTeam?.name || !m.awayTeam?.name)
         );
-      // waitUntil (not awaited): takes one Supabase round trip off every cold upstream
-      // fetch's response time without risking the write — the memory cache (inside
-      // setCached) is still written synchronously before this returns.
-      waitUntil(setCached(path, data, hasTBDUpcoming ? Math.min(ttlMs ?? 60_000, 60_000) : ttlMs));
+      const cacheWrite = setCached(path, data, hasTBDUpcoming ? Math.min(ttlMs ?? 60_000, 60_000) : ttlMs);
+      if (process.env.VERCEL) {
+        // waitUntil (not awaited): takes one Supabase round trip off every cold upstream
+        // fetch's response time without risking the write — the memory cache (inside
+        // setCached) is still written synchronously before this returns. waitUntil is a
+        // no-op outside a Vercel invocation, so off-Vercel callers still await below —
+        // a one-shot script (e.g. check-squad-overlaps.ts) that calls process.exit()
+        // right after its main() resolves would otherwise race this write and drop it,
+        // since nothing there keeps the process alive the way Vercel's runtime does.
+        waitUntil(cacheWrite);
+      } else {
+        await cacheWrite;
+      }
       return data;
     }
     throw new Error("API error 429: Too Many Requests");
