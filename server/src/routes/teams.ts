@@ -47,7 +47,10 @@ async function serveWithSWR<T>(
     return;
   }
   const fresh = await fetch();
-  if (shouldCache(fresh)) setCached(key, fresh, ttlMs);
+  // waitUntil (not a bare un-awaited call): same reasoning as the stale-refresh branch
+  // above — without it, the write can be lost if Vercel freezes the invocation right
+  // after res.json() flushes, which is why some cold-miss rows never persisted.
+  if (shouldCache(fresh)) waitUntil(setCached(key, fresh, ttlMs));
   res.json(fresh);
 }
 import type { MatchLineupPlayer } from "../services/footballApi";
@@ -646,7 +649,10 @@ router.get("/teams/search", async (req, res) => {
       addCompToIndex(compCode, teams as any[]);
     }
     // Persist the built index to Supabase so future cold starts use fast path 2.
-    setCached(TEAM_INDEX_CACHE_KEY, exportIndexData(), TEAM_INDEX_TTL_MS).catch(() => {});
+    // waitUntil: this write was previously lost on cold instances (the persisted index
+    // had zero rows in production), forcing every cold instance's first search to rebuild
+    // the whole thing from scratch (~13 fd.org calls + prewarm + ESPN curls).
+    waitUntil(setCached(TEAM_INDEX_CACHE_KEY, exportIndexData(), TEAM_INDEX_TTL_MS).catch(() => {}));
     res.json(results.slice(0, 15));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
