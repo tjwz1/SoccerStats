@@ -1,4 +1,5 @@
 import { safeFetch as fetch } from "../utils/httpClient";
+import { waitUntil } from "@vercel/functions";
 import { exec } from "child_process";
 import { promisify } from "util";
 const execAsync = promisify(exec);
@@ -130,15 +131,20 @@ async function espnFetch(url: string, ttlMs: number): Promise<any> {
     // Consistent with the serveWithSWR pattern used throughout teams.ts.
     if (hit.stale && !revalidatingEspn.has(key)) {
       revalidatingEspn.add(key);
-      espnCurlFetch(url)
-        .then((data) => setCached(key, data, ttlMs))
-        .catch(() => {})
-        .finally(() => revalidatingEspn.delete(key));
+      // waitUntil: without it this background refresh (and its cache write) can be
+      // dropped the instant Vercel freezes the invocation, same class of bug as the
+      // SWR refresh in routes/teams.ts.
+      waitUntil(
+        espnCurlFetch(url)
+          .then((data) => setCached(key, data, ttlMs))
+          .catch(() => {})
+          .finally(() => revalidatingEspn.delete(key))
+      );
     }
     return hit.data;
   }
   const data = await espnCurlFetch(url);
-  setCached(key, data, ttlMs).catch(() => {});
+  waitUntil(setCached(key, data, ttlMs).catch(() => {}));
   return data;
 }
 

@@ -1,5 +1,6 @@
 import fetch from "node-fetch";
 import https from "https";
+import { waitUntil } from "@vercel/functions";
 import { MOCK_COMPETITIONS, MOCK_TEAMS, MOCK_LINEUP, MOCK_PLAYER_STATS } from "./mockData";
 import { fetchPhotos } from "./theSportsDb";
 import { fetchFplPhotos } from "./fplPhotos";
@@ -130,7 +131,10 @@ async function doFetch(path: string, ttlMs?: number): Promise<unknown> {
         (data as any).matches.some((m: any) =>
           new Date(m.utcDate).getTime() > now && (!m.homeTeam?.name || !m.awayTeam?.name)
         );
-      await setCached(path, data, hasTBDUpcoming ? Math.min(ttlMs ?? 60_000, 60_000) : ttlMs);
+      // waitUntil (not awaited): takes one Supabase round trip off every cold upstream
+      // fetch's response time without risking the write — the memory cache (inside
+      // setCached) is still written synchronously before this returns.
+      waitUntil(setCached(path, data, hasTBDUpcoming ? Math.min(ttlMs ?? 60_000, 60_000) : ttlMs));
       return data;
     }
     throw new Error("API error 429: Too Many Requests");

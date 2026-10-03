@@ -1,66 +1,119 @@
 import { getClient } from "../db/supabase";
 import { warmMemCache } from "../db/apiCache";
-import type { TeamEntry } from "./teamIndex";
-import { buildTeamIndex, setKnownCompCodes } from "./teamIndex";
+import { hydrateIndex, setKnownCompCodes, type TeamEntry } from "./teamIndex";
 
 // On cold start, batch-load frequently-accessed cache entries from Supabase into the
 // in-memory cache so the first real request doesn't pay a Supabase round-trip on top
-// of the fd.org call. Also builds the in-memory team search index. Fire-and-forget.
+// of the fd.org call. Also hydrates the in-memory team search index. Fire-and-forget.
+//
+// Deliberately loads STALE rows too (no `expires_at` filter): a stale row still lets
+// serveWithSWR answer instantly while refreshing in the background, whereas a missing
+// row blocks the request on a live upstream fetch. This is the same safety net the
+// (separately broken) daily purge cron accidentally provides today by never deleting
+// anything — this just targets it at the keys that actually matter for load time
+// instead of leaving it to chance which rows happen to still be around.
+//
+// Prefix-matched: per-team / per-season / per-competition sets too numerous to
+// enumerate here without their own extra Supabase round trip.
 const WARM_PREFIXES = [
-  "/competitions",
   "/team-lineup/v3/",
-  "/standings/v5/",
-  "/standings/v9/",
-  "/competition-fixtures/v1/",
+  "/standings/v5/",     // past-season standings (1-year TTL)
+  "/standings/v13/",    // current-season standings — sidebar/standings page
   "/scorers/v5/",
+  "/live-scorers/v2/",  // sidebar stat leaders
+  "/competition-fixtures/v1/",
   "/bracket/v4/",
   "/competition-seasons/v3/",
-  "/espn/",
-  "/team-index/v1",
   "team-news-digest:",
+  "team-news:",
 ];
+
+// Exact singleton/date-computed keys. `/competitions/v1` replaces the old bare
+// `/competitions` prefix, which incidentally matched ~190 large legacy raw fd.org rows
+// (e.g. `/competitions/PL/matches?season=...&limit=500`, ~390 KB each) that nothing
+// here ever reads — that was the bulk of the old warm-up's ~14.5 MB payload. The bare
+// `/espn/` prefix (660-930 KB rows) is dropped for the same reason.
+function exactKeys(): string[] {
+  const now = new Date();
+  const monthStart = (offset: number) => {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
+    return d.toISOString().slice(0, 10);
+  };
+  return [
+    "/competitions/v1",
+    "/live-matches",
+    "/team-index/v1",
+    // Previous, current and next month's fixture window — covers the home calendar
+    // across a month rollover without waiting for a user to trigger the miss.
+    `/fixtures/v1/${monthStart(-1)}/${monthStart(0)}`,
+    `/fixtures/v1/${monthStart(0)}/${monthStart(1)}`,
+    `/fixtures/v1/${monthStart(1)}/${monthStart(2)}`,
+  ];
+}
 
 export function warmL1Cache(): void {
   if (!process.env.SUPABASE_URL) return; // no Supabase configured — skip
 
   (async () => {
     try {
-      const now = new Date().toISOString();
-      const { data } = await getClient()
+      let count = 0;
+      const byPath = new Map<string, { data: unknown; expires_at: string }>();
+
+      // Exact keys first, as their OWN query with no `.limit()` exposure. This small,
+      // fixed-size set (competitions, live-matches, the team index, 3 fixture windows)
+      // must never be at the mercy of the much larger prefix-matched set's row count —
+      // with a single combined query and an arbitrary (unordered) cap, a surge of rows
+      // in the prefix set (e.g. many /team-lineup/v3/ entries after heavy traffic) could
+      // silently push /team-index/v1 itself out of the truncated result.
+      const exact = exactKeys();
+      const { data: exactData, error: exactError } = await getClient()
         .from("api_cache")
         .select("path, data, expires_at")
-        .gt("expires_at", now)
+        .in("path", exact);
+
+      if (exactError) {
+        console.error("[warmup] Exact-key query failed:", exactError.message);
+      } else {
+        for (const row of exactData ?? []) byPath.set(row.path as string, row);
+      }
+
+      // Prefix-matched: per-team / per-season / per-competition sets too numerous to
+      // enumerate without their own extra Supabase round trip per key. Capped, since
+      // these sets grow with traffic (more teams/seasons visited over time) — losing a
+      // few of these only means slightly fewer teams pre-warmed, not a correctness gap.
+      const { data: prefixData, error: prefixError } = await getClient()
+        .from("api_cache")
+        .select("path, data, expires_at")
         .or(WARM_PREFIXES.map((p) => `path.like.${p}%`).join(","))
-        .limit(600);
+        .limit(500);
 
-      let count = 0;
-      const teamsByComp = new Map<string, TeamEntry[]>();
-      let competitionCodes: string[] = [];
+      if (prefixError) {
+        console.error("[warmup] Prefix query failed:", prefixError.message);
+      } else {
+        for (const row of prefixData ?? []) byPath.set(row.path as string, row);
+      }
 
-      for (const row of data ?? []) {
-        const path = row.path as string;
-        warmMemCache(path, row.data, new Date(row.expires_at as string).getTime());
+      for (const [path, row] of byPath) {
+        warmMemCache(path, row.data, new Date(row.expires_at).getTime());
         count++;
-
-        // Extract competition codes from the competitions list for index completeness tracking
-        if (path === "/competitions/v1" && Array.isArray(row.data)) {
-          competitionCodes = (row.data as any[]).map((c) => c.code).filter(Boolean);
-        }
-
-        // Collect team lists to build search index without a second Supabase query
-        const m = path.match(/^\/teams\/v1\/([A-Z0-9]+)$/);
-        if (m && Array.isArray(row.data)) {
-          teamsByComp.set(m[1], row.data as TeamEntry[]);
-        }
       }
 
       if (count > 0) console.log(`[warmup] Pre-warmed ${count} L1 cache entries from Supabase`);
 
-      if (competitionCodes.length > 0) setKnownCompCodes(competitionCodes);
+      // Hydrate the search index straight from the persisted /team-index/v1 row — the
+      // same source the search route's own fast path (routes/teams.ts) reads from on a
+      // cold miss. (The previous version tried to rebuild this from /teams/v1/{CODE}
+      // rows, a prefix that was never actually in WARM_PREFIXES, so that path was dead
+      // code — this hydrates from data that is actually loaded above.)
+      const indexRow = byPath.get("/team-index/v1");
+      if (indexRow) {
+        hydrateIndex(indexRow.data as { codes: string[]; teams: Record<string, TeamEntry[]> });
+        console.log("[warmup] Hydrated team search index from persisted /team-index/v1");
+      }
 
-      if (teamsByComp.size > 0) {
-        buildTeamIndex(teamsByComp);
-        console.log(`[warmup] Built team search index from ${teamsByComp.size} competitions`);
+      const compsRow = byPath.get("/competitions/v1");
+      if (compsRow && Array.isArray(compsRow.data)) {
+        setKnownCompCodes((compsRow.data as any[]).map((c) => c.code).filter(Boolean));
       }
     } catch (e: unknown) {
       console.error("[warmup] Pre-warm failed:", (e as Error).message);

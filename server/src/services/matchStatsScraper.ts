@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { safeFetch as fetch } from "../utils/httpClient";
 import { getCached, setCached, FOREVER_TTL_MS } from "../db/apiCache";
+import { waitUntil } from "@vercel/functions";
 
 const execAsync = promisify(exec);
 
@@ -914,7 +915,10 @@ export async function getMatchGoalEvents(
   // Cache in memory regardless of count; persist to Supabase for finished matches with goals.
   cappedSet(goalsCache, matchId, { data: goals, fetchedAt: Date.now() }, GOALS_CACHE_MAX);
   if (!isLive && matchId > 0 && goals.length > 0) {
-    setCached(`/espn-goals/${matchId}`, goals, FOREVER_TTL_MS);
+    // waitUntil: this is a permanent (FOREVER_TTL) write feeding live-scorers' per-match
+    // goal-event fan-out for cup/international competitions; losing it means the same
+    // finished match gets re-scraped from ESPN on every future cold miss.
+    waitUntil(setCached(`/espn-goals/${matchId}`, goals, FOREVER_TTL_MS));
   }
   return goals;
 }
