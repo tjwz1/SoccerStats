@@ -41,6 +41,7 @@ PORT=3001
 - Hover tooltip shows current-season stats; click opens a slide-in panel with career history
 - Server caches responses in-memory for 5 minutes to stay within the free tier rate limit
 - Mock data is returned when `FOOTBALL_API_KEY` is not set, so the UI works without an API key during development
+- A scheduled GitHub Actions warmer (`.github/workflows/warm-cache-{a,b,c}.yml`, logic in `.github/scripts/warm-cache.sh`) proactively keeps the home page, standings and sidebar stat-leader caches populated across real multi-day gaps in traffic, so a visit after idle time isn't a slow cold miss
 
 ## Free Tier Limits
 

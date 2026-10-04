@@ -1,0 +1,31 @@
+name: Cache Warmer — Tier B (all competitions)
+
+# Every 4h, offset from the top of the hour and from the 14:00 UTC daily smoke test:
+# standings/scorers/live-scorers for every competition in the dropdown (including
+# ESPN-backed leagues), plus the adjacent fixture-month windows. See
+# .github/scripts/warm-cache.sh for what this actually does and why.
+
+on:
+  schedule:
+    - cron: "13 1,5,9,13,17,21 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# Shared across all three tiers (warm-cache-a/b/c.yml) by using the same group name,
+# so they queue rather than run concurrently — never both hitting the API at once.
+concurrency:
+  group: warm-cache
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    env:
+      BYPASS: ${{ secrets.VERCEL_BYPASS_TOKEN }}
+      BASE: https://soccer-stats-flame.vercel.app/api
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - run: bash .github/scripts/warm-cache.sh B
