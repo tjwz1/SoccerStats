@@ -8,6 +8,8 @@ on:
   schedule:
     - cron: "*/20 * * * *"
   workflow_dispatch:
+  push:
+    branches: ["perf/phase2-scheduled-warming"]  # TEMP: pre-merge verification only, removed before merge
 
 permissions: {}
 
