@@ -1,0 +1,30 @@
+name: Cache Warmer — Tier A (light)
+
+# Every ~20 min: health keep-warm + the handful of endpoints the home page and
+# PL/PD/BL1/SA/FL1/CL sidebars need on every single visit. See
+# .github/scripts/warm-cache.sh for what this actually does and why.
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# Shared across all three tiers (warm-cache-a/b/c.yml) by using the same group name,
+# so they queue rather than run concurrently — never both hitting the API at once.
+concurrency:
+  group: warm-cache
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    env:
+      BYPASS: ${{ secrets.VERCEL_BYPASS_TOKEN }}
+      BASE: https://soccer-stats-flame.vercel.app/api
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - run: bash .github/scripts/warm-cache.sh A
