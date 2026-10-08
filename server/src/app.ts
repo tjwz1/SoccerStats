@@ -26,6 +26,18 @@ warmL1Cache();
 
 const app = express();
 
+// Trust exactly one proxy hop: Vercel's own edge network, which always sits directly in
+// front of this function and sets X-Forwarded-For itself. Without this, Express ignores
+// that header entirely and req.ip falls back to the raw socket address — which on Vercel
+// is the platform's internal address, not the real client — so express-rate-limit's
+// default per-IP keying put every visitor in one shared bucket (and logged
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request, since it detects exactly this
+// misconfiguration). A bare `true` (trust all hops) would be a real vulnerability here —
+// it lets a client forge its own X-Forwarded-For entry and pick any IP it likes, bypassing
+// the rate limit entirely. `1` trusts only the single nearest hop appended by Vercel's own
+// proxy, which a client cannot forge.
+app.set("trust proxy", 1);
+
 // Security headers
 app.use(helmet({ contentSecurityPolicy: false }));
 
