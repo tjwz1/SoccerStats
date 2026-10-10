@@ -7,10 +7,11 @@ import { safeFetch as fetch } from "../utils/httpClient";
 // so the fallback is a second free Flash model, not Pro. Callers should treat any
 // throw as "fall back to the heuristic digest".
 
-// 3.5-flash is primary because 3.6-flash has been returning 503 / timing out
-// frequently on the free tier; revisit once it stabilises. Both are free-tier.
-const GEMINI_MODEL_PRIMARY = "gemini-3.5-flash";
-const GEMINI_MODEL_FALLBACK = "gemini-3.6-flash";
+// gemini-3.5-flash was deprecated; Google's guidance is to switch to 3.6-flash.
+// Fallback is 3.5-flash-lite, a distinct model (not just a retry of primary) that's
+// also still free-tier and current per Google's own model docs.
+const GEMINI_MODEL_PRIMARY = "gemini-3.6-flash";
+const GEMINI_MODEL_FALLBACK = "gemini-3.5-flash-lite";
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
 // Thrown on HTTP 429 / 5xx / empty candidates / parse failure so summarizeNews can
