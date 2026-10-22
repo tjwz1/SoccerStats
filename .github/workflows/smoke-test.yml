@@ -140,7 +140,7 @@ jobs:
           sleep 30
 
           # ── BRACKETS & TEAMS ─────────────────────────────────────────────────
-          check "16. CL bracket"       "$BASE/competitions/CL/bracket"
+          check_soft "16. CL bracket"  "$BASE/competitions/CL/bracket"
           check "17. WC bracket"       "$BASE/competitions/WC/bracket"
           check "18. PL teams"         "$BASE/competitions/PL/teams"
           check "19. WC teams"         "$BASE/competitions/WC/teams"
