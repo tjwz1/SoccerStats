@@ -31,6 +31,15 @@ function stripNonContent(html: string): string {
     .replace(/<link\b[^>]*>/gi, "");
 }
 
+// Last time a block signal was seen, so the bulk admin refresh job can detect an
+// active block and stop early instead of continuing to retry a host that's
+// already challenging every request. Does not change live single-player fetch
+// behavior at all — those keep retrying every time, same as before.
+let tmLastBlockedAt = 0;
+export function getTmLastBlockedAt(): number {
+  return tmLastBlockedAt;
+}
+
 async function tmFetch(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
@@ -38,7 +47,11 @@ async function tmFetch(url: string): Promise<string | null> {
       signal: AbortSignal.timeout(8_000),
       redirect: "follow",
     });
-    if (res.status === 403 || res.status === 429) {
+    // AWS WAF's challenge is HTTP 202 with an empty body and this header — 202
+    // passes res.ok, so without this check a block was silently read as "page
+    // loaded, zero results," indistinguishable from a genuine no-match.
+    if (res.status === 403 || res.status === 429 || res.headers.get("x-amzn-waf-action") === "challenge") {
+      tmLastBlockedAt = Date.now();
       console.warn(`[transfermarkt] Blocked (${res.status}) for ${url}`);
       return null;
     }
@@ -48,6 +61,7 @@ async function tmFetch(url: string): Promise<string | null> {
     }
     const text = await res.text();
     if (text.includes("cf-browser-verification") || text.includes("Just a moment")) {
+      tmLastBlockedAt = Date.now();
       console.warn(`[transfermarkt] Cloudflare challenge for ${url}`);
       return null;
     }

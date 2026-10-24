@@ -1041,6 +1041,14 @@ router.get("/teams/:id/schedule", async (req, res) => {
     const assembledKey = `/team-schedule-full/v2/${req.params.id}/${domestic}${season ? `/${season}` : ""}`;
     const ASSEMBLED_TTL = 30 * 60 * 1000; // 30 min — aligned with SCHEDULE_TTL_MS in footballApi
 
+    // cacheWhen.nonEmpty alone let a transient fd.org failure (empty fdMatches, e.g. a 429)
+    // permanently poison this cache: a lone cup match still makes the *merged* array
+    // non-empty, so the bad 1-match result passed the check, got cached, and then kept
+    // reproducing itself on every SWR revalidation since nothing ever invalidated it —
+    // confirmed in production (Man United, Tottenham both stuck this way for weeks).
+    // Track the real league-source count separately so caching requires fd.org itself to
+    // have actually returned something, regardless of how small/large the cup-match merge is.
+    let fdMatchCount = 0;
     await serveWithSWR(res, assembledKey, ASSEMBLED_TTL,
       async () => {
         const [fdMatches, cupMatches] = await Promise.all([
@@ -1061,6 +1069,7 @@ router.get("/teams/:id/schedule", async (req, res) => {
             return [];
           })(),
         ]);
+        fdMatchCount = fdMatches.length;
 
         const seen = new Set<number>(fdMatches.map((m) => m.id));
         const merged = [...fdMatches];
@@ -1074,7 +1083,7 @@ router.get("/teams/:id/schedule", async (req, res) => {
 
         return merged;
       },
-      cacheWhen.nonEmpty
+      () => fdMatchCount > 0
     );
   } catch (e: any) {
     res.status(500).json({ error: e.message });

@@ -40,14 +40,39 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
   return results;
 }
 
+// Last time a block signal was seen, so the bulk admin refresh job can detect an
+// active block and stop early. Does not change live single-player fetch behavior —
+// those keep retrying every time, same as before.
+let ssLastBlockedAt = 0;
+export function getSsLastBlockedAt(): number {
+  return ssLastBlockedAt;
+}
+
 async function ssFetch<T>(path: string): Promise<T | null> {
   try {
+    // No User-Agent: a spoofed browser UA (previously a hardcoded "Chrome/136..."
+    // string) is what SofaScore's bot detection actually flags — confirmed directly
+    // against the live API, varying one header at a time. A bare request, or one with
+    // only Referer, passes every time; adding the fake-Chrome UA back reproduces the
+    // block instantly, on any network, via curl or node-fetch alike. Keep Referer
+    // (harmless) but never re-add a spoofed User-Agent here.
+    //
+    // No -f: the challenge response is HTTP 403 with a small JSON body
+    // ({"error":{"code":403,"reason":"challenge"}}), not an empty one — -f would
+    // discard that body on any HTTP error, making a block indistinguishable from
+    // every other curl failure.
     const { stdout } = await execAsync(
-      `curl -sf --max-time 12 -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36" -H "Referer: https://www.sofascore.com/" "${SS_BASE}${path}"`,
+      `curl -s --max-time 12 -H "Referer: https://www.sofascore.com/" "${SS_BASE}${path}"`,
       { timeout: 15000 }
     );
     if (!stdout) return null;
-    return JSON.parse(stdout) as T;
+    const parsed = JSON.parse(stdout);
+    if (parsed?.error?.code === 403) {
+      ssLastBlockedAt = Date.now();
+      console.warn(`[ssCareer] Blocked (403 ${parsed.error.reason ?? "?"}) for ${path}`);
+      return null;
+    }
+    return parsed as T;
   } catch (e) {
     console.warn(`[ssCareer] Fetch error: ${(e as Error).message}`);
     return null;

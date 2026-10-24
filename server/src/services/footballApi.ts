@@ -2078,7 +2078,15 @@ export async function getTopScorers(
 ): Promise<{ goals: FdStatLeader[]; assists: FdStatLeader[] }> {
   if (useMock()) return { goals: [], assists: [] };
   const espnConfig = getEspnLeagueConfig(competitionCode);
-  if (espnConfig) return getEspnScorers(espnConfig, season);
+  if (espnConfig) {
+    const { goals, assists } = await getEspnScorers(espnConfig, season);
+    // Same id-collision risk as getTeamLineup's ESPN branch: the raw ESPN athlete id is
+    // needed internally (getEspnScorers is also used by getTeamLineup to join stats onto
+    // squad players by that id), but must never reach the client as `player.id` — it gets
+    // treated as an fd.org person id downstream and can collide with an unrelated player.
+    const stripId = (l: FdStatLeader): FdStatLeader => ({ ...l, player: { ...l.player, id: 0 } });
+    return { goals: goals.map(stripId), assists: assists.map(stripId) };
+  }
 
   const isIntl = INTERNATIONAL_COMP_CODES.has(competitionCode);
   const seasonYear = season ?? (isIntl ? new Date().getFullYear() : getCurrentSeason());
@@ -2516,10 +2524,17 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     }
   })().catch(() => {});
 
+  // ESPN athlete ids and fd.org person ids are different, unrelated numbering spaces that
+  // can coincidentally collide (confirmed live: an ESPN id landed on an unrelated real
+  // fd.org player's profile). The client/player route treats any numeric id as an fd.org
+  // id, so an ESPN-sourced id must never be exposed as `id` — same "no real id" convention
+  // already used for Transfermarkt-supplemented players (id: 0, non-clickable client-side).
+  // espnAthleteId is kept alongside for a future identity-crosswalk to consume.
   function mapBenchPlayer(p: any) {
     const role = getRole(p.position) ?? "CM";
     return {
-      id: p.id,
+      id: isEspnComp ? 0 : p.id,
+      ...(isEspnComp ? { espnAthleteId: p.id } : {}),
       name: p.name,
       position: broadPosition(role),
       role,
@@ -2537,7 +2552,8 @@ export async function getTeamLineup(teamId: string, competitionCode?: string) {
     competitionCode: compCode ?? null,
     formation: formationString(xi),
     starters: xi.map(({ player: p, role }) => ({
-      id: p.id,
+      id: isEspnComp ? 0 : p.id,
+      ...(isEspnComp ? { espnAthleteId: p.id } : {}),
       name: p.name,
       position: broadPosition(role),
       role,

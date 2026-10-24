@@ -13,8 +13,8 @@ import { deleteCached, deleteCachedByPrefix } from "./db/apiCache";
 import { getTeamSquadPlayers, getTeams } from "./services/footballApi";
 import { refreshPlayerProfile, listStoredProfiles, saveSkeletonProfiles } from "./services/playerStore";
 import { fetchPlayerWikiData } from "./services/wikiStats";
-import { fetchSofaScoreCareer } from "./services/sofaScoreCareer";
-import { scrapeTransfermarktPlayerStats, type TmCareerRow } from "./services/transfermarktScraper";
+import { fetchSofaScoreCareer, getSsLastBlockedAt } from "./services/sofaScoreCareer";
+import { scrapeTransfermarktPlayerStats, getTmLastBlockedAt, type TmCareerRow } from "./services/transfermarktScraper";
 import { setWikiStats, getWikiStats, clearPlayerCareer, type WikiCareerRow } from "./db/wikiCareerCache";
 import { setWikiTrophies, getWikiTrophies } from "./db/wikiTrophyCache";
 import { requireAdmin } from "./utils/auth";
@@ -393,11 +393,27 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
     const incompleteBudgetEnd = started + budgetMs * 0.75;
     const overIncompleteBudget = () => Date.now() > incompleteBudgetEnd;
 
+    // TM and SofaScore are the only real career-data sources this job needs
+    // (fd.org/wiki/worldfootball being hit per player is comparatively harmless);
+    // once either has challenged a request, continuing to grind through hundreds
+    // more players just keeps hammering an already-blocked host for no data, and
+    // risks extending the block. 1h is deliberately conservative here — this bulk
+    // job (cron or manual) can afford to stop early and pick back up on its next
+    // run; live single-player page reads are untouched by this and keep retrying
+    // every time, since a one-off visitor isn't the thing that caused the block.
+    const BLOCK_COOLDOWN_MS = 60 * 60 * 1000;
+    const recentlyBlocked = () => {
+      const since = Math.max(getTmLastBlockedAt(), getSsLastBlockedAt());
+      return since > 0 && Date.now() - since < BLOCK_COOLDOWN_MS;
+    };
+
     let done = 0, failed = 0, processed = 0;
     let incompleteProcessed = 0, staleCompleteProcessed = 0;
+    let stoppedForBlock = false;
 
     for (const id of incompleteIds) {
       if (overIncompleteBudget() || overBudget()) break;
+      if (recentlyBlocked()) { stoppedForBlock = true; break; }
       processed++; incompleteProcessed++;
       try {
         const r = await refreshPlayerProfile(id, idComp.get(id) ?? "PL", idTeam.get(id));
@@ -408,12 +424,17 @@ app.get("/api/admin/refresh-players", adminLimiter, requireAdmin, async (req, re
 
     for (const id of staleCompleteIds) {
       if (overBudget()) break;
+      if (recentlyBlocked()) { stoppedForBlock = true; break; }
       processed++; staleCompleteProcessed++;
       try {
         const r = await refreshPlayerProfile(id, idComp.get(id) ?? "PL", idTeam.get(id));
         if (r) done++; else failed++;
       } catch { failed++; }
       if (paceMs) await new Promise((r) => setTimeout(r, paceMs));
+    }
+
+    if (stoppedForBlock) {
+      console.log(`[refresh-players] stopped early: TM/SofaScore blocked within the last hour`);
     }
 
     const elapsedSec = Math.round((Date.now() - started) / 1000);
