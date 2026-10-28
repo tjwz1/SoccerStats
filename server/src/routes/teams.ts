@@ -339,7 +339,11 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
 
     // Helpers must be available for both the finished-assist pass and the live-match pass.
     function normName(s: string): string {
-      return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z ]/g, " ").trim().replace(/\s+/g, " ");
+      // ß has no NFD accent decomposition, so without this it's silently dropped instead
+      // of becoming "ss" — e.g. "Pascal Groß" was normalizing to "pascal gro", never
+      // matching ESPN's ASCII "Pascal Gross" via the safe surname rule at all (it was
+      // only ever matching through the removed first-name-substring rule below).
+      return s.toLowerCase().replace(/ß/g, "ss").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z ]/g, " ").trim().replace(/\s+/g, " ");
     }
     function lastToken(s: string): string {
       const parts = normName(s).split(" ");
@@ -354,6 +358,29 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
         if (tok.length >= 5 && nb.includes(tok)) return true;
       }
       return false;
+    }
+    // Player names need a stricter rule than namesMatch's loose "any shared 5+ char
+    // token" check, which is fine for team-name variants (e.g. "Man United" vs "Man
+    // United FC") but dangerously loose across a whole league's worth of player names.
+    // A league-wide scan found it cross-matches on a shared FIRST name alone (e.g.
+    // "Nicolò Fagioli" vs "Nicolò Barella", "Amine Harit" vs "Amine Gouiri") or a token
+    // that's a surname for one player and a first name for another (fd.org's "Jonathan
+    // David" matching ESPN's "Dávid Hancko" via the shared token "david") — dropping that
+    // rule here fixes those. But even an exact-surname-token match alone isn't safe:
+    // common surnames (López, García, Pérez, Hernández...) collide across many different
+    // players in the same league — confirmed live, this cross-matched "Unai López" (Rayo
+    // Vallecano) with "Fermín López" (Barcelona), borrowing Fermín's team onto Unai's
+    // entry. So a surname-only match additionally requires the team to agree (using the
+    // same loose namesMatch for team names, since fd.org/ESPN spell clubs differently).
+    // An exact full-name match skips the team check — two different players sharing an
+    // entire name is rare enough not to need it, and some callers don't have team info.
+    function playerNamesMatch(a: string, b: string, teamA?: string, teamB?: string): boolean {
+      const na = normName(a), nb = normName(b);
+      if (na === nb) return true;
+      const la = lastToken(a), lb = lastToken(b);
+      if (la !== lb || la.length < 4) return false;
+      if (teamA === undefined || teamB === undefined) return false;
+      return namesMatch(teamA, teamB);
     }
 
     // For international/continental competitions, build a complete assists leaderboard from
@@ -386,7 +413,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
     // internally consistent count/order), fd.org fills in the id/bio for anyone it also has.
     function mergeEspnAssists(espn: any[], fd: any[]): any[] {
       return espn.map((e) => {
-        const match = fd.find((f) => namesMatch(f.player.name, e.player.name));
+        const match = fd.find((f) => playerNamesMatch(f.player.name, e.player.name, f.team?.name, e.team?.name));
         if (!match) return e;
         return {
           ...e,
@@ -467,7 +494,7 @@ router.get("/competitions/:code/live-scorers", async (req, res) => {
       const merged = base.map((r) => {
         let liveAdd = 0;
         for (const [k, lv] of liveMap) {
-          if (namesMatch(r.player.name, k)) {
+          if (playerNamesMatch(r.player.name, k, r.team?.name, lv.teamName)) {
             liveAdd = field === "goals" ? lv.goals : lv.assists;
             usedKeys.add(k);
             break;
