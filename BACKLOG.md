@@ -61,7 +61,7 @@ Also fixed a related gap surfaced by this: the local smoke-test hook (`.claude/s
 
 ---
 
-### Internal player-id layer with confidence-ranked source matching (Phase A starting 2026-10-28)
+### Internal player-id layer with confidence-ranked source matching (Phase A complete 2026-10-29)
 
 **Current state (analysed 2026-09-18):** the fd.org person id is the anchor and PK everywhere; every other source (SofaScore, Transfermarkt, TheSportsDB, FPL, Wikipedia, worldfootball, ESPN) is resolved by name search plus a per-source heuristic ladder with no confidence score. Known consequences: SofaScore falls back to the first search result unconditionally and caches it 30 days; `players.tm_ref` is pinned forever without recording how it matched; photos are keyed by raw name and ESPN match stats by bare surname (namesakes collide); ESPN athlete ids leak into the fd.org id field; TM-only squad players (`id: 0`) can never acquire data; nine near-duplicate name normalisers exist and none handles Jr/II suffixes or non-Latin names.
 
@@ -71,7 +71,9 @@ Also fixed a related gap surfaced by this: the local smoke-test hook (`.claude/s
 
 **Separately, already fixed and live (not part of this project):** a related but distinct bug in `mergeEspnAssists`'s player-name matching (`routes/teams.ts`) — matched players across sources on any shared surname or 5+-char name fragment with no team-awareness, confirmed cross-matching real different players (e.g. "Unai López" vs "Fermín López" in LaLiga's assist leaderboard) across all five big-5 leagues. Fixed 2026-10-28 by splitting out a stricter team-gated `playerNamesMatch`; verified across all big-5 leagues with no remaining false positives.
 
-**When to pick up:** Phase A (migration + scoring module + big-5-only local backfill, `IDENTITY_MODE=off`, no live behavior change) starting now. Phases B (shadow) and C (cutover, where ESPN support actually lands) follow once Phase A is verified. Feasibility verdict: feasible with existing scaffolding, no new services. Full analysis and plan (Parts 1 to 3): `C:\Users\tjzha\.claude\plans\purring-sparking-teacup.md` (section "Appendix A: Player Identity Layer").
+**Phase A results (2026-10-29):** `identity-backfill.ts --apply` run against all big-5 leagues — 2,665 `player_identity` rows, 7,453 `player_source_ref` rows (every player's fd.org ref at 1.0, plus 2,344 Transfermarkt and 2,454 SofaScore legacy refs imported at 0.70/`auto_low`). **10 pre-existing data conflicts found and safely skipped** rather than silently imported — two different fd.org players had been matched to the same TM or SofaScore id by the old ad hoc heuristic, e.g. fd.org ids 99775 ("Jeremy Doku") and 215510 ("Jeremy") both carried `tm_ref.id = 486049`, and fd.org id 3313 ("John Stones") conflicted with another player on *both* TM and SofaScore. These are exactly the kind of cross-player mismatch this project exists to catch; worth a manual look via the (not yet built) review queue once Phase B's admin endpoints exist. Backfill script also needed two bug fixes mid-run: a lock file against overlapping runs, and per-ref try/catch on the (source, external_id) unique constraint instead of crashing the whole batch on the first conflict (both committed). Still fully inert — `IDENTITY_MODE=off`, nothing in the live app reads any of this yet.
+
+**When to pick up:** Phase B (shadow mode — wire scrapers to consult the resolver, log agreement vs. legacy without changing any response) and Phase C (cutover, where ESPN support actually lands) are next, whenever picked up. Full analysis and plan (Parts 1 to 3): `C:\Users\tjzha\.claude\plans\purring-sparking-teacup.md` (section "Appendix A: Player Identity Layer").
 
 ---
 
