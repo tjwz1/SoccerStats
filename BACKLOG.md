@@ -49,6 +49,94 @@ Also fixed a related gap surfaced by this: the local smoke-test hook (`.claude/s
 
 ---
 
+## Deferred Features
+
+### Per-team chatbot (deferred until data cleanup is done)
+
+**Idea (2026-09-16):** an "Ask about <team>" chat on each team page that answers questions from the app's own data (squad, career stats, results/fixtures, standings, honours, news) as a first step toward a more analytical product. Analysed and planned; **feasible on the existing Gemini Flash free tier** using a single LLM call per question over a cached, compacted "team knowledge pack" (~7–9k tokens). Groq and OpenRouter free tiers were evaluated and rejected (TPM/RPD too low for that prompt size).
+
+**Decisions made:** signed-in users only (reuse `requireAuth`) with per-user + global daily caps in the `rate_limits` table; right-side slide-in drawer, not a fifth tab; architecture unchanged (one new POST route `/api/teams/:id/chat`, one new component). No new dependencies.
+
+**When to pick up:** after the player/career data is cleaned and validated — answer quality is bounded by that data. Start with phase 0 (server-only admin pack-preview endpoint `GET /api/admin/chat-pack/:id`) to see data gaps before building any UI. Full plan: `C:\Users\tjzha\.claude\plans\purring-sparking-teacup.md` (section "Appendix: Per-Team Chatbot Plan").
+
+---
+
+### Internal player-id layer with confidence-ranked source matching (Phase A starting 2026-10-28)
+
+**Current state (analysed 2026-09-18):** the fd.org person id is the anchor and PK everywhere; every other source (SofaScore, Transfermarkt, TheSportsDB, FPL, Wikipedia, worldfootball, ESPN) is resolved by name search plus a per-source heuristic ladder with no confidence score. Known consequences: SofaScore falls back to the first search result unconditionally and caches it 30 days; `players.tm_ref` is pinned forever without recording how it matched; photos are keyed by raw name and ESPN match stats by bare surname (namesakes collide); ESPN athlete ids leak into the fd.org id field; TM-only squad players (`id: 0`) can never acquire data; nine near-duplicate name normalisers exist and none handles Jr/II suffixes or non-Latin names.
+
+**Decisions made:** new surrogate internal id (bigint starting at 10,000,000, chosen so it can never collide with fd.org's ~5-digit ids or ESPN's ~6-digit athlete ids) + `player_source_ref` crosswalk with confidence/status/evidence + `player_match_candidates` review queue; big-5 fd.org squads first; high-confidence refs pinned, low-confidence fall back to today's heuristics and are queued for manual promote/reject via admin endpoints; one shared normaliser + weighted evidence scorer (name similarity, DOB, club, nationality, position, shirt, TheSportsDB `idAPIfootball` cross-ref); shadow-mode rollout behind `IDENTITY_MODE=off|shadow|on`; client keeps `/player/{fdId}` in v1.
+
+**Scope is v1 = big-5 only.** ESPN-sourced leagues (MLS, Liga MX, Scottish Premiership, Liga Argentina, J1 League, Süper Lig), UCL-only clubs, and today's TM-supplemented `id: 0` players are explicitly deferred to a later phase (Phase C "ESPN id guard" + Phase D re-key) — not a scope gap that needs rework later, since the schema (surrogate id range, `source` enum) already has room reserved for them. **Important to come back to:** until that later phase lands, ESPN-league players stay in their current stopgap state — non-clickable in the squad grid and stat leaders (fixed 2026-10-24 by zeroing their id client-side instead of letting it collide with an unrelated fd.org player — see "ESPN player-id collision" below) — so those leagues get no player pages at all in the meantime, not just unreliable ones.
+
+**Separately, already fixed and live (not part of this project):** a related but distinct bug in `mergeEspnAssists`'s player-name matching (`routes/teams.ts`) — matched players across sources on any shared surname or 5+-char name fragment with no team-awareness, confirmed cross-matching real different players (e.g. "Unai López" vs "Fermín López" in LaLiga's assist leaderboard) across all five big-5 leagues. Fixed 2026-10-28 by splitting out a stricter team-gated `playerNamesMatch`; verified across all big-5 leagues with no remaining false positives.
+
+**When to pick up:** Phase A (migration + scoring module + big-5-only local backfill, `IDENTITY_MODE=off`, no live behavior change) starting now. Phases B (shadow) and C (cutover, where ESPN support actually lands) follow once Phase A is verified. Feasibility verdict: feasible with existing scaffolding, no new services. Full analysis and plan (Parts 1 to 3): `C:\Users\tjzha\.claude\plans\purring-sparking-teacup.md` (section "Appendix A: Player Identity Layer").
+
+---
+
+### Slow first load after idle — MAIN ISSUE FIXED (2026-10-08), remaining phases deferred
+
+**Symptom (2026-09-25):** when production visits are a couple of days apart, the first load of the fixture calendar, sidebar stat leaders and standings is slow. Warm visits are fast.
+
+**Root causes found and fixed (Phase 1, merged #4):** cache writes on the cold path weren't awaited or wrapped in `waitUntil` (`serveWithSWR`, the team-index write, `doFetch`), so Vercel could drop them — the persisted team search index had 0 rows, forcing a ~13-call fd.org rebuild on every cold instance's first search. The cold-start warm-up loaded 14.5 MB of mostly irrelevant rows and missed every actual hot key (v13 standings, live-scorers, fixtures, live-matches). Both fixed; warm-up now reliably loads ~130-180 small rows and hydrates the index every time.
+
+**Proactive warming added (Phase 2, merged #5):** `.github/workflows/warm-cache-{a,b,c}.yml` + `.github/scripts/warm-cache.sh` hit the app's own core endpoints on a schedule (light/all-competitions/daily tiers), so hot rows get refreshed even with zero real traffic.
+
+**Verified against production after a real 5-day unattended gap (2026-10-08):** 100% workflow success rate since merge. Read-only Supabase check showed every tracked competition's standings/scorers/live-scorers within ~6 h of staleness (GitHub throttles the configured 20 min/4 h schedules down to an effective ~5-6 h / ~7-9 h — a platform limit, not a bug — but Tier C's daily cadence lands exactly on schedule). Live timing confirmed fast responses for in-scope endpoints. **The reported symptom is resolved.**
+
+**Phase 3 (per-request/cold-start overhead) — deferred, not pursued:**
+- Rate limiter overhead: measured negligible in Phase 0 (~100 ms or less) — ruled out per the plan's own threshold.
+- Region pin: user has already confirmed the Supabase region separately — not needed.
+- Lazy-loading the cheerio-backed scrapers (`wikiStats`, `transfermarktScraper`, `worldFootball`, `newsService`) off the cold-start path: measured locally at ~850-900 ms of module-load time (by far the largest chunk of the whole import graph), confirmed safe to defer (no top-level side effects, only `footballApi.ts` and `routes/teams.ts` import from them, only functions). **Real production savings are unknown** — the local number is inflated by `ts-node` transpilation and unbundled `node_modules` resolution, neither of which applies to Vercel's bundled deployment, and Vercel's own cold-start/Init Duration metrics weren't accessible to confirm the real figure. Left undone since Phase 1+2 already fixed the actual reported problem; this would be polish on top, not a fix for a known issue.
+
+**Separate, unrelated fix found and applied while diagnosing a side issue:** the SofaScore career scraper (`server/src/services/sofaScoreCareer.ts`) was sending a spoofed `User-Agent` that SofaScore's bot detection flagged, blocking it on every network tested — this is why the personal local player-profile prefill (`server/PREFILL.txt`) stopped making progress. Fixed locally (header removed, verified end-to-end against production: incomplete-profile count actually dropped). **Not yet committed** — this is for personal prefill use, not urgent for the app itself.
+
+**If resuming Phase 3 later:** the blocker is getting real Vercel cold-start/Init Duration numbers, which need either a Vercel Personal Access Token (vercel.com/account/tokens) for API-level log/observability access, or a plan tier that exposes Monitoring/Observability data — see conversation on 2026-10-08 for what was tried. Also revisit Phase 4 (bound goal-event fan-out, skip search prewarm) and Phase 5 (client early fetch, deferred priming, deep links), neither started.
+
+**When to pick up:** whenever the user asks for it. Full analysis, blast-radius table and verification steps: `C:\Users\tjzha\.claude\plans\purring-sparking-teacup.md` (top section, "Slow First Load After Idle").
+
+---
+
+### Feature ideas vs. FotMob/competitors (researched 2026-10-15)
+
+**Confirmed internal finding — some data is already fetched/cached but inconsistently surfaced** (cheaper than new scraping or new stats work): Champions League bracket matches show far less detail than regular schedule matches for the identical data shape (`MatchDetailModal.tsx` fetches only score+goals; `TeamSchedule.tsx`'s own match panel for the same match type also shows cards, subs, team stats, player stats, lineups, H2H — all already built). Position history chart and stat leaders only appear inside a team's own tabs, never on the competition landing page. The live ticker shows goals only, though the same response already carries cards/subs. A working SofaScore photo proxy (`GET /api/player-photo/:sofaId`) is wired up server-side but never called by the client — a latent reliability risk if SofaScore ever blocks direct browser image requests the way it already blocked the scraper.
+
+**Near-term candidates (not stats-gated):**
+1. Bracket match-detail parity with the schedule's match panel — reuse existing endpoints/components, low effort.
+2. Wire the client to the existing SofaScore photo proxy instead of raw image URLs.
+3. Player favouriting (favourites currently team-only) + a "my teams" home dashboard.
+4. PWA basics (manifest + service worker) as a prerequisite for push notifications (goal/kickoff alerts for favourite teams) — the one item with real new infrastructure, scope separately when picked up.
+
+**Hold until chatbot work begins (stats/analytical content):**
+1. Reuse position chart + stat leaders on the competition landing page, not just inside a team's own tabs.
+2. Per-match player ratings, heatmaps/shot maps, live xG, momentum graph — all need new data sourcing beyond anything currently scraped; the biggest lift here by far.
+3. Player-vs-player comparison view; predicted lineups ahead of the official one.
+4. Chatbot-adjacent, not separate work: an ML/LLM-personalized news feed and AI match previews/predictions are natural extensions of the chatbot's own Gemini infra — raise again once that exists.
+5. Not recommended: odds/betting integration (needs a paid provider, real-money adjacency disproportionate to this app's scope).
+
+**When to pick up:** feature work resumes after the chatbot (for the held items) or anytime for the near-term ones. Full detail, sourcing and file:line evidence: `C:\Users\tjzha\.claude\plans\purring-sparking-teacup.md` ("Feature & Structural Backlog Research" section).
+
+---
+
+### Structural gaps for future scaling (researched 2026-10-15)
+
+Ten findings, none yet tracked elsewhere in this file:
+1. Four tables (`api_cache`, `players`, `player_seasons`, `player_photos`) plus the `rate_limit_increment` RPC exist in production with no migration file — a fresh environment or disaster recovery can't rebuild the schema from the repo alone. (The RPC being silently missing in production for an unknown period is exactly this risk having already materialized — see the rate-limiter fix earlier this session.)
+2. Adding one new competition touches 5-6 independent hand-maintained lists across the codebase (`TEAM_IDS`, `ESPN_LEAGUES`, `COMP_CANONICAL`/`COMP_DISPLAY_NAMES`, `TM_CLUB_NAME_ALIASES`, `DOMESTIC_CUP_MAP`/`TM_CUP_LEAGUES`, the smoke-test workflow's hardcoded checks) with no single registry.
+3. Every non-fd.org source (Transfermarkt, Wikipedia, worldfootball.net, SofaScore, Google News) is an unversioned scrape with no breakage alerting — a scraper silently returning empty data looks identical to genuine absence. The SofaScore User-Agent block (broken for weeks, unnoticed) is the real-world proof.
+4. The entire backend is one Vercel function sharing one memory/time budget — user traffic and both long-running admin jobs share the same 300s ceiling; the admin route's own time-slicing logic is a workaround, not a structural fix.
+5. No CI test gate on pull requests — e2e requires a live server+client and runs manually or on the next scheduled smoke test only.
+6. No error-tracking/APM — ~126 `console.log`/`error` call sites are the entire error-visibility mechanism.
+7. Rate limiting is IP-only, never per-user; the authenticated favourites/account mutation routes have no rate limiting at all.
+8. No admin dashboard — every admin operation is a raw curl call gated by a shared secret.
+9. Every environment (local, PR previews, production) shares one Supabase database with no isolation.
+10. Root/server `package.json` dependency duplication is still manual, not structurally resolved — already caused one production deploy crash and remains a live risk for every future dependency.
+
+**When to pick up:** whenever scaling pressure (more users, more contributors, more leagues) makes one of these bite — not urgent today. Full detail: `C:\Users\tjzha\.claude\plans\purring-sparking-teacup.md` ("Feature & Structural Backlog Research" section).
+
+---
+
 ## When Real Users Arrive
 
 ### 1. Tighten Supabase Auth refresh token lifetime

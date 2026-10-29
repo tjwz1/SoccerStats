@@ -586,7 +586,7 @@ const TM_SQUAD_TTL_MS = 24 * 60 * 60 * 1000; // 24 h — squads change at most a
 
 // Maps fd.org club names → TM search queries for clubs whose names don't match TM's catalogue.
 // Only needed when fd.org uses a different canonical name than TM (prefixes, year suffixes, etc.)
-const TM_CLUB_NAME_ALIASES: Record<string, string> = {
+export const TM_CLUB_NAME_ALIASES: Record<string, string> = {
   // Serie A
   "FC Internazionale Milano": "Inter Milan",
   "ACF Fiorentina": "Fiorentina",

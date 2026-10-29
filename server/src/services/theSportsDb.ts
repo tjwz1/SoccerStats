@@ -27,7 +27,7 @@ const normalize = (s: string) =>
 
 // Extract the longest significant word (>=5 chars) from a team name, stripping
 // generic prefixes ("FC", "SC", "CF", etc.) that appear across many clubs.
-function teamKeyword(teamName: string): string {
+export function teamKeyword(teamName: string): string {
   const stripped = normalize(teamName)
     .replace(/\b(fc|sc|cf|sd|ud|rcd|rc|cd|ac|ss|sv|vfb|vfl|bsc|asc|afc|fk|nk|sk|jk|jfc|1\.)\b/g, " ")
     .trim();

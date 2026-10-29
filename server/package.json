@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "ts-node-dev --respawn src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "node --test --require ts-node/register src/services/identity/nameMatch.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.1",
@@ -26,6 +27,7 @@
     "@types/node": "^20.14.0",
     "@types/node-fetch": "^2.6.11",
     "@types/ws": "^8.18.1",
+    "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.4.5"
   }
