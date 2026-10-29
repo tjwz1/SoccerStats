@@ -62,6 +62,11 @@ export interface ScoreAndStoreResult {
   pinned: PlayerSourceRef | null;
   confidence: number;
   verdict: "auto_high" | "auto_low" | "queued" | "discarded";
+  // The resolver's actual top pick, regardless of verdict — `pinned` is only set for
+  // auto_high, but a caller logging agreement/disagreement with its own legacy pick
+  // needs to know what the resolver would have picked even when it wasn't confident
+  // enough to pin. Null only when there were zero candidates to begin with.
+  bestCandidate: { externalId: string; externalSlug?: string; name: string } | null;
 }
 
 /**
@@ -78,7 +83,7 @@ export async function scoreAndStore(
   fdId?: number
 ): Promise<ScoreAndStoreResult> {
   if (candidates.length === 0) {
-    return { pinned: null, confidence: 0, verdict: "discarded" };
+    return { pinned: null, confidence: 0, verdict: "discarded", bestCandidate: null };
   }
 
   const scored = candidates.map((c) => ({
@@ -87,11 +92,12 @@ export async function scoreAndStore(
   }));
   scored.sort((a, b) => b.result.confidence - a.result.confidence);
   const best = scored[0];
+  const bestCandidate = { externalId: best.candidate.externalId, externalSlug: best.candidate.externalSlug, name: best.candidate.name };
 
   // Never overwrite a manual decision with an automated one.
   const existing = await getActiveRef(internalId, source);
   if (existing && (existing.status === "manual_confirmed" || existing.status === "manual_rejected")) {
-    return { pinned: existing.status === "manual_confirmed" ? existing : null, confidence: best.result.confidence, verdict: best.result.status };
+    return { pinned: existing.status === "manual_confirmed" ? existing : null, confidence: best.result.confidence, verdict: best.result.status, bestCandidate };
   }
 
   if (best.result.status === "auto_high") {
@@ -105,7 +111,7 @@ export async function scoreAndStore(
       matchedBy: "scoreCandidate",
       evidence: best.result.evidence,
     });
-    return { pinned, confidence: best.result.confidence, verdict: "auto_high" };
+    return { pinned, confidence: best.result.confidence, verdict: "auto_high", bestCandidate };
   }
 
   if (best.result.status === "auto_low") {
@@ -127,7 +133,7 @@ export async function scoreAndStore(
       confidence: best.result.confidence,
       evidence: best.result.evidence,
     });
-    return { pinned: null, confidence: best.result.confidence, verdict: "auto_low" };
+    return { pinned: null, confidence: best.result.confidence, verdict: "auto_low", bestCandidate };
   }
 
   if (best.result.status === "queued") {
@@ -139,10 +145,10 @@ export async function scoreAndStore(
       confidence: best.result.confidence,
       evidence: best.result.evidence,
     });
-    return { pinned: null, confidence: best.result.confidence, verdict: "queued" };
+    return { pinned: null, confidence: best.result.confidence, verdict: "queued", bestCandidate };
   }
 
-  return { pinned: null, confidence: best.result.confidence, verdict: "discarded" };
+  return { pinned: null, confidence: best.result.confidence, verdict: "discarded", bestCandidate };
 }
 
 export async function identityExists(internalId: number): Promise<boolean> {

@@ -1,5 +1,8 @@
 import { safeFetch as fetch } from "../utils/httpClient";
+import { waitUntil } from "@vercel/functions";
 import { getPhoto, setPhoto } from "../db/photoCache";
+import { getIdentityMode, resolvePlayerIdentity, scoreAndStore } from "./identity/resolver";
+import type { CandidateAnchor } from "./identity/nameMatch";
 
 // Sliding-window rate limiter: max 20 req/60 s (TheSportsDB free tier is ~25/min)
 const REQ_TIMESTAMPS: number[] = [];
@@ -36,9 +39,39 @@ export function teamKeyword(teamName: string): string {
   return words.sort((a, b) => b.length - a.length)[0] ?? "";
 }
 
+// Phase B (identity layer, shadow mode only): scores every search candidate through the
+// identity layer and logs/stores the result, but never changes what lookupPhoto returns.
+// Already the richest candidate set in the codebase (team + a direct idAPIfootball
+// cross-reference), so scoreCandidate's crossref short-circuit should fire often here.
+async function shadowMatchTheSportsDb(
+  fdId: number,
+  anchor: CandidateAnchor,
+  players: any[],
+  legacyPick: any
+): Promise<void> {
+  const candidates = players
+    .filter((p) => p.strPlayer)
+    .map((p) => ({
+      externalId: String(p.idAPIfootball ?? p.strPlayer),
+      name: p.strPlayer as string,
+      club: (p.strTeam as string) ?? null,
+      idAPIfootball: p.idAPIfootball ? Number(p.idAPIfootball) : null,
+    }));
+  const internalId = await resolvePlayerIdentity(anchor, "fdorg", String(fdId));
+  const result = await scoreAndStore(internalId, anchor, "thesportsdb", candidates, fdId);
+  const legacyPickId = legacyPick ? String(legacyPick.idAPIfootball ?? legacyPick.strPlayer) : "none";
+  const resolverPickId = result.bestCandidate?.externalId ?? "none";
+  console.log(
+    `[identity] source=thesportsdb fdId=${fdId} name="${anchor.name}" legacyPick=${legacyPickId} ` +
+    `resolverPick=${resolverPickId} agree=${legacyPickId === resolverPickId} ` +
+    `confidence=${result.confidence.toFixed(2)} verdict=${result.verdict} candidates=${candidates.length}`
+  );
+}
+
 async function lookupPhoto(
   player: { id: number; name: string },
-  expectedTeamKey: string // pre-computed from fetchPhotos; empty string = no team check
+  expectedTeamKey: string, // pre-computed from fetchPhotos; empty string = no team check
+  anchor?: CandidateAnchor
 ): Promise<string | null> {
   const cached = await getPhoto(player.name);
   if (cached !== undefined) return cached;
@@ -87,6 +120,14 @@ async function lookupPhoto(
     const best = matched ?? nameMatch ?? unique ?? null;
     const url: string | null = best?.strCutout || best?.strThumb || null;
 
+    if (getIdentityMode() !== "off" && anchor && players.length > 0) {
+      waitUntil(
+        shadowMatchTheSportsDb(player.id, anchor, players, best).catch((e) =>
+          console.warn(`[identity] thesportsdb shadow error for fdId=${player.id}: ${(e as Error).message}`)
+        )
+      );
+    }
+
     // Only cache definitive API responses (found or confirmed not found)
     await setPhoto(player.name, url);
     return url;
@@ -98,14 +139,15 @@ async function lookupPhoto(
 
 export async function fetchPhotos(
   players: Array<{ id: number; name: string }>,
-  teamName?: string
+  teamName?: string,
+  anchors?: Record<number, CandidateAnchor>
 ): Promise<Record<number, string | null>> {
   const expectedTeamKey = teamName ? teamKeyword(teamName) : "";
   // Run all lookups concurrently — throttle() inside lookupPhoto enforces the
   // global 20 req/min rate limit so we never overwhelm TheSportsDB regardless
   // of how many teams are fetched in parallel. Cache hits skip throttle entirely.
   const results = await Promise.all(
-    players.map(async (p) => ({ id: p.id, photo: await lookupPhoto(p, expectedTeamKey) }))
+    players.map(async (p) => ({ id: p.id, photo: await lookupPhoto(p, expectedTeamKey, anchors?.[p.id]) }))
   );
   return Object.fromEntries(results.map(({ id, photo }) => [id, photo]));
 }

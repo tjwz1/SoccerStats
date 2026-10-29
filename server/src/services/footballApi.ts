@@ -12,6 +12,7 @@ import { fetchPlayerWikiData, getWcSquadFromWiki, getEcSquadFromWiki, getWcKnock
 import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTmClubSquad, resolvePlayerRef, type TmCareerRow, type TmSquadPlayer } from "./transfermarktScraper";
 import { fetchWorldFootballCareer, type WfCareerRow } from "./worldFootball";
 import { fetchSofaScoreCareer } from "./sofaScoreCareer";
+import type { CandidateAnchor } from "./identity/nameMatch";
 import type { ClubTrophy as TmClubTrophy, KnockoutStatus } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
 import {
@@ -2769,6 +2770,18 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   const currentTeamIsReliable = !!personData.currentTeam?.name && personData.currentTeam.name !== personData.nationality;
   const reliableClubName = currentTeamIsReliable ? personData.currentTeam.name : "";
 
+  // Phase B (identity layer, shadow mode only): an anchor built from fd.org's own bio
+  // fields, threaded into the scrapers below so they can score their own candidates
+  // against it alongside their existing name-only heuristic. A no-op everywhere
+  // IDENTITY_MODE is "off" (the default) — see services/identity/resolver.ts.
+  const identityAnchor: CandidateAnchor = {
+    name: personData.name,
+    dob: personData.dateOfBirth ?? null,
+    club: reliableClubName || null,
+    nationality: personData.nationality ?? null,
+    position: personData.section ?? personData.position ?? null,
+  };
+
   // The caller-supplied competition can be wrong and, once persisted to player_profiles,
   // never self-corrects (every later refresh just reuses the stored value) — e.g. a player
   // visited via a route that didn't know their real league defaults to "PL". Cross-check
@@ -2851,7 +2864,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
       ? fetchPlayerWikiData(personData.name, false, needsTrophies)
       : Promise.resolve(null),
     needsCareer || needsCurrentSeasonCups
-      ? scrapeTransfermarktPlayerStats(personData.name, reliableClubName, id).catch(() => [] as TmCareerRow[])
+      ? scrapeTransfermarktPlayerStats(personData.name, reliableClubName, id, identityAnchor).catch(() => [] as TmCareerRow[])
       : Promise.resolve([] as TmCareerRow[]),
     // TM player honours run in parallel with career stats on a trophy cache miss
     needsTrophies
@@ -2866,7 +2879,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     // Also runs when cached data is missing the current season (needsSofaRefresh) to pick up
     // new rows from ongoing tournaments (e.g. World Cup, current league season).
     needsCareer || needsSofaRefresh
-      ? fetchSofaScoreCareer(personData.name, id).catch(() => [] as WikiCareerRow[])
+      ? fetchSofaScoreCareer(personData.name, id, identityAnchor).catch(() => [] as WikiCareerRow[])
       : Promise.resolve([] as WikiCareerRow[]),
   ]);
 
@@ -3042,7 +3055,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   );
 
   // Fetch photo from TheSportsDB for direct-navigation rendering (no squad lineup available).
-  const playerPhotos = await fetchPhotos([{ id, name: personData.name }]).catch(() => ({} as Record<number, string | null>));
+  const playerPhotos = await fetchPhotos([{ id, name: personData.name }], undefined, { [id]: identityAnchor }).catch(() => ({} as Record<number, string | null>));
   const photo = playerPhotos[id] ?? null;
 
   return {

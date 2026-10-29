@@ -1,7 +1,10 @@
 import { exec } from "child_process";
 import { promisify } from "util";
+import { waitUntil } from "@vercel/functions";
 import { getCached, setCached } from "../db/apiCache";
 import type { WikiCareerRow } from "../db/wikiCareerCache";
+import { getIdentityMode, resolvePlayerIdentity, scoreAndStore } from "./identity/resolver";
+import type { CandidateAnchor } from "./identity/nameMatch";
 
 const execAsync = promisify(exec);
 const SS_BASE = "https://www.sofascore.com";
@@ -79,7 +82,36 @@ async function ssFetch<T>(path: string): Promise<T | null> {
   }
 }
 
-async function findSsPlayerId(playerName: string, fdoId: number): Promise<number | null> {
+// Phase B (identity layer, shadow mode only): scores every search candidate through the
+// identity layer and logs/stores the result, but never changes what this function returns
+// — `legacyPick` stays the source of truth this phase. A no-op (not even called) when
+// IDENTITY_MODE is "off" or no anchor was supplied, so every existing caller that doesn't
+// pass one is completely unaffected.
+async function shadowMatchSofaScore(
+  fdoId: number,
+  anchor: CandidateAnchor,
+  players: any[],
+  legacyPick: any
+): Promise<void> {
+  const candidates = players
+    .filter((r) => r.entity?.id)
+    .map((r) => ({
+      externalId: String(r.entity.id),
+      name: r.entity.name ?? r.entity.shortName ?? "",
+      club: r.entity.team?.name ?? null,
+    }));
+  const internalId = await resolvePlayerIdentity(anchor, "fdorg", String(fdoId));
+  const result = await scoreAndStore(internalId, anchor, "sofascore", candidates, fdoId);
+  const legacyPickId = legacyPick?.entity?.id != null ? String(legacyPick.entity.id) : "none";
+  const resolverPickId = result.bestCandidate?.externalId ?? "none";
+  console.log(
+    `[identity] source=sofascore fdId=${fdoId} name="${anchor.name}" legacyPick=${legacyPickId} ` +
+    `resolverPick=${resolverPickId} agree=${legacyPickId === resolverPickId} ` +
+    `confidence=${result.confidence.toFixed(2)} verdict=${result.verdict} candidates=${candidates.length}`
+  );
+}
+
+async function findSsPlayerId(playerName: string, fdoId: number, anchor?: CandidateAnchor): Promise<number | null> {
   const cacheKey = `/ss-player-id/${fdoId}`;
   const cached = await getCached(cacheKey);
   if (cached !== null) return (cached as { ssId: number }).ssId ?? null;
@@ -93,6 +125,14 @@ async function findSsPlayerId(playerName: string, fdoId: number): Promise<number
     players.find((r: any) => normName(r.entity?.name ?? "") === target) ??
     players.find((r: any) => normName(r.entity?.shortName ?? "") === target) ??
     players[0];
+
+  if (getIdentityMode() !== "off" && anchor) {
+    waitUntil(
+      shadowMatchSofaScore(fdoId, anchor, players, match).catch((e) =>
+        console.warn(`[identity] sofascore shadow error for fdId=${fdoId}: ${(e as Error).message}`)
+      )
+    );
+  }
 
   const ssId: number | null = match?.entity?.id ?? null;
   await setCached(cacheKey, { ssId }, SS_ID_TTL_MS);
@@ -144,13 +184,14 @@ async function fetchSsSeasonPairs(ssId: number): Promise<SsSeasonPair[]> {
 
 export async function fetchSofaScoreCareer(
   playerName: string,
-  fdoId: number
+  fdoId: number,
+  anchor?: CandidateAnchor
 ): Promise<WikiCareerRow[]> {
   const cacheKey = `/ss-career/${fdoId}`;
   const cached = await getCached(cacheKey);
   if (cached) return cached as WikiCareerRow[];
 
-  const ssId = await findSsPlayerId(playerName, fdoId);
+  const ssId = await findSsPlayerId(playerName, fdoId, anchor);
   if (!ssId) {
     console.log(`[ssCareer] No SofaScore ID found for "${playerName}"`);
     return [];

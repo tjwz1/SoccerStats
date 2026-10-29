@@ -1,8 +1,11 @@
 import { safeFetch as fetch } from "../utils/httpClient";
 import * as cheerio from "cheerio";
+import { waitUntil } from "@vercel/functions";
 import type { ClubTrophy } from "./wikiStats";
 import { getCached, setCached } from "../db/apiCache";
 import { getClient } from "../db/supabase";
+import { getIdentityMode, resolvePlayerIdentity, scoreAndStore } from "./identity/resolver";
+import type { CandidateAnchor } from "./identity/nameMatch";
 
 // TM slugs/IDs are stable for years — persist to avoid re-scraping on every restart
 const TM_SEARCH_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -116,7 +119,11 @@ function pickBestMatch(query: string, candidates: EntityRef[]): EntityRef | null
 const tmSearchCache = new Map<string, EntityRef | null>();
 const TM_SEARCH_CACHE_MAX = 1000;
 
-async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef | null> {
+async function tmSearch(
+  query: string,
+  hrefPattern: RegExp,
+  onCandidates?: (candidates: EntityRef[]) => void
+): Promise<EntityRef | null> {
   const cacheKey = `${hrefPattern.source}:${query}`;
   // L1: in-memory. Only ever holds positive hits (see below) — a transient TM failure
   // (network blip, brief 403, Cloudflare challenge) must not disable this club/player's
@@ -185,6 +192,7 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
     const direct: EntityRef = { slug: redirectMatch[1], id: redirectMatch[2], name: title || query };
     cappedSet(tmSearchCache, cacheKey, direct, TM_SEARCH_CACHE_MAX);
     setCached(dbKey, { ref: direct }, TM_SEARCH_TTL_MS);
+    onCandidates?.([direct]);
     return direct;
   }
 
@@ -201,6 +209,8 @@ async function tmSearch(query: string, hrefPattern: RegExp): Promise<EntityRef |
     if (!name) return;
     candidates.push({ slug: m[1], id: m[2], name });
   });
+
+  onCandidates?.(candidates);
 
   const best = pickBestMatch(query, candidates);
 
@@ -224,7 +234,30 @@ const PLAYER_HREF = /^\/([^/]+)\/profil\/spieler\/(\d+)/;
 // Resolves a player's TM EntityRef, checking players.tm_ref before falling
 // through to the generic tmSearch. Stores the result permanently in players.tm_ref
 // so subsequent lookups skip TM entirely (slugs and IDs are stable for years).
-export async function resolvePlayerRef(playerId: number | undefined, playerName: string): Promise<EntityRef | null> {
+// Phase B (identity layer, shadow mode only): scores every search candidate through the
+// identity layer and logs/stores the result, but never changes what resolvePlayerRef
+// returns. Club field is deliberately not captured here — TM's search results page
+// doesn't carry one without a second per-candidate page fetch, so this scores on name
+// similarity only (weaker signal than SofaScore/TheSportsDB, flagged in the log line).
+async function shadowMatchTransfermarkt(
+  playerId: number,
+  anchor: CandidateAnchor,
+  candidates: EntityRef[],
+  legacyPick: EntityRef | null
+): Promise<void> {
+  const scored = candidates.map((c) => ({ externalId: c.id, externalSlug: c.slug, name: c.name }));
+  const internalId = await resolvePlayerIdentity(anchor, "fdorg", String(playerId));
+  const result = await scoreAndStore(internalId, anchor, "transfermarkt", scored, playerId);
+  const legacyPickId = legacyPick?.id ?? "none";
+  const resolverPickId = result.bestCandidate?.externalId ?? "none";
+  console.log(
+    `[identity] source=transfermarkt fdId=${playerId} name="${anchor.name}" legacyPick=${legacyPickId} ` +
+    `resolverPick=${resolverPickId} agree=${legacyPickId === resolverPickId} ` +
+    `confidence=${result.confidence.toFixed(2)} verdict=${result.verdict} candidates=${candidates.length} evidenceFields=name`
+  );
+}
+
+export async function resolvePlayerRef(playerId: number | undefined, playerName: string, anchor?: CandidateAnchor): Promise<EntityRef | null> {
   if (playerId) {
     try {
       const { data } = await getClient()
@@ -240,7 +273,16 @@ export async function resolvePlayerRef(playerId: number | undefined, playerName:
     } catch {}
   }
 
-  const ref = await tmSearch(playerName, PLAYER_HREF);
+  let shadowCandidates: EntityRef[] = [];
+  const ref = await tmSearch(playerName, PLAYER_HREF, (c) => { shadowCandidates = c; });
+
+  if (getIdentityMode() !== "off" && anchor && playerId && shadowCandidates.length > 0) {
+    waitUntil(
+      shadowMatchTransfermarkt(playerId, anchor, shadowCandidates, ref).catch((e) =>
+        console.warn(`[identity] transfermarkt shadow error for fdId=${playerId}: ${(e as Error).message}`)
+      )
+    );
+  }
 
   if (ref && playerId) {
     getClient()
@@ -433,7 +475,8 @@ export async function getTmClubRef(clubName: string): Promise<{ slug: string; id
 export async function scrapeTransfermarktPlayerStats(
   playerName: string,
   currentTeam = "",
-  playerId?: number
+  playerId?: number,
+  identityAnchor?: CandidateAnchor
 ): Promise<TmCareerRow[]> {
   // No reliable club name to label rows with — never fall back to the player's own name
   // (that produced rows like team: "Javi Galán") or the caller's best guess at "current
@@ -445,7 +488,7 @@ export async function scrapeTransfermarktPlayerStats(
     return [];
   }
 
-  const player = await resolvePlayerRef(playerId, playerName);
+  const player = await resolvePlayerRef(playerId, playerName, identityAnchor);
   if (!player) {
     console.log(`[transfermarkt] Player not found for "${playerName}"`);
     return [];
