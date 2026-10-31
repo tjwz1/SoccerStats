@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { waitUntil } from "@vercel/functions";
 import { getLiveMatches } from "../services/footballApi";
 import {
   getStoredProfile,
@@ -23,9 +24,16 @@ const bgRefreshing = new Set<number>();
 function scheduleBgRefresh(id: number, competition: string, teamId?: number | null) {
   if (bgRefreshing.has(id)) return;
   bgRefreshing.add(id);
-  refreshPlayerProfile(id, competition, teamId)
-    .catch(() => {})
-    .finally(() => bgRefreshing.delete(id));
+  // On Vercel the function's execution can be frozen/terminated the instant the stored
+  // (stale) response above is flushed — a bare un-awaited promise here is not guaranteed
+  // to ever run to completion. waitUntil() keeps the invocation alive until this settles,
+  // same pattern as serveWithSWR in routes/teams.ts. Safe no-op outside a Vercel request
+  // context (e.g. local dev), so local behavior is unchanged.
+  waitUntil(
+    refreshPlayerProfile(id, competition, teamId)
+      .catch(() => {})
+      .finally(() => bgRefreshing.delete(id))
+  );
 }
 
 async function teamIsLive(teamId: number | null | undefined): Promise<boolean> {
