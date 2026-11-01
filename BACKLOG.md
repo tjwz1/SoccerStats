@@ -6,6 +6,22 @@ Planned improvements that are not urgent now but should be addressed before/at s
 
 ## Bugs
 
+### Nightly player-refresh cron silently never ran — FIXED (2026-10-31), plus a wider backoff audit
+
+**Found while investigating why the cron was only touching 1-2 players/night:** `CRON_SECRET` in Vercel production was set to a literal empty string, not a real secret. `requireAdmin`'s auth check (`if (cronSecret && authHeader === ...)`) treats an empty string as falsy, so the Bearer-token path — the one Vercel's own cron invocation uses — always failed and the route 403'd unconditionally. Confirmed directly: manually sending the exact header Vercel's cron would send, with the real (empty) secret value, got `{"error":"Forbidden"}` back. The cron has likely never successfully run since this was set; the 1-2 refreshed_at timestamps seen nightly were organic site traffic hitting individual stale player pages, not the cron.
+
+**Fix:** generated a real 64-char secret, set it in Vercel production (`vercel env`), redeployed. Verified by manually triggering the route with the new secret's exact Bearer header — `{"error":"Forbidden"}` is gone, the route now runs and returns a real result (`processed:1, refreshed:1, failed:0`). Note: per-run throughput will likely stay modest (1-2 players per 290s budget) even now — a single player's multi-source assembly (fd.org + TM + SofaScore + worldfootball, with fd.org rate-limit backoffs) regularly takes 90-150+ seconds, independent of this fix. The fix is that it now actually runs every night, not that it suddenly processes many more players per run.
+
+**Prompted a full external-fetch backoff audit**, which found and fixed real gaps beyond the cron:
+- **`sofaScorePhotos.ts` was still sending the exact spoofed Chrome User-Agent** proven weeks earlier (in `sofaScoreCareer.ts`) to trigger SofaScore's bot detection — that fix was never mirrored to this file. Since this one fires on every squad/team page view (far higher traffic than the per-player career fetch), it's the more likely actual reason SofaScore stayed continuously blocked even after the original fix. Removed the UA; added 403/429 detection and an hour-long skip-ahead once a block is seen.
+- Extracted the SofaScore and Transfermarkt block-cooldown timestamps (previously private to one file each) into shared modules (`sofaScoreBlock.ts`, `transfermarktBlock.ts`) so every caller of a given source — including `cupSchedule.ts`'s own independent TM fetcher, which previously had no cooldown awareness at all — sees the same block state instead of each discovering it independently.
+- `espnService.ts`'s cold-miss fetch path had no try/catch at all — an ESPN failure threw straight out to whatever called it. Now caught and returns `null`, consistent with the optional-chaining fallbacks every caller in that file already uses. Both ESPN fetchers (`espnService.ts`, `matchStatsScraper.ts`) used `curl -f`, which fails silently on any HTTP error with no way to tell a genuine 429 apart from a transient blip — switched to explicit status capture so a 429 is now logged distinctly.
+- **Deliberately not changed**: Transfermarkt's own User-Agent (no evidence it's the trigger for TM's WAF the way SofaScore's was — removing it without that evidence could make things worse, since some WAFs specifically flag non-browser-looking requests) and the primary live-traffic retry behavior in `transfermarktScraper.ts`/`sofaScoreCareer.ts` (left as-is per the earlier explicit decision to only gate the bulk admin job, not live reads).
+
+Verified: `tsc` clean, 17 unit tests pass, e2e `-m "squad or schedule or mobile"` 19 passed/0 failed.
+
+---
+
 ### News feed stopped updating daily — FIXED (2026-09-13)
 
 **Observed (2026-09-08):** Team news is stale — Barcelona's most recent article is ~a week old. The daily news digest / article fetch appears to have stopped running or is failing silently. Affects at least Barcelona; likely all teams.
