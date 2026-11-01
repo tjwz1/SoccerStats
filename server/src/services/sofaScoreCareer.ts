@@ -5,6 +5,7 @@ import { getCached, setCached } from "../db/apiCache";
 import type { WikiCareerRow } from "../db/wikiCareerCache";
 import { getIdentityMode, resolvePlayerIdentity, scoreAndStore } from "./identity/resolver";
 import type { CandidateAnchor } from "./identity/nameMatch";
+import { recordSsBlocked } from "./sofaScoreBlock";
 
 const execAsync = promisify(exec);
 const SS_BASE = "https://www.sofascore.com";
@@ -43,14 +44,6 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
   return results;
 }
 
-// Last time a block signal was seen, so the bulk admin refresh job can detect an
-// active block and stop early. Does not change live single-player fetch behavior —
-// those keep retrying every time, same as before.
-let ssLastBlockedAt = 0;
-export function getSsLastBlockedAt(): number {
-  return ssLastBlockedAt;
-}
-
 async function ssFetch<T>(path: string): Promise<T | null> {
   try {
     // No User-Agent: a spoofed browser UA (previously a hardcoded "Chrome/136..."
@@ -71,7 +64,7 @@ async function ssFetch<T>(path: string): Promise<T | null> {
     if (!stdout) return null;
     const parsed = JSON.parse(stdout);
     if (parsed?.error?.code === 403) {
-      ssLastBlockedAt = Date.now();
+      recordSsBlocked();
       console.warn(`[ssCareer] Blocked (403 ${parsed.error.reason ?? "?"}) for ${path}`);
       return null;
     }

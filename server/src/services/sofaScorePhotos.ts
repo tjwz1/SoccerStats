@@ -1,5 +1,6 @@
 import { safeFetch as fetch } from "../utils/httpClient";
 import { getCached, setCached } from "../db/apiCache";
+import { recordSsBlocked, isSsRecentlyBlocked } from "./sofaScoreBlock";
 
 const SS_SEARCH = "https://api.sofascore.com/api/v1/search/all?q=";
 const SS_TEAM_PLAYERS = "https://api.sofascore.com/api/v1/team/";
@@ -8,9 +9,21 @@ const SS_PHOTO = "https://api.sofascore.com/api/v1/player/";
 // 7 days — squad photos are stable within a season; transfers happen infrequently
 const SOFA_PHOTOS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-// Browser-like headers to avoid being blocked by SofaScore
+// This endpoint is hit on every squad/team page view — far higher volume than the
+// per-player career fetch in sofaScoreCareer.ts — so once a block is seen, skip ahead
+// for an hour instead of continuing to hammer an already-blocked host on every visit.
+const BLOCK_SKIP_WINDOW_MS = 60 * 60 * 1000;
+
+// No User-Agent: a spoofed browser UA is what SofaScore's bot detection actually
+// flags (confirmed directly against the live API in sofaScoreCareer.ts — varying one
+// header at a time, a bare request or one with only Referer passes every time, adding
+// a fake-Chrome UA back reproduces the block instantly). This file previously carried
+// its own hardcoded "browser-like" UA, which kept re-triggering the exact block that
+// fix addressed — this endpoint's much higher traffic (every squad page view, not just
+// per-player lookups) made it the more likely ongoing cause of SofaScore staying
+// blocked even after that earlier fix. Keep Referer/Origin (harmless) but never
+// re-add a spoofed User-Agent here.
 const HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
   "Accept": "application/json, text/plain, */*",
   "Referer": "https://www.sofascore.com/",
   "Origin": "https://www.sofascore.com",
@@ -53,12 +66,24 @@ async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<M
 
   const photoMap = new Map<string, string>();
 
+  // Skip the live request entirely during an active block — both to avoid wasting a
+  // round-trip on a request that will fail anyway, and to stop re-triggering/extending
+  // the block that continued probing while blocked would cause.
+  if (isSsRecentlyBlocked(BLOCK_SKIP_WINDOW_MS)) {
+    cappedSet(teamPhotoCache, fdoTeamId, photoMap, TEAM_PHOTO_CACHE_MAX);
+    return photoMap;
+  }
+
   try {
     // 1. Search SofaScore for the team
     const searchRes = await fetch(
       `${SS_SEARCH}${encodeURIComponent(teamName)}&page=0`,
       { headers: HEADERS, signal: AbortSignal.timeout(5000) }
     );
+    if (searchRes.status === 403 || searchRes.status === 429) {
+      recordSsBlocked();
+      return photoMap;
+    }
     if (!searchRes.ok) return photoMap;
 
     const searchData = (await searchRes.json()) as any;
@@ -83,6 +108,11 @@ async function buildTeamPhotoMap(teamName: string, fdoTeamId: string): Promise<M
       headers: HEADERS,
       signal: AbortSignal.timeout(5000),
     });
+    if (playersRes.status === 403 || playersRes.status === 429) {
+      recordSsBlocked();
+      cappedSet(teamPhotoCache, fdoTeamId, photoMap, TEAM_PHOTO_CACHE_MAX);
+      return photoMap;
+    }
     if (!playersRes.ok) {
       cappedSet(teamPhotoCache, fdoTeamId, photoMap, TEAM_PHOTO_CACHE_MAX);
       return photoMap;

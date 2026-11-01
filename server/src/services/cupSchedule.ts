@@ -2,6 +2,7 @@ import { safeFetch as fetch } from "../utils/httpClient";
 import * as cheerio from "cheerio";
 import type { ScheduleMatch } from "./footballApi";
 import { getCached, setCached } from "../db/apiCache";
+import { recordTmBlocked, isTmRecentlyBlocked } from "./transfermarktBlock";
 
 // ── ESPN cup schedule ─────────────────────────────────────────────────────────
 // ESPN team schedule API works for these cups (teams endpoint has full team list).
@@ -268,7 +269,13 @@ const TM_CUP_INFO: Record<string, { name: string; code: string }> = {
 // (ESPN works for most; only PL & ELC need TM scraping)
 const TM_CUP_LEAGUES = new Set(["PL", "ELC"]);
 
+// Shares transfermarktScraper.ts's block-cooldown state — this file has its own fetch
+// function (different pacing/timeout needs for cup-schedule pages), but TM's WAF blocks
+// the whole IP, not one endpoint, so a block seen by either file must be visible to both.
+const TM_BLOCK_SKIP_WINDOW_MS = 60 * 60 * 1000;
+
 async function tmFetch(url: string): Promise<string | null> {
+  if (isTmRecentlyBlocked(TM_BLOCK_SKIP_WINDOW_MS)) return null;
   try {
     const res = await fetch(url, {
       headers: TM_HEADERS,
@@ -276,12 +283,14 @@ async function tmFetch(url: string): Promise<string | null> {
       redirect: "follow",
     });
     if (res.status === 403 || res.status === 429) {
+      recordTmBlocked();
       console.warn(`[cupSchedule:TM] Blocked (${res.status}) for ${url}`);
       return null;
     }
     if (!res.ok) return null;
     const text = await res.text();
     if (text.includes("cf-browser-verification") || text.includes("Just a moment")) {
+      recordTmBlocked();
       console.warn(`[cupSchedule:TM] Cloudflare challenge`);
       return null;
     }

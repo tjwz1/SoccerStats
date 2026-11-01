@@ -118,12 +118,34 @@ function statVal(stats: any[], name: string): number {
 
 // ESPN's CDN (Akamai) blocks node-fetch via TLS fingerprinting but allows curl.
 // curl is available on both Linux (Vercel) and Windows (local dev via Git Bash).
-async function espnCurlFetch(url: string): Promise<any> {
-  const { stdout } = await execAsync(`curl -sf --max-time 15 "${url}"`, { timeout: 20000 });
-  return JSON.parse(stdout);
+// No -f: with it, curl fails silently on any HTTP error with no way to tell a genuine
+// rate limit (429) apart from a transient network blip — same fix already applied to
+// transfermarktScraper.ts and sofaScoreCareer.ts for the same reason.
+async function espnCurlFetch(url: string): Promise<any | null> {
+  try {
+    const { stdout } = await execAsync(
+      `curl -s -w "\\n%{http_code}" --max-time 15 "${url}"`,
+      { timeout: 20000 }
+    );
+    const sep = stdout.lastIndexOf("\n");
+    const body = stdout.slice(0, sep);
+    const status = Number(stdout.slice(sep + 1));
+    if (status === 429) {
+      console.warn(`[espn] Rate limited (429) for ${url}`);
+      return null;
+    }
+    if (status >= 400) {
+      console.warn(`[espn] HTTP ${status} for ${url}`);
+      return null;
+    }
+    return JSON.parse(body);
+  } catch (e) {
+    console.warn(`[espn] Fetch error: ${(e as Error).message}`);
+    return null;
+  }
 }
 
-async function espnFetch(url: string, ttlMs: number): Promise<any> {
+async function espnFetch(url: string, ttlMs: number): Promise<any | null> {
   const key = `/espn/${url.replace(/^https?:\/\/[^/]+/, "")}`;
   const hit = await getAnyCached(key);
   if (hit) {
@@ -136,15 +158,19 @@ async function espnFetch(url: string, ttlMs: number): Promise<any> {
       // SWR refresh in routes/teams.ts.
       waitUntil(
         espnCurlFetch(url)
-          .then((data) => setCached(key, data, ttlMs))
+          .then((data) => { if (data !== null) return setCached(key, data, ttlMs); })
           .catch(() => {})
           .finally(() => revalidatingEspn.delete(key))
       );
     }
     return hit.data;
   }
+  // Cold miss: espnCurlFetch no longer throws (it catches internally and returns null),
+  // so a transient ESPN failure now surfaces as the same "no data" shape every caller in
+  // this file already tolerates (optional chaining + ?? fallbacks), instead of an
+  // uncaught exception propagating out of this function.
   const data = await espnCurlFetch(url);
-  waitUntil(setCached(key, data, ttlMs).catch(() => {}));
+  if (data !== null) waitUntil(setCached(key, data, ttlMs).catch(() => {}));
   return data;
 }
 

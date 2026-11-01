@@ -6,6 +6,7 @@ import { getCached, setCached } from "../db/apiCache";
 import { getClient } from "../db/supabase";
 import { getIdentityMode, resolvePlayerIdentity, scoreAndStore } from "./identity/resolver";
 import type { CandidateAnchor } from "./identity/nameMatch";
+import { recordTmBlocked } from "./transfermarktBlock";
 
 // TM slugs/IDs are stable for years — persist to avoid re-scraping on every restart
 const TM_SEARCH_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -34,15 +35,6 @@ function stripNonContent(html: string): string {
     .replace(/<link\b[^>]*>/gi, "");
 }
 
-// Last time a block signal was seen, so the bulk admin refresh job can detect an
-// active block and stop early instead of continuing to retry a host that's
-// already challenging every request. Does not change live single-player fetch
-// behavior at all — those keep retrying every time, same as before.
-let tmLastBlockedAt = 0;
-export function getTmLastBlockedAt(): number {
-  return tmLastBlockedAt;
-}
-
 async function tmFetch(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
@@ -54,7 +46,7 @@ async function tmFetch(url: string): Promise<string | null> {
     // passes res.ok, so without this check a block was silently read as "page
     // loaded, zero results," indistinguishable from a genuine no-match.
     if (res.status === 403 || res.status === 429 || res.headers.get("x-amzn-waf-action") === "challenge") {
-      tmLastBlockedAt = Date.now();
+      recordTmBlocked();
       console.warn(`[transfermarkt] Blocked (${res.status}) for ${url}`);
       return null;
     }
@@ -64,7 +56,7 @@ async function tmFetch(url: string): Promise<string | null> {
     }
     const text = await res.text();
     if (text.includes("cf-browser-verification") || text.includes("Just a moment")) {
-      tmLastBlockedAt = Date.now();
+      recordTmBlocked();
       console.warn(`[transfermarkt] Cloudflare challenge for ${url}`);
       return null;
     }

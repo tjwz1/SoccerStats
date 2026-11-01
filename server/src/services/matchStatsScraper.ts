@@ -98,12 +98,22 @@ function cappedSet<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number) {
 // curl has a different fingerprint that bypasses this check.
 async function espnFetch(url: string): Promise<any | null> {
   try {
+    // No -f: with it, curl fails silently on any HTTP error with no way to tell a
+    // genuine rate limit (429) apart from a transient network blip.
     const { stdout } = await execAsync(
-      `curl -sf --max-time 12 "${url}"`,
+      `curl -s -w "\\n%{http_code}" --max-time 12 "${url}"`,
       { timeout: 15000 }
     );
-    if (!stdout) return null;
-    return JSON.parse(stdout);
+    const sep = stdout.lastIndexOf("\n");
+    const body = stdout.slice(0, sep);
+    const status = Number(stdout.slice(sep + 1));
+    if (status === 429) {
+      console.warn(`[matchStats] Rate limited (429) for ${url}`);
+      return null;
+    }
+    if (status >= 400) return null;
+    if (!body) return null;
+    return JSON.parse(body);
   } catch (e) {
     console.warn(`[matchStats] Fetch error: ${(e as Error).message}`);
     return null;
