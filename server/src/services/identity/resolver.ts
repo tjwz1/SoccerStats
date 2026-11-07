@@ -30,32 +30,56 @@ export async function resolveSourceRef(internalId: number, source: IdentitySourc
   return null;
 }
 
+// A single getPlayer() request can call resolvePlayerIdentity for the same
+// (primarySource, anchorExternalId) several times concurrently (the anchor-ensure call,
+// plus each scraper's own shadow-match and on-mode pinned-ref check) — all read-then-write,
+// so without this they'd each see "not found" and each insert their own player_identity row,
+// then race on player_source_ref's (source, external_id) unique constraint: one wins the
+// ref, the rest throw (caught by the caller's .catch) and leave a permanent orphan identity
+// row behind. Confirmed live on 2026-11-07 (two orphan rows from one request). De-duping
+// in-process is enough: the race is between concurrent calls within the same request/process,
+// not across separate Vercel instances, which this does not (and doesn't need to) cover.
+const inflightResolves = new Map<string, Promise<number>>();
+
 /** Find-or-create an identity from an anchor source (fd.org or ESPN roster entry). */
 export async function resolvePlayerIdentity(
   anchor: CandidateAnchor,
   primarySource: IdentitySource,
   anchorExternalId: string
 ): Promise<number> {
-  const byId = await getRefBySourceId(primarySource, anchorExternalId);
-  if (byId) return byId.internal_id;
+  const key = `${primarySource}:${anchorExternalId}`;
+  const existing = inflightResolves.get(key);
+  if (existing) return existing;
 
-  const identity = await createIdentity({
-    displayName: anchor.name,
-    dob: anchor.dob ?? null,
-    nationality: anchor.nationality ?? null,
-    position: anchor.position ?? null,
-    primarySource,
-  });
-  await upsertRef({
-    internalId: identity.id,
-    source: primarySource,
-    externalId: anchorExternalId,
-    externalName: anchor.name,
-    confidence: 1,
-    status: "manual_confirmed", // the anchor source defines the identity by construction
-    matchedBy: "anchor",
-  });
-  return identity.id;
+  const promise = (async () => {
+    const byId = await getRefBySourceId(primarySource, anchorExternalId);
+    if (byId) return byId.internal_id;
+
+    const identity = await createIdentity({
+      displayName: anchor.name,
+      dob: anchor.dob ?? null,
+      nationality: anchor.nationality ?? null,
+      position: anchor.position ?? null,
+      primarySource,
+    });
+    await upsertRef({
+      internalId: identity.id,
+      source: primarySource,
+      externalId: anchorExternalId,
+      externalName: anchor.name,
+      confidence: 1,
+      status: "manual_confirmed", // the anchor source defines the identity by construction
+      matchedBy: "anchor",
+    });
+    return identity.id;
+  })();
+
+  inflightResolves.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    inflightResolves.delete(key);
+  }
 }
 
 export interface ScoreAndStoreResult {
