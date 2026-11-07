@@ -1,7 +1,7 @@
 import { safeFetch as fetch } from "../utils/httpClient";
 import { waitUntil } from "@vercel/functions";
 import { getPhoto, setPhoto } from "../db/photoCache";
-import { getIdentityMode, resolvePlayerIdentity, scoreAndStore } from "./identity/resolver";
+import { getIdentityMode, resolvePlayerIdentity, resolveSourceRef, scoreAndStore } from "./identity/resolver";
 import type { CandidateAnchor } from "./identity/nameMatch";
 
 // Sliding-window rate limiter: max 20 req/60 s (TheSportsDB free tier is ~25/min)
@@ -117,7 +117,26 @@ async function lookupPhoto(
       ? players[0]
       : null;
 
-    const best = matched ?? nameMatch ?? unique ?? null;
+    // Phase C (on mode only): if a confident identity match is pinned, prefer whichever
+    // of this search's own results it points to over the matched/nameMatch/unique
+    // heuristic chain above — the live search still has to run regardless (TheSportsDB
+    // has no id-only lookup to skip it with), but which result gets treated as correct
+    // can still be upgraded. Falls back to the heuristic chain when nothing's pinned, or
+    // when a pinned external_id doesn't appear in this particular search's results
+    // (e.g. a stale pin from before a photo/name change).
+    let pinnedBest: any = null;
+    if (getIdentityMode() === "on" && anchor) {
+      const internalId = await resolvePlayerIdentity(anchor, "fdorg", String(player.id));
+      const pinned = await resolveSourceRef(internalId, "thesportsdb");
+      if (pinned) {
+        pinnedBest = players.find((p) => String(p.idAPIfootball ?? p.strPlayer) === pinned.external_id) ?? null;
+        if (pinnedBest) {
+          console.log(`[identity] source=thesportsdb fdId=${player.id} using pinned ref ${pinned.external_id} (confidence=${pinned.confidence})`);
+        }
+      }
+    }
+
+    const best = pinnedBest ?? matched ?? nameMatch ?? unique ?? null;
     const url: string | null = best?.strCutout || best?.strThumb || null;
 
     if (getIdentityMode() !== "off" && anchor && players.length > 0) {

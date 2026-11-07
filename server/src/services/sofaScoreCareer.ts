@@ -3,7 +3,7 @@ import { promisify } from "util";
 import { waitUntil } from "@vercel/functions";
 import { getCached, setCached } from "../db/apiCache";
 import type { WikiCareerRow } from "../db/wikiCareerCache";
-import { getIdentityMode, resolvePlayerIdentity, scoreAndStore } from "./identity/resolver";
+import { getIdentityMode, resolvePlayerIdentity, resolveSourceRef, scoreAndStore } from "./identity/resolver";
 import type { CandidateAnchor } from "./identity/nameMatch";
 import { recordSsBlocked } from "./sofaScoreBlock";
 
@@ -108,6 +108,23 @@ async function findSsPlayerId(playerName: string, fdoId: number, anchor?: Candid
   const cacheKey = `/ss-player-id/${fdoId}`;
   const cached = await getCached(cacheKey);
   if (cached !== null) return (cached as { ssId: number }).ssId ?? null;
+
+  // Phase C (on mode only): trust a confidently-pinned identity match over the live
+  // search heuristic below, skipping the search entirely. Still writes the same
+  // /ss-player-id cache key on a hit, so subsequent calls keep using the fast cache
+  // path regardless of which branch produced the value. Falls through to the existing
+  // search+heuristic when nothing is pinned (including in shadow mode, where this
+  // branch never runs at all — shadow mode only logs, never changes the return value).
+  if (getIdentityMode() === "on" && anchor) {
+    const internalId = await resolvePlayerIdentity(anchor, "fdorg", String(fdoId));
+    const pinned = await resolveSourceRef(internalId, "sofascore");
+    if (pinned) {
+      const pinnedId = Number(pinned.external_id);
+      console.log(`[identity] source=sofascore fdId=${fdoId} using pinned ref ${pinnedId} (confidence=${pinned.confidence})`);
+      await setCached(cacheKey, { ssId: pinnedId }, SS_ID_TTL_MS);
+      return pinnedId;
+    }
+  }
 
   const data = await ssFetch<any>(`/api/v1/search/all?q=${encodeURIComponent(playerName)}&page=0`);
   if (!data) return null;

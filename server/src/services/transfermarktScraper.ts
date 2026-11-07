@@ -4,7 +4,7 @@ import { waitUntil } from "@vercel/functions";
 import type { ClubTrophy } from "./wikiStats";
 import { getCached, setCached } from "../db/apiCache";
 import { getClient } from "../db/supabase";
-import { getIdentityMode, resolvePlayerIdentity, scoreAndStore } from "./identity/resolver";
+import { getIdentityMode, resolvePlayerIdentity, resolveSourceRef, scoreAndStore } from "./identity/resolver";
 import type { CandidateAnchor } from "./identity/nameMatch";
 import { recordTmBlocked } from "./transfermarktBlock";
 
@@ -263,6 +263,33 @@ export async function resolvePlayerRef(playerId: number | undefined, playerName:
         return ref;
       }
     } catch {}
+  }
+
+  // Phase C (on mode only): trust a confidently-pinned identity match over the live
+  // tmSearch heuristic below, skipping it entirely. Still persists to players.tm_ref the
+  // same way the search-based path does, so subsequent calls hit the fast cache-miss
+  // check above. Falls through when nothing is pinned (including in shadow mode, which
+  // never reaches this branch — it only logs, never changes the return value). Only
+  // reachable when an anchor was supplied — scrapeTransfermarktPlayerHonours calls this
+  // function without one, so that call site always uses the legacy path regardless.
+  if (getIdentityMode() === "on" && anchor && playerId) {
+    const internalId = await resolvePlayerIdentity(anchor, "fdorg", String(playerId));
+    const pinned = await resolveSourceRef(internalId, "transfermarkt");
+    if (pinned && pinned.external_id) {
+      const ref: EntityRef = {
+        id: pinned.external_id,
+        slug: pinned.external_slug ?? "",
+        name: pinned.external_name ?? playerName,
+      };
+      console.log(`[identity] source=transfermarkt fdId=${playerId} using pinned ref ${ref.id} (confidence=${pinned.confidence})`);
+      cappedSet(tmSearchCache, `${PLAYER_HREF.source}:${playerName}`, ref, TM_SEARCH_CACHE_MAX);
+      getClient()
+        .from("players")
+        .update({ tm_ref: ref })
+        .eq("id", playerId)
+        .then(({ error }) => { if (error) console.error("[playerCache] tm_ref write failed:", error.message); });
+      return ref;
+    }
   }
 
   let shadowCandidates: EntityRef[] = [];

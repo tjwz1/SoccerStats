@@ -13,6 +13,7 @@ import { scrapeTransfermarktPlayerStats, scrapeTransfermarktPlayerHonours, getTm
 import { fetchWorldFootballCareer, type WfCareerRow } from "./worldFootball";
 import { fetchSofaScoreCareer } from "./sofaScoreCareer";
 import type { CandidateAnchor } from "./identity/nameMatch";
+import { getIdentityMode, resolvePlayerIdentity } from "./identity/resolver";
 import type { ClubTrophy as TmClubTrophy, KnockoutStatus } from "./wikiStats";
 import type { Trophy } from "../db/wikiTrophyCache";
 import {
@@ -2770,9 +2771,9 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   const currentTeamIsReliable = !!personData.currentTeam?.name && personData.currentTeam.name !== personData.nationality;
   const reliableClubName = currentTeamIsReliable ? personData.currentTeam.name : "";
 
-  // Phase B (identity layer, shadow mode only): an anchor built from fd.org's own bio
-  // fields, threaded into the scrapers below so they can score their own candidates
-  // against it alongside their existing name-only heuristic. A no-op everywhere
+  // Identity layer: an anchor built from fd.org's own bio fields, threaded into the
+  // scrapers below so they can score their own candidates against it alongside (shadow
+  // mode) or instead of (on mode) their existing name-only heuristic. A no-op everywhere
   // IDENTITY_MODE is "off" (the default) — see services/identity/resolver.ts.
   const identityAnchor: CandidateAnchor = {
     name: personData.name,
@@ -2781,6 +2782,21 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     nationality: personData.nationality ?? null,
     position: personData.section ?? personData.position ?? null,
   };
+
+  // Ensure the fd.org anchor identity exists regardless of whether any downstream source
+  // finds a candidate to score — previously this only happened as a side effect of a
+  // successful shadow-match, so a player with zero matches from every source (common for
+  // genuinely new/obscure discoveries — confirmed live 3x during the shadow-mode
+  // observation week) never got an identity record at all. resolvePlayerIdentity is
+  // idempotent (finds the existing ref via getRefBySourceId before ever creating one), so
+  // this is safe to call on every getPlayer() invocation with no risk of duplicates.
+  if (getIdentityMode() !== "off") {
+    waitUntil(
+      resolvePlayerIdentity(identityAnchor, "fdorg", String(id)).catch((e) =>
+        console.warn(`[identity] anchor ensure failed for fdId=${id}: ${(e as Error).message}`)
+      )
+    );
+  }
 
   // The caller-supplied competition can be wrong and, once persisted to player_profiles,
   // never self-corrects (every later refresh just reuses the stored value) — e.g. a player
