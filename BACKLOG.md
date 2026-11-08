@@ -6,6 +6,16 @@ Planned improvements that are not urgent now but should be addressed before/at s
 
 ## Bugs
 
+### CLI (Copa Libertadores) and EC (Euro) standings return HTTP 500 (found 2026-11-08, not fixed)
+
+**Symptom:** the daily GitHub Actions smoke test has failed 3 days running (2026-11-05, -06, -07) on the same two checks — `GET /api/competitions/CLI/standings` and `GET /api/competitions/EC/standings` both return HTTP 500. Confirmed directly against production: `apiFetch` gets a genuine `404 Not Found` from football-data.org itself for the "current season" query on both competitions right now (no active season pointer — Euro 2028 isn't for two more years, and Copa Libertadores' most recent season has presumably just concluded), and that upstream 404 propagates up as a 500 instead of being handled. **Pre-dates the Player Identity Layer Phase C cutover** (already failing on 2026-11-05, before that work started) — unrelated.
+
+**Correct behavior, per the user:** this is not a "fix the error" ask — when a competition's season has ended and football-data.org has no current-season pointer yet, the app should keep showing that season's final standings table, not a 500 or an empty/reset state. The table should only update once football-data.org actually registers a new season with real data. `getStandings()` (`server/src/services/footballApi.ts:1827`) already has inter-season-drift handling for the case where fd.org returns stale/transitional data for a "current" query (the `caseA`/`caseB`/`caseC` checks around line 1866-1890, returning `seasonNotStarted: true`) — but that logic assumes the "current" query succeeds with *some* data; it doesn't yet handle the current query failing outright with a 404. The fix likely needs: on a 404 for the unseasoned query, fall back to fetching the most recent known season explicitly (cached long-TTL, same `FOREVER_TTL_MS` treatment past seasons already get) and serve that as the displayed table, while still periodically retrying the unseasoned "current" query so the table does update once a new season actually starts.
+
+**When to pick up:** low urgency (doesn't affect any of the big-5 leagues or any in-season competition), but easy to verify once fixed via the existing smoke test.
+
+---
+
 ### Nightly player-refresh cron silently never ran — FIXED (2026-10-31), plus a wider backoff audit
 
 **Found while investigating why the cron was only touching 1-2 players/night:** `CRON_SECRET` in Vercel production was set to a literal empty string, not a real secret. `requireAdmin`'s auth check (`if (cronSecret && authHeader === ...)`) treats an empty string as falsy, so the Bearer-token path — the one Vercel's own cron invocation uses — always failed and the route 403'd unconditionally. Confirmed directly: manually sending the exact header Vercel's cron would send, with the real (empty) secret value, got `{"error":"Forbidden"}` back. The cron has likely never successfully run since this was set; the 1-2 refreshed_at timestamps seen nightly were organic site traffic hitting individual stale player pages, not the cron.
