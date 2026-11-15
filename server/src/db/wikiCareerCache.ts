@@ -176,7 +176,8 @@ export async function clearPlayerCareer(playerIds: number[]): Promise<{ deleted:
 export async function setWikiStats(
   playerId: number,
   playerName: string,
-  rows: WikiCareerRow[]
+  rows: WikiCareerRow[],
+  internalId?: number | null
 ): Promise<void> {
   if (rows.length === 0) return;
   try {
@@ -189,11 +190,18 @@ export async function setWikiStats(
         { onConflict: "id", ignoreDuplicates: false }
       );
 
+    // With a resolved internal_id, dedupe on (internal_id, competition, season, team_name) —
+    // the identity layer's Phase D re-key (migration 005) — so two genuinely different clubs
+    // in the same season/competition (a mid-season transfer) land as two rows instead of
+    // collapsing into one under the old (player_id, competition, season) key. Falls back to
+    // the pre-Phase-D key when internalId isn't available (IDENTITY_MODE off, or player not
+    // yet linked) — unchanged behavior for that case.
     const { error } = await getClient()
       .from("player_seasons")
       .upsert(
         rows.map((r) => ({
           player_id: playerId,
+          internal_id: internalId ?? null,
           competition: r.league,
           season: r.season,
           team_name: r.team,
@@ -202,7 +210,7 @@ export async function setWikiStats(
           assists: r.assists,
           updated_at: new Date().toISOString(),
         })),
-        { onConflict: "player_id,competition,season" }
+        { onConflict: internalId ? "internal_id,competition,season,team_name" : "player_id,competition,season" }
       );
 
     if (error) console.error("[playerSeasons] write failed:", error.message);

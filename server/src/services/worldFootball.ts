@@ -163,8 +163,11 @@ function parseWfCareerTable(html: string): WfCareerRow[] {
   return rows;
 }
 
-export async function fetchWorldFootballCareer(playerName: string): Promise<WfCareerRow[]> {
-  const cacheKey = `/wf-career/${encodeURIComponent(playerName)}`;
+export async function fetchWorldFootballCareer(playerName: string, internalId?: number | null): Promise<WfCareerRow[]> {
+  // Identity layer Phase D: key by internal_id when resolved so two different real people
+  // sharing a name don't share a cached career. Falls back to the name-based key (today's
+  // exact behavior) when no internalId is available.
+  const cacheKey = internalId != null ? `/wf-career/id/${internalId}` : `/wf-career/${encodeURIComponent(playerName)}`;
 
   const cached = await getCached(cacheKey);
   if (cached) return cached as WfCareerRow[];

@@ -73,7 +73,14 @@ async function lookupPhoto(
   expectedTeamKey: string, // pre-computed from fetchPhotos; empty string = no team check
   anchor?: CandidateAnchor
 ): Promise<string | null> {
-  const cached = await getPhoto(player.name);
+  // Identity layer Phase D: resolve once up front (shadow mode included — cheap, idempotent)
+  // so both the cache lookup and, further down, the existing Phase C pinned-ref check reuse
+  // the same value instead of resolving the same identity twice.
+  const internalId = (getIdentityMode() !== "off" && anchor)
+    ? await resolvePlayerIdentity(anchor, "fdorg", String(player.id)).catch(() => null)
+    : null;
+
+  const cached = await getPhoto(player.name, internalId);
   if (cached !== undefined) return cached;
 
   try {
@@ -125,8 +132,7 @@ async function lookupPhoto(
     // when a pinned external_id doesn't appear in this particular search's results
     // (e.g. a stale pin from before a photo/name change).
     let pinnedBest: any = null;
-    if (getIdentityMode() === "on" && anchor) {
-      const internalId = await resolvePlayerIdentity(anchor, "fdorg", String(player.id));
+    if (getIdentityMode() === "on" && internalId != null) {
       const pinned = await resolveSourceRef(internalId, "thesportsdb");
       if (pinned) {
         pinnedBest = players.find((p) => String(p.idAPIfootball ?? p.strPlayer) === pinned.external_id) ?? null;
@@ -148,7 +154,7 @@ async function lookupPhoto(
     }
 
     // Only cache definitive API responses (found or confirmed not found)
-    await setPhoto(player.name, url);
+    await setPhoto(player.name, url, internalId);
     return url;
   } catch {
     // Don't cache network errors or rate-limit failures — allow retry on next request

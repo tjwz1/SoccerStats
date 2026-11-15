@@ -2,7 +2,7 @@ import fetch from "node-fetch";
 import https from "https";
 import { waitUntil } from "@vercel/functions";
 import { MOCK_COMPETITIONS, MOCK_TEAMS, MOCK_LINEUP, MOCK_PLAYER_STATS } from "./mockData";
-import { fetchPhotos } from "./theSportsDb";
+import { fetchPhotos, teamKeyword } from "./theSportsDb";
 import { fetchFplPhotos } from "./fplPhotos";
 import { fetchSofaScorePhotos } from "./sofaScorePhotos";
 import { getCached, getAnyCached, setCached, deleteCached, FOREVER_TTL_MS } from "../db/apiCache";
@@ -2676,11 +2676,16 @@ function mergeCareerSources(
   tmRows: TmCareerRow[],
   wfRows: WfCareerRow[] = []
 ): Array<{ season: string; team: string; league: string; appearances: number; goals: number; assists: number }> {
-  // Keyed by (season, competition), not season alone — TM's coverage of a season is often
-  // partial (e.g. it has a player's club rows but not their international caps for the same
-  // year), so excluding by season alone would drop other sources' rows for competitions TM
-  // never actually scraped.
-  const tmKeys = new Set(tmRows.map((r) => `${r.season}|${normalizeComp(r.competition)}`));
+  // Keyed by (season, competition, team), not just (season, competition) — a real mid-season
+  // transfer (two different clubs, same season/competition) must produce two rows, not have
+  // the second club's row silently excluded as if it were already "covered." teamKeyword()
+  // (theSportsDb.ts) is reused rather than a new normalizer — it already strips generic club
+  // prefixes/suffixes, tolerating the kind of name-spelling variance sources disagree on for
+  // the SAME club (e.g. "Arsenal FC" vs "Arsenal") without treating that as a second stint.
+  const keyOf = (season: string, competition: string, team: string) =>
+    `${season}|${normalizeComp(competition)}|${teamKeyword(team)}`;
+
+  const tmKeys = new Set(tmRows.map((r) => keyOf(r.season, r.competition, r.team)));
   const tmConverted = tmRows.map((r) => ({
     season: r.season,
     team: r.team,
@@ -2690,15 +2695,15 @@ function mergeCareerSources(
     assists: r.assists,
   }));
 
-  const wikiGap = wikiRows.filter((r) => !tmKeys.has(`${r.season}|${normalizeComp(r.league || "")}`));
+  const wikiGap = wikiRows.filter((r) => !tmKeys.has(keyOf(r.season, r.league || "", r.team)));
 
-  // WF fills (season, competition) pairs neither TM nor Wiki/SofaScore covers
+  // WF fills (season, competition, team) triples neither TM nor Wiki/SofaScore covers
   const coveredKeys = new Set([
     ...tmKeys,
-    ...wikiGap.map((r) => `${r.season}|${normalizeComp(r.league || "")}`),
+    ...wikiGap.map((r) => keyOf(r.season, r.league || "", r.team)),
   ]);
   const wfGap = wfRows
-    .filter((r) => !coveredKeys.has(`${r.season}|${normalizeComp(r.competition)}`))
+    .filter((r) => !coveredKeys.has(keyOf(r.season, r.competition, r.team)))
     .map((r) => ({
       season: r.season,
       team: r.team,
@@ -2790,13 +2795,15 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
   // observation week) never got an identity record at all. resolvePlayerIdentity is
   // idempotent (finds the existing ref via getRefBySourceId before ever creating one), so
   // this is safe to call on every getPlayer() invocation with no risk of duplicates.
-  if (getIdentityMode() !== "off") {
-    waitUntil(
-      resolvePlayerIdentity(identityAnchor, "fdorg", String(id)).catch((e) =>
-        console.warn(`[identity] anchor ensure failed for fdId=${id}: ${(e as Error).message}`)
-      )
-    );
-  }
+  // Captured as a promise (not just fired via waitUntil) so Phase D's re-keyed writes below
+  // can reuse its resolved value instead of resolving the same identity a second time.
+  const identityResolvePromise = getIdentityMode() !== "off"
+    ? resolvePlayerIdentity(identityAnchor, "fdorg", String(id)).catch((e) => {
+        console.warn(`[identity] anchor ensure failed for fdId=${id}: ${(e as Error).message}`);
+        return null;
+      })
+    : Promise.resolve(null);
+  waitUntil(identityResolvePromise);
 
   // The caller-supplied competition can be wrong and, once persisted to player_profiles,
   // never self-corrects (every later refresh just reuses the stored value) — e.g. a player
@@ -2856,6 +2863,16 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     !tmCupChecked;          // skip if TM was checked today
   const needsTrophies = cachedTrophies === null;
 
+  // Identity layer Phase D: resolve internal_id only when a player_seasons write is actually
+  // possible this call — needsCareer (full refetch), or needsCurrentSeasonCups/needsSofaRefresh
+  // (mergedCareer can still be non-empty via the cachedStats-based wikiBase fallback below).
+  // Zero added latency on the pure cache-hit path, where none of these are true and no write
+  // happens at all. Reuses the same promise kicked off above for the anchor-ensure side
+  // effect, so this is at most one round trip, not two.
+  const internalId = (needsCareer || needsCurrentSeasonCups || needsSofaRefresh)
+    ? await identityResolvePromise
+    : null;
+
   // Phase 2: scorer API + wiki + Transfermarkt all run in parallel.
   // Wiki/TM are only invoked on a cache miss or when cups are missing from cache.
   // International tournaments (WC/EC) run in the calendar year of the tournament,
@@ -2889,7 +2906,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     // WorldFootball.net: historical fallback for seasons TM + SofaScore both miss.
     // Only fetched on a full career cache miss to avoid adding latency on cache hits.
     needsCareer
-      ? fetchWorldFootballCareer(personData.name).catch(() => [] as WfCareerRow[])
+      ? fetchWorldFootballCareer(personData.name, internalId).catch(() => [] as WfCareerRow[])
       : Promise.resolve([] as WfCareerRow[]),
     // SofaScore: primary career source — has assists per season/competition across full career.
     // Also runs when cached data is missing the current season (needsSofaRefresh) to pick up
@@ -2912,7 +2929,7 @@ export async function getPlayer(playerId: string, competitionCode = "PL") {
     ? sofaCareer
     : ((needsCurrentSeasonCups || needsSofaRefresh) ? (cachedStats ?? []) : []);
   const mergedCareer = mergeCareerSources(wikiBase, tmCareer, wfCareer);
-  if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer);
+  if (mergedCareer.length) setWikiStats(id, personData.name, mergedCareer, internalId);
   // Mark TM cup check done for 24h when:
   //   (a) TM returned data (cups found or legitimately none), OR
   //   (b) TM returned nothing AND the player has no current-season rows in cache
