@@ -90,8 +90,14 @@ async function lookupPhoto(
       .replace(/ß/g, "ss").replace(/æ/g, "ae").replace(/œ/g, "oe")
       .normalize("NFD").replace(/[̀-ͯ]/g, "");
     await throttle();
+    // The old "3" key was permanently disabled by the provider (confirmed live: returns a
+    // plain-text 403, not JSON) — "123" is TheSportsDB's current documented free test key
+    // (30 req/min, consistent with this file's existing throttle). It's a publicly shared
+    // key, so some requests may still fail from load outside this app's control — that's
+    // fine, the existing catch-and-don't-cache-errors behavior below already handles it the
+    // same way any other transient failure is handled.
     const res = await fetch(
-      `https://www.thesportsdb.com/api/v1/json/3/searchplayers.php?p=${encodeURIComponent(searchName)}`,
+      `https://www.thesportsdb.com/api/v1/json/123/searchplayers.php?p=${encodeURIComponent(searchName)}`,
       { signal: AbortSignal.timeout(8000) }
     );
     const data = await res.json() as any;
