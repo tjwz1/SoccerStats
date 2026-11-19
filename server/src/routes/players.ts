@@ -36,18 +36,27 @@ function scheduleBgRefresh(id: number, competition: string, teamId?: number | nu
   );
 }
 
+const timeout = <T>(ms: number, value: T) =>
+  new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+
+// How long to wait for the live-matches check before assuming "not live" and falling back
+// to the normal stale-while-revalidate path. getLiveMatches() calls fd.org, whose own
+// apiFetch has a 429 backoff that can sleep 30s per retry — unlike every other await in this
+// file, this one previously had no bound at all, so a rate-limited fd.org request here could
+// stall the whole response well past any reasonable client timeout even though the rest of
+// this route is careful to race everything against FIRST_VISIT_TIMEOUT_MS.
+const LIVE_CHECK_TIMEOUT_MS = 5000;
+
 async function teamIsLive(teamId: number | null | undefined): Promise<boolean> {
   if (!teamId) return false;
   try {
-    const live = await getLiveMatches();
+    const live = await Promise.race([getLiveMatches(), timeout(LIVE_CHECK_TIMEOUT_MS, null)]);
+    if (!live) return false;
     return live.some((m) => m.homeTeamId === teamId || m.awayTeamId === teamId);
   } catch {
     return false;
   }
 }
-
-const timeout = <T>(ms: number, value: T) =>
-  new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
 
 router.get("/:id", async (req, res) => {
   try {
